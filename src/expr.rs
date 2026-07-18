@@ -26,6 +26,9 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    /// Logical `and`/`or` over truthiness (each operand normalized to 0/1).
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +39,8 @@ pub enum Expr {
     /// A named field of the current record, resolved at eval time.
     Field(String),
     Neg(Box<Expr>),
+    /// Logical negation: truthy input -> 0, falsy -> 1.
+    Not(Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
 }
 
@@ -46,7 +51,7 @@ pub fn parse(src: &str) -> Result<Expr, String> {
         c: src.chars().collect(),
         i: 0,
     };
-    let e = p.comparison()?;
+    let e = p.or_expr()?;
     if p.peek().is_some() {
         return Err(format!("calc: unexpected `{}`", p.c[p.i]));
     }
@@ -105,6 +110,24 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
             emit(a, x, resolve, b);
             b.emit(Op::Negate, 0);
         }
+        Expr::Not(a) => {
+            // Logical not: `a == 0` yields 1 for falsy `a`, 0 for truthy.
+            emit(a, x, resolve, b);
+            b.emit(Op::LoadFloat(0.0), 0);
+            b.emit(Op::NumEq, 0);
+        }
+        // `and`/`or` operate on truthiness: normalize each side to 0/1 first,
+        // then `and` = product (1 iff both 1), `or` = sum (>=1 iff either 1).
+        Expr::Bin(BinOp::And, a, c) => {
+            emit_bool(a, x, resolve, b);
+            emit_bool(c, x, resolve, b);
+            b.emit(Op::Mul, 0);
+        }
+        Expr::Bin(BinOp::Or, a, c) => {
+            emit_bool(a, x, resolve, b);
+            emit_bool(c, x, resolve, b);
+            b.emit(Op::Add, 0);
+        }
         Expr::Bin(op, a, c) => {
             emit(a, x, resolve, b);
             emit(c, x, resolve, b);
@@ -121,11 +144,19 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
                     BinOp::Le => Op::NumLe,
                     BinOp::Gt => Op::NumGt,
                     BinOp::Ge => Op::NumGe,
+                    BinOp::And | BinOp::Or => unreachable!("handled above"),
                 },
                 0,
             );
         }
     }
+}
+
+/// Emit `e` normalized to a boolean 0.0/1.0 (`e != 0`), for logical combinators.
+fn emit_bool(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
+    emit(e, x, resolve, b);
+    b.emit(Op::LoadFloat(0.0), 0);
+    b.emit(Op::NumNe, 0);
 }
 
 struct Parser {
@@ -140,6 +171,55 @@ impl Parser {
             self.i += 1;
         }
         self.c.get(self.i).copied()
+    }
+
+    /// Lowest precedence: `a or b`.
+    fn or_expr(&mut self) -> Result<Expr, String> {
+        let mut left = self.and_expr()?;
+        while self.match_kw("or") {
+            let right = self.and_expr()?;
+            left = Expr::Bin(BinOp::Or, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    /// `a and b`, binding tighter than `or`.
+    fn and_expr(&mut self) -> Result<Expr, String> {
+        let mut left = self.not_expr()?;
+        while self.match_kw("and") {
+            let right = self.not_expr()?;
+            left = Expr::Bin(BinOp::And, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    /// Prefix `not`, binding tighter than `and`/`or` but looser than comparison.
+    fn not_expr(&mut self) -> Result<Expr, String> {
+        if self.match_kw("not") {
+            return Ok(Expr::Not(Box::new(self.not_expr()?)));
+        }
+        self.comparison()
+    }
+
+    /// Consume the keyword `kw` if it is the next whole word (not a prefix of a
+    /// longer identifier, e.g. `and` must not match inside `android`).
+    fn match_kw(&mut self, kw: &str) -> bool {
+        let save = self.i;
+        while self.i < self.c.len() && self.c[self.i].is_whitespace() {
+            self.i += 1;
+        }
+        let start = self.i;
+        let kwc: Vec<char> = kw.chars().collect();
+        let end = start + kwc.len();
+        let boundary_ok = end >= self.c.len()
+            || !(self.c[end].is_ascii_alphanumeric() || self.c[end] == '_');
+        if end <= self.c.len() && self.c[start..end] == kwc[..] && boundary_ok {
+            self.i = end;
+            true
+        } else {
+            self.i = save;
+            false
+        }
     }
 
     fn comparison(&mut self) -> Result<Expr, String> {
