@@ -14,6 +14,7 @@ pub mod expr;
 pub mod lexer;
 pub mod parser;
 pub mod query;
+pub mod repl;
 pub mod spec;
 pub mod stream;
 pub mod tui;

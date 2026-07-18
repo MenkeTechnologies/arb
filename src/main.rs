@@ -40,10 +40,18 @@ struct Cli {
     /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
     #[arg(long = "save", value_name = "NAME")]
     save: Option<String>,
+    /// Interactive REPL — author + test specs against a sample buffer.
+    #[arg(short = 'r', long = "repl")]
+    repl: bool,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+
+    if cli.repl {
+        arb::repl::run();
+        return Ok(());
+    }
 
     if cli.list {
         let mut out = io::stdout().lock();
@@ -55,6 +63,15 @@ fn main() -> io::Result<()> {
 
     if let Some(name) = cli.save.clone() {
         return save_preset(&name, &cli);
+    }
+
+    // Bare `arb` on an interactive terminal — no spec/`-e`/`-p` and nothing
+    // piped in — drops into the REPL rather than erroring on the stdin-tail
+    // default (which needs a pipe). A piped `find / | arb` still tails.
+    let no_spec_args = cli.spec.is_none() && cli.eval.is_none() && cli.preset.is_none();
+    if no_spec_args && io::stdin().is_terminal() {
+        arb::repl::run();
+        return Ok(());
     }
 
     let spec = match load_spec(&cli) {

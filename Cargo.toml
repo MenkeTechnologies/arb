@@ -31,6 +31,15 @@ regex = "1"
 serde_json = "1"
 scraper = "0.20"
 
+# Interactive REPL (`arb --repl`): utop-style reedline line editor, nu-ansi-term
+# for the status-bar / prompt colors, libc for local time + terminal width,
+# toml for the `~/.arb/config.toml` `[repl] mode` setting. Pins match the
+# sibling frontends' REPLs (rubylang / strykelang / vimlrs).
+reedline = "0.47.0"
+nu-ansi-term = "0.50"
+libc = "0.2"
+toml = "0.8"
+
 [profile.release]
 lto = true
 strip = true
