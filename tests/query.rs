@@ -906,3 +906,322 @@ fn in_toml_parses_nested_field() {
         other => panic!("got {other:?}"),
     }
 }
+
+#[test]
+fn b64_encodes_each_line_standard() {
+    let ops = pipeline("tail .x\nsource .x { in; b64 }");
+    let lines = vec!["hello".to_string(), "foo".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["aGVsbG8=".to_string(), "Zm9v".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn b64d_decodes_and_passes_invalid_through() {
+    let ops = pipeline("tail .x\nsource .x { in; b64d }");
+    // "aGVsbG8=" -> "hello"; "###" is not valid base64 -> unchanged;
+    // "kg==" decodes to bytes [0x92] which is not valid UTF-8 -> unchanged.
+    let lines = vec![
+        "aGVsbG8=".to_string(),
+        "###".to_string(),
+        "kg==".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["hello".to_string(), "###".to_string(), "kg==".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn hex_encodes_lines_bytewise() {
+    let ops = pipeline("tail .x\nsource .x { in; hex }");
+    // "Hi!" -> 48 69 21 ; "é" is UTF-8 0xC3 0xA9 -> proves byte-wise, not char-wise.
+    let lines = vec!["Hi!".to_string(), "é".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["486921".to_string(), "c3a9".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn unhex_decodes_valid_and_passes_through_invalid() {
+    let ops = pipeline("tail .x\nsource .x { in; unhex }");
+    let lines = vec![
+        "48656c6c6f".to_string(), // "Hello"
+        "6869".to_string(),       // "hi"
+        "zz".to_string(),         // non-hex digit -> unchanged
+        "abc".to_string(),        // odd length -> unchanged
+        "".to_string(),           // empty -> unchanged
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                "Hello".to_string(),
+                "hi".to_string(),
+                "zz".to_string(),
+                "abc".to_string(),
+                "".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn urlenc_escapes_non_alphanumerics() {
+    let ops = pipeline("tail .x\nsource .x { in; urlenc }");
+    let lines = vec!["hello world!".to_string(), "a/b?c=1&d".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec!["hello%20world%21".to_string(), "a%2Fb%3Fc%3D1%26d".to_string()]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn urldec_decodes_and_passes_invalid_utf8_through() {
+    let ops = pipeline("tail .x\nsource .x { in; urldec }");
+    let lines = vec![
+        "caf%C3%A9%20%2F".to_string(), // multibyte UTF-8 + space + slash
+        "%FF".to_string(),             // 0xFF alone is invalid UTF-8 -> unchanged
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["café /".to_string(), "%FF".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn extract_emits_capture_group_and_drops_nonmatching() {
+    // Pattern has a group -> emit group 1, not the whole match; unmatched line is dropped.
+    let ops = pipeline("tail .x\nsource .x { in; extract /id=(\\d+)/ }");
+    let lines = vec![
+        "id=42 name=a".to_string(),
+        "no match here".to_string(),
+        "id=99".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["42", "99"]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn split_explodes_each_line_by_literal_multichar_delim() {
+    // Multi-char literal delim "::" over two lines exercises both properties:
+    // (1) literal-string split (not per-char / not regex), (2) one->many rebuild across lines.
+    let ops = pipeline("tail .x\nsource .x { in; split :: }");
+    let lines = vec!["a::b::c".to_string(), "d::e".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["a", "b", "c", "d", "e"]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn substr_extracts_char_range_and_clamps_end() {
+    // A>0 exercises skip; B far past len exercises take + clamp; multibyte confirms
+    // char-indexing (not byte-indexing) since 'é' is 2 bytes.
+    let ops = pipeline("tail .x\nsource .x { in; substr 2 100 }");
+    let lines = vec!["héllo".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["llo"]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn chars_explodes_each_line_into_one_char_per_line() {
+    let ops = pipeline("tail .x\nsource .x { in; chars }");
+    let lines = vec!["ab".to_string(), "cé".to_string(), "".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["a", "b", "c", "é"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn title_titlecases_and_normalizes_whitespace() {
+    // mixed case in first + rest, multiple/tab whitespace collapsed to single spaces
+    let ops = pipeline("tail .x\nsource .x { in; title }");
+    let lines = vec!["hELLo   WORLD\tfoo bAR".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["Hello World Foo Bar".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn repeat_concatenates_line_n_times() {
+    let ops = pipeline("tail .x\nsource .x { in; repeat 3 }");
+    let lines = vec!["ab".to_string(), "".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["ababab".to_string(), "".to_string()]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn set_overwrites_existing_and_adds_key_passing_through_non_json() {
+    let ops = pipeline("tail .x\nsource .x { in.json; set name x }");
+    let lines = vec![
+        r#"{"age":30}"#.to_string(),          // key added
+        r#"{"name":"old","age":1}"#.to_string(), // existing overwritten
+        "hello".to_string(),                   // non-object passes through
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![
+            r#"{"age":30,"name":"x"}"#.to_string(),
+            r#"{"age":1,"name":"x"}"#.to_string(),
+            "hello".to_string(),
+        ]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn del_removes_key_and_passes_non_objects() {
+    let ops = pipeline("tail .x\nsource .x { in.json; del age }");
+    let lines = vec![
+        r#"{"name":"a","age":30,"city":"z"}"#.to_string(),
+        "not json".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"city":"z","name":"a"}"#.to_string(),
+                "not json".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn rename_renames_key_preserving_value_and_noops_when_absent() {
+    let ops = pipeline("tail .x\nsource .x { in.json; rename name id }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        r#"{"age":40}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"age":30,"id":"a"}"#.to_string(),
+                r#"{"age":40}"#.to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn default_fills_missing_but_never_overwrites() {
+    let ops = pipeline("tail .x\nsource .x { in.json; default city z }");
+    let lines = vec![
+        r#"{"name":"a"}"#.to_string(),
+        r#"{"name":"b","city":"existing"}"#.to_string(),
+        "not json".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"city":"z","name":"a"}"#.to_string(),
+                r#"{"city":"existing","name":"b"}"#.to_string(),
+                "not json".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn merge_reduces_objects_last_key_wins() {
+    let ops = pipeline("tail .x\nsource .x { in.json; merge }");
+    let lines = vec![
+        r#"{"a":1,"b":2}"#.to_string(),
+        "not json".to_string(),
+        r#"{"b":3,"c":4}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"a":1,"b":3,"c":4}"#.to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn floor_rounds_down_including_negatives() {
+    let ops = pipeline("tail .x\nsource .x { in; floor }");
+    let lines = vec![
+        "3.7".to_string(),
+        "-1.2".to_string(),
+        "5".to_string(),
+        "abc".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            // -1.2 -> -2 catches a trunc-instead-of-floor bug; "abc" passes through.
+            assert_eq!(ls, vec!["3", "-2", "5", "abc"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn ceil_rounds_up_and_leaves_non_numeric_untouched() {
+    let ops = pipeline("tail .x\nsource .x { in; ceil }");
+    let lines = vec![
+        "1.2".to_string(),
+        "3.0".to_string(),
+        "-1.5".to_string(),
+        "abc".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                "2".to_string(),
+                "3".to_string(),
+                "-1".to_string(),
+                "abc".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn clamp_bounds_numeric_lines_and_passes_others() {
+    let ops = pipeline("tail .x\nsource .x { in; clamp 0 10 }");
+    let lines = vec![
+        "-5".to_string(),   // below LO -> 0
+        "3".to_string(),    // in range -> 3
+        "42".to_string(),   // above HI -> 10
+        "abc".to_string(),  // non-numeric -> unchanged
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["0", "3", "10", "abc"]),
+        other => panic!("got {other:?}"),
+    }
+}

@@ -165,9 +165,13 @@ families:
   `nonempty`, `numeric`, `over N`, `under N`, `between A B`, `has KEY`.
 - **Extract / shape** — `field`, `pick K…` (jq projection), `cut`, `find TAG` +
   `attr NAME` + `text` (xpath/css: `//a/@href`), `sel {CSS}`, `keys`, `vals`,
-  `entries`, `flatten`, `each`.
-- **Transform** — `map EXPR`, `upper`/`lower`/`trim`, `replace`, `prepend`/
-  `append`, `pad`/`lpad`, `flip`, `words`, `enumerate`, `join`.
+  `entries`, `flatten`, `each`, `extract /re/`, `split D`, `substr A B`, `chars`.
+- **Record edit** (jq assignment) — `set K V`, `del K`, `rename OLD NEW`,
+  `default K V`, `merge`.
+- **Transform** — `map EXPR`, `upper`/`lower`/`trim`/`title`, `replace`,
+  `prepend`/`append`, `pad`/`lpad`, `repeat N`, `flip`, `words`, `enumerate`,
+  `join`, `floor`/`ceil`, `clamp LO HI`.
+- **Encode** — `b64`/`b64d`, `hex`/`unhex`, `urlenc`/`urldec`.
 - **Order / dedup** — `sort`, `sort_by F`, `uniq`, `unique_by F`, `dedup`, `rev`,
   `first`/`last`/`take`/`drop`/`tailn`/`nth`/`slice`, `sample`.
 - **Aggregate / reduce** — `count`, `rate`, `tally`, `count_by F`, `sum`, `min`/

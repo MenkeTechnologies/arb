@@ -583,6 +583,93 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "flip" => {
                 ops.push(QueryOp::Flip);
             }
+            "b64" => {
+                ops.push(QueryOp::B64);
+            }
+            "b64d" => {
+                ops.push(QueryOp::B64d);
+            }
+            "hex" => ops.push(QueryOp::Hex),
+            "unhex" => {
+                ops.push(QueryOp::Unhex);
+            }
+            "urlenc" => {
+                ops.push(QueryOp::Urlenc);
+            }
+            "urldec" => {
+                ops.push(QueryOp::Urldec);
+            }
+            "extract" => {
+                ops.push(QueryOp::Extract(regex_arg(c)?));
+            }
+            "split" => {
+                let delim = str_arg(c);
+                if delim.is_empty() { return Err("split: expected a non-empty delimiter".into()); }
+                ops.push(QueryOp::Split(delim));
+            }
+            "substr" => {
+                let args: Vec<usize> = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .filter_map(|s| s.parse::<usize>().ok())
+                    .collect();
+                if args.len() != 2 {
+                    return Err("substr: expected two non-negative integer args A B".into());
+                }
+                ops.push(QueryOp::Substr(args[0], args[1]));
+            }
+            "chars" => ops.push(QueryOp::Chars),
+            "title" => {
+                ops.push(QueryOp::Title);
+            }
+            "repeat" => {
+                let n = count_arg(c, "repeat")?;
+                ops.push(QueryOp::Repeat(n));
+            }
+            "set" => {
+                let key = str_arg(c);
+                if key.is_empty() { return Err("set: expected key and value".into()); }
+                let val = c.args.iter().filter_map(Arg::as_str).nth(1).unwrap_or("").to_string();
+                ops.push(QueryOp::Set(key, val));
+            }
+            "del" => {
+                let key = str_arg(c);
+                if key.is_empty() { return Err("del: expected a key name".into()); }
+                ops.push(QueryOp::Del(key));
+            }
+            "rename" => {
+                let args: Vec<String> = c.args.iter().filter_map(Arg::as_str).map(str::to_string).collect();
+                if args.len() != 2 || args[0].is_empty() || args[1].is_empty() {
+                    return Err("rename: expected OLD NEW key names".into());
+                }
+                ops.push(QueryOp::Rename(args[0].clone(), args[1].clone()));
+            }
+            "default" => {
+                let args: Vec<String> = c.args.iter().filter_map(Arg::as_str).map(str::to_string).collect();
+                if args.len() != 2 {
+                    return Err("default: expected exactly two args: key value".into());
+                }
+                ops.push(QueryOp::Default(args[0].clone(), args[1].clone()));
+            }
+            "merge" => {
+                ops.push(QueryOp::Merge);
+            }
+            "floor" => {
+                ops.push(QueryOp::Floor);
+            }
+            "ceil" => {
+                ops.push(QueryOp::Ceil);
+            }
+            "clamp" => {
+                let mut it = c.args.iter().filter_map(Arg::as_str);
+                let lo = it.next().and_then(|s| s.parse::<f64>().ok());
+                let hi = it.next().and_then(|s| s.parse::<f64>().ok());
+                match (lo, hi) {
+                    (Some(lo), Some(hi)) => ops.push(QueryOp::Clamp(lo, hi)),
+                    _ => return Err("clamp: expected LO HI numeric args".into()),
+                }
+            }
             "contains" => ops.push(QueryOp::Contains(str_arg(c))),
             "starts" => ops.push(QueryOp::Starts(str_arg(c))),
             "ends" => ops.push(QueryOp::Ends(str_arg(c))),

@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
+
 use serde_json::Value;
 
 use crate::expr::Expr;
@@ -148,6 +151,47 @@ pub enum QueryOp {
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
+    B64,
+    /// Base64-decode each line (STANDARD alphabet) into a UTF-8 string; lines that fail to
+    /// base64-decode or whose bytes aren't valid UTF-8 pass through unchanged.
+    B64d,
+    /// Lowercase hex-encode each line, two hex digits per UTF-8 byte.
+    Hex,
+    /// Decode a hex string to UTF-8 text by parsing byte pairs; on any error (odd length, non-hex digit, invalid UTF-8) the line is left unchanged.
+    Unhex,
+    /// Percent-encode each line, escaping every non-alphanumeric byte (RFC 3986 style).
+    Urlenc,
+    /// Percent-decode each line to UTF-8 (utf8_percent_decode); lines whose decoded bytes are not valid UTF-8 pass through unchanged.
+    Urldec,
+    /// Emit the first regex match per line (capture group 1 if the pattern captures, else the whole match); drop lines with no match.
+    Extract(Regex),
+    /// Explode each line by the literal string DELIM into multiple lines (one part per line).
+    /// One-to-many: unlike `cut` (one field) or `words` (whitespace), every split segment becomes its own line.
+    Split(String),
+    /// Character substring [A,B) 0-based, clamped to the line length (B may exceed len; A>B yields empty).
+    Substr(usize, usize),
+    /// Explode each line into one output line per Unicode scalar (character); one line -> many.
+    Chars,
+    /// Title-case each line: uppercase the first letter of each whitespace-separated word, lowercase the rest, rejoin with single spaces.
+    Title,
+    /// Replace each line with its content repeated N times, concatenated.
+    Repeat(usize),
+    /// Set key K to the string value V (Value::String(V)) in each JSON object line; non-object / unparseable lines pass through unchanged.
+    Set(String, String),
+    /// Remove key K from each JSON object line (jq `del(.K)`); non-object lines pass through.
+    Del(String),
+    /// Rename JSON object key OLD to NEW in each object, preserving the value; no-op if OLD absent. Non-object lines pass through.
+    Rename(String, String),
+    /// Set string key K to V only when K is absent from the JSON object (jq `//=` for a missing key). Present keys keep their value; non-object / unparseable lines pass through unchanged. Key order is normalized on mutation.
+    Default(String, String),
+    /// Reduce all JSON object lines into a single object (later keys overwrite earlier); non-object lines are ignored. Emits one JSON object line, or none if no objects were seen.
+    Merge,
+    /// Floor each numeric line to the nearest lower integer (fmt_num(x.floor())); non-numeric lines pass through unchanged.
+    Floor,
+    /// Round each numeric line up to the nearest integer (ceil); non-numeric lines pass through unchanged.
+    Ceil,
+    /// Clamp each numeric line into the inclusive range [LO, HI]; non-numeric lines pass through unchanged.
+    Clamp(f64, f64),
     /// Same as `Csv` but tab-separated (TSV).
     Tsv,
     /// Parse the accumulated stream as a YAML document (or `---`-separated
@@ -629,6 +673,190 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     *l = l.chars().rev().collect();
                 }
             }
+            QueryOp::B64 => {
+                for l in cur.iter_mut() {
+                    *l = STANDARD.encode(l.as_bytes());
+                }
+            }
+            QueryOp::B64d => {
+                for l in cur.iter_mut() {
+                    if let Some(s) = STANDARD.decode(l.as_bytes()).ok().and_then(|b| String::from_utf8(b).ok()) {
+                        *l = s;
+                    }
+                }
+            }
+            QueryOp::Hex => {
+                for l in cur.iter_mut() {
+                    *l = l.bytes().map(|b| format!("{:02x}", b)).collect();
+                }
+            }
+            QueryOp::Unhex => {
+                for l in cur.iter_mut() {
+                    let chars: Vec<char> = l.chars().collect();
+                    if chars.is_empty() || chars.len() % 2 != 0 {
+                        continue;
+                    }
+                    let mut bytes = Vec::with_capacity(chars.len() / 2);
+                    let mut ok = true;
+                    let mut i = 0;
+                    while i < chars.len() {
+                        let pair: String = chars[i..i + 2].iter().collect();
+                        match u8::from_str_radix(&pair, 16) {
+                            Ok(b) => bytes.push(b),
+                            Err(_) => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        i += 2;
+                    }
+                    if ok {
+                        if let Ok(decoded) = String::from_utf8(bytes) {
+                            *l = decoded;
+                        }
+                    }
+                }
+            }
+            QueryOp::Urlenc => {
+                for l in cur.iter_mut() {
+                    *l = utf8_percent_encode(l, NON_ALPHANUMERIC).to_string();
+                }
+            }
+            QueryOp::Urldec => {
+                for l in cur.iter_mut() {
+                    if let Ok(decoded) = percent_decode_str(l).decode_utf8() {
+                        *l = decoded.into_owned();
+                    }
+                }
+            }
+            QueryOp::Extract(re) => {
+                cur = cur
+                    .iter()
+                    .filter_map(|l| {
+                        re.captures(l).map(|caps| {
+                            caps.get(1)
+                                .unwrap_or_else(|| caps.get(0).unwrap())
+                                .as_str()
+                                .to_string()
+                        })
+                    })
+                    .collect();
+            }
+            QueryOp::Split(delim) => {
+                let mut out: Vec<String> = Vec::with_capacity(cur.len());
+                for l in cur.iter() {
+                    for part in l.split(delim.as_str()) {
+                        out.push(part.to_string());
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Substr(a, b) => {
+                for l in cur.iter_mut() {
+                    *l = l.chars().skip(*a).take(b.saturating_sub(*a)).collect();
+                }
+            }
+            QueryOp::Chars => {
+                let mut out: Vec<String> = Vec::new();
+                for l in cur.iter() {
+                    for ch in l.chars() {
+                        out.push(ch.to_string());
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Title => {
+                for l in cur.iter_mut() {
+                    *l = l
+                        .split_whitespace()
+                        .map(|w| {
+                            let mut cs = w.chars();
+                            match cs.next() {
+                                Some(f) => f.to_uppercase().collect::<String>() + &cs.as_str().to_lowercase(),
+                                None => String::new(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+            }
+            QueryOp::Repeat(n) => {
+                for l in cur.iter_mut() {
+                    *l = l.repeat(*n);
+                }
+            }
+            QueryOp::Set(key, val) => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(l) {
+                        m.insert(key.clone(), Value::String(val.clone()));
+                        *l = Value::Object(m).to_string();
+                    }
+                }
+            }
+            QueryOp::Del(key) => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(l) {
+                        m.remove(key);
+                        *l = Value::Object(m).to_string();
+                    }
+                }
+            }
+            QueryOp::Rename(old, new) => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(l) {
+                        if let Some(v) = m.remove(old) {
+                            m.insert(new.clone(), v);
+                            *l = Value::Object(m).to_string();
+                        }
+                    }
+                }
+            }
+            QueryOp::Default(key, val) => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(l) {
+                        m.entry(key.clone()).or_insert(Value::String(val.clone()));
+                        *l = Value::Object(m).to_string();
+                    }
+                }
+            }
+            QueryOp::Merge => {
+                let mut acc = serde_json::Map::new();
+                let mut saw_object = false;
+                for l in cur.iter() {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
+                        saw_object = true;
+                        for (k, v) in m {
+                            acc.insert(k, v);
+                        }
+                    }
+                }
+                return if saw_object {
+                    QueryResult::Lines(vec![Value::Object(acc).to_string()])
+                } else {
+                    QueryResult::Lines(vec![])
+                };
+            }
+            QueryOp::Floor => {
+                for l in cur.iter_mut() {
+                    if let Ok(x) = l.parse::<f64>() {
+                        *l = fmt_num(x.floor());
+                    }
+                }
+            }
+            QueryOp::Ceil => {
+                for l in cur.iter_mut() {
+                    if let Ok(x) = l.trim().parse::<f64>() {
+                        *l = fmt_num(x.ceil());
+                    }
+                }
+            }
+            QueryOp::Clamp(lo, hi) => {
+                for l in cur.iter_mut() {
+                    if let Ok(x) = l.trim().parse::<f64>() {
+                        *l = fmt_num(x.clamp(*lo, *hi));
+                    }
+                }
+            }
             QueryOp::Contains(s) => cur.retain(|l| l.contains(s.as_str())),
             QueryOp::Starts(p) => cur.retain(|l| l.starts_with(p.as_str())),
             QueryOp::Ends(s) => cur.retain(|l| l.ends_with(s.as_str())),
@@ -802,6 +1030,24 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Lower
                 | QueryOp::Trim
                 | QueryOp::Replace(_, _)
+                | QueryOp::B64
+                | QueryOp::B64d
+                | QueryOp::Hex
+                | QueryOp::Unhex
+                | QueryOp::Urlenc
+                | QueryOp::Urldec
+                | QueryOp::Extract(_)
+                | QueryOp::Substr(_, _)
+                | QueryOp::Title
+                | QueryOp::Repeat(_)
+                | QueryOp::Set(_, _)
+                | QueryOp::Del(_)
+                | QueryOp::Rename(_, _)
+                | QueryOp::Default(_, _)
+                | QueryOp::Floor
+                | QueryOp::Ceil
+                | QueryOp::Clamp(_, _)
+
                 | QueryOp::Has(_)
                 | QueryOp::Entries
                 | QueryOp::Add

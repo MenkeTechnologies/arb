@@ -97,6 +97,27 @@ attr NAME         attribute (xpath @, css)
 sel { CSS }       CSS selector (html)
 where(PRED)       filter (jq select)
 pick a b c        project object to keys (jq {a,b,c}); keeps listed order
+b64             base64-encode each line
+b64d            base64-decode each line (invalid passes through)
+hex             lowercase hex-encode each line (byte-wise)
+unhex           hex-decode each line to UTF-8 (invalid passes through)
+urlenc          percent-encode each line
+urldec          percent-decode each line
+extract /re/    first regex match per line (capture group 1 if any); no-match dropped
+split DELIM     explode each line by DELIM into one line per part
+substr A B      character substring [A,B) 0-based, clamped
+chars           explode each line into one char per line
+title           title-case each line
+repeat N        repeat each line's content N times
+set K V         set json object key K to string V
+del K           remove json object key K (jq del)
+rename OLD NEW  rename json object key OLD to NEW
+default K V     set json object key K to V only if absent
+merge           merge all json objects into one (later keys win)
+floor           floor each numeric line
+ceil            ceil each numeric line
+clamp LO HI     clamp each numeric line into [LO,HI]
+
 sort_by F   stable-sort json records by field F (numeric when all values parse, else lexical; non-objects last)
 unique_by F   keep first JSON record per distinct value of field F (dedup by F)
 count_by F    count json records grouped by field F (value -> count, count desc)
