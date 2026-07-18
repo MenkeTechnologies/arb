@@ -97,6 +97,10 @@ pub struct Controls {
     /// Key bindings (`bind C-<letter> …`): a matching control key runs its action
     /// (set an input → drives the megafilter/map; quit).
     pub binds: Vec<Bind>,
+    /// fzf compat: exact substring match instead of fuzzy (`--exact`/`-e`).
+    pub exact: bool,
+    /// fzf compat: keep input order, don't sort by score (`--no-sort`).
+    pub no_sort: bool,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -148,6 +152,30 @@ pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
         li = idx + 1;
     }
     Some(score)
+}
+
+/// fzf `--exact`/`-e` scoring: case-insensitive substring match (smart-case),
+/// `None` if `line` doesn't contain `pat`; earlier matches score higher. Used in
+/// place of [`fuzzy_score`] when exact mode is on.
+pub fn exact_score(line: &str, pat: &str) -> Option<i32> {
+    if pat.is_empty() {
+        return Some(0);
+    }
+    let cased = pat.chars().any(|c| c.is_uppercase());
+    if cased {
+        line.find(pat).map(|i| -(i as i32))
+    } else {
+        line.to_lowercase().find(&pat.to_lowercase()).map(|i| -(i as i32))
+    }
+}
+
+/// Score a line against the query with the active mode (exact substring or fuzzy).
+fn score_line(line: &str, pat: &str, exact: bool) -> Option<i32> {
+    if exact {
+        exact_score(line, pat)
+    } else {
+        fuzzy_score(line, pat)
+    }
 }
 
 /// Parse a line's ANSI SGR colour codes into a styled ratatui line, so command
@@ -375,14 +403,14 @@ pub fn run(
     // dashboard ring drops old lines — we scan the newest arrivals each frame.
     let mut expect_total: u64 = 0;
     // fzf prompt/header (set once by `main` before this call).
-    let (fzf_prompt, fzf_header) = {
+    let (fzf_prompt, fzf_header, fzf_exact, fzf_no_sort) = {
         let c = controls.lock().unwrap();
         let p = if c.prompt.is_empty() {
             "> ".to_string()
         } else {
             c.prompt.clone()
         };
-        (p, c.header.clone())
+        (p, c.header.clone(), c.exact, c.no_sort)
     };
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
@@ -478,7 +506,9 @@ pub fn run(
                         let old = std::mem::take(&mut fzf_hits);
                         fzf_hits = old
                             .into_iter()
-                            .filter_map(|(_, d, k, o)| fuzzy_score(&k, &filter).map(|s| (s, d, k, o)))
+                            .filter_map(|(_, d, k, o)| {
+                                score_line(&k, &filter, fzf_exact).map(|s| (s, d, k, o))
+                            })
                             .collect();
                         // keep fzf_processed — new candidates scored below
                     } else {
@@ -487,7 +517,8 @@ pub fn run(
                         fzf_hits = fzf_cands
                             .par_iter()
                             .filter_map(|(d, k, o)| {
-                                fuzzy_score(k, &filter).map(|s| (s, d.clone(), k.clone(), o.clone()))
+                                score_line(k, &filter, fzf_exact)
+                                    .map(|s| (s, d.clone(), k.clone(), o.clone()))
                             })
                             .collect();
                         fzf_processed = n;
@@ -499,7 +530,7 @@ pub fn run(
                 for (d, k, o) in fzf_cands.iter().take(n).skip(fzf_processed) {
                     if empty {
                         fzf_matched.push((d.clone(), o.clone()));
-                    } else if let Some(sc) = fuzzy_score(k, &filter) {
+                    } else if let Some(sc) = score_line(k, &filter, fzf_exact) {
                         fzf_hits.push((sc, d.clone(), k.clone(), o.clone()));
                     }
                 }
@@ -511,7 +542,10 @@ pub fn run(
                 let now = Instant::now();
                 if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
-                    h.par_sort_by(|a, b| b.0.cmp(&a.0));
+                    // `--no-sort` keeps the input (scan) order; else rank best-first.
+                    if !fzf_no_sort {
+                        h.par_sort_by(|a, b| b.0.cmp(&a.0));
+                    }
                     fzf_matched = h.into_iter().map(|(_, d, _k, o)| (d, o)).collect();
                     fzf_last_sort = now;
                 }
@@ -1223,6 +1257,20 @@ mod tests {
         // .a: bottom-left, .b: bottom-right.
         assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0, 50, 50));
         assert_eq!((rects[2].x, rects[2].y, rects[2].width), (50, 50, 50));
+    }
+
+    #[test]
+    fn exact_score_is_substring_smartcase() {
+        use super::exact_score;
+        // Substring present → Some; earlier position scores higher (less negative).
+        assert!(exact_score("hello world", "world").is_some());
+        assert!(exact_score("abc", "xyz").is_none());
+        assert!(exact_score("axbxc", "abc").is_none()); // not contiguous → no exact match
+        // Smart case: lowercase query is case-insensitive; uppercase is exact.
+        assert!(exact_score("Hello", "hello").is_some());
+        assert!(exact_score("hello", "Hello").is_none());
+        // Earlier match ranks above a later one.
+        assert!(exact_score("xa", "a") < exact_score("a", "a"));
     }
 
     #[test]

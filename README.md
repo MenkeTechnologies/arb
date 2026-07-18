@@ -217,6 +217,15 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
 - Matched chars highlight yellow; keeps the entire stream (no line drop), so
   marks persist and a huge `find /` stays fully selectable.
 
+**Drop-in for `fzf`.** `arb --fzf` tolerates the `fzf` binary's flags, so you can
+repoint a wrapper at it (e.g. `ZPWR_FZF='arb --fzf'`) without rewriting call
+sites. Honored: `-e`/`--exact` (substring, not fuzzy), `--no-sort` (keep input
+order), `--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height`,
+`--preview 'CMD {}'`. fzf-only flags with no arb analog (`--ansi`, `--border`,
+`--reverse`, `--preview-window`, `--min-height`, `--tiebreak`, `--layout`,
+`--bind`, `--nth`, `+m`/`+s`, …) are accepted and quietly ignored so the command
+still runs.
+
 **`--fzf` is a DSL spec, not a hardcoded mode.** It synthesizes a one-widget
 `select` spec — so the select surface is expressible directly, and `-prompt`/
 `-header` become widget opts:

@@ -165,6 +165,24 @@ struct Cli {
     #[arg(long = "header", value_name = "STR",
         help = "\x1b[32m//\x1b[0m fzf header line shown above the list")]
     header: Option<String>,
+
+    // ── fzf-compatibility flags (honored) ───────────────────────────────────
+    // So `arb --fzf` can drop in for the `fzf` binary (e.g. `ZPWR_FZF='arb --fzf'`).
+    // Cosmetic fzf flags (--ansi/--border/--reverse/--preview-window/…) are stripped
+    // from the args by `fzf_compat_args` before parsing; these are the ones arb acts on.
+    /// fzf compat: exact substring match instead of fuzzy. (`-e` under `--fzf`
+    /// is rewritten to this; arb's own `-e` is `--eval`.)
+    #[arg(long = "exact", help = "\x1b[32m//\x1b[0m fzf: exact substring match (not fuzzy)")]
+    exact: bool,
+    /// fzf compat: don't sort by score — keep input order.
+    #[arg(long = "no-sort", help = "\x1b[32m//\x1b[0m fzf: keep input order (no score sort)")]
+    no_sort: bool,
+    /// fzf compat: start with this query in the filter.
+    #[arg(long = "query", value_name = "STR", help = "\x1b[32m//\x1b[0m fzf: initial query")]
+    query: Option<String>,
+    /// fzf compat: enable multi-select (arb always allows Tab-marking).
+    #[arg(short = 'm', long = "multi", help = "\x1b[32m//\x1b[0m fzf: multi-select (Tab marks)")]
+    multi: bool,
     /// fzf height: render inline in N rows (or `N%` of the terminal) at the
     /// bottom instead of full-screen, keeping the scrollback. E.g. `--height 40%`.
     #[arg(long = "height", value_name = "N|N%",
@@ -179,8 +197,63 @@ struct Cli {
     down: Vec<String>,
 }
 
+/// Rewrite argv so `arb --fzf` tolerates the `fzf` binary's flags (for drop-in
+/// use like `ZPWR_FZF='arb --fzf'`): translate fzf's `+`-negations (`+m`→`+m`
+/// disables multi, `+s`→keep order) and DROP cosmetic fzf flags arb has no
+/// analog for, consuming a value for the value-taking ones. Flags arb honors
+/// (`-e`, `--no-sort`, `--query`, `-m`, `--nth`, `--preview`, `--prompt`,
+/// `--header`, `--height`) pass through to clap untouched.
+fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    // Cosmetic fzf flags with no arb effect: bool (dropped) and value-taking
+    // (drop the flag AND its value, whether `--flag val` or `--flag=val`).
+    const DROP_BOOL: &[&str] = &[
+        "--ansi", "--border", "--reverse", "--print-query", "--cycle", "--select-1", "-1",
+        "--exit-0", "-0", "--sort", "--extended", "--no-mouse", "--filepath-word", "--keep-right",
+    ];
+    const DROP_VALUE: &[&str] = &[
+        "--min-height", "--tiebreak", "--layout", "--info", "--preview-window", "--header-lines",
+        "--with-nth", "--nth", "--bind", "--color", "--pointer", "--marker", "--border-label",
+        "--tabstop",
+    ];
+    let argv: Vec<String> = args.collect();
+    // Only rewrite fzf short-flags when in fzf mode (else `-e` stays `--eval`).
+    let fzf = argv.iter().any(|a| a == "--fzf");
+    let mut out = Vec::new();
+    let mut it = argv.into_iter().peekable();
+    while let Some(a) = it.next() {
+        if fzf && a == "-e" {
+            out.push("--exact".to_string());
+            continue;
+        }
+        // fzf `+m` disables multi, `+s` disables sort (keep input order).
+        match a.as_str() {
+            "+m" => {
+                continue; // arb is single-select unless -m is given, so +m is a no-op
+            }
+            "+s" => {
+                out.push("--no-sort".to_string());
+                continue;
+            }
+            _ => {}
+        }
+        let key = a.split('=').next().unwrap_or(&a);
+        if DROP_BOOL.contains(&key) {
+            continue;
+        }
+        if DROP_VALUE.contains(&key) {
+            // `--flag=val` carries its value; `--flag val` consumes the next arg.
+            if !a.contains('=') {
+                it.next();
+            }
+            continue;
+        }
+        out.push(a);
+    }
+    out
+}
+
 fn main() -> io::Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(fzf_compat_args(std::env::args()));
 
     if cli.repl {
         arb::repl::run();
@@ -413,6 +486,14 @@ fn main() -> io::Result<()> {
                 .collect();
             // Key bindings (`bind C-<letter> …`) drive the same input values.
             c.binds = spec.binds.clone();
+            // fzf-compat: exact/no-sort match modes; `--query` seeds the filter.
+            c.exact = cli.exact;
+            c.no_sort = cli.no_sort;
+            if let Some(q) = &cli.query {
+                c.filter = q.clone();
+            }
+            // `-m`/`--multi` is accepted for compat; arb always allows Tab-marking.
+            let _ = cli.multi;
         }
         let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, fzf_mode, cli.height.clone());
         if fzf_mode {
@@ -934,4 +1015,49 @@ fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
     }
     writeln!(out, "stream: {} lines", st.total)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fzf_compat_args;
+
+    fn run(args: &[&str]) -> Vec<String> {
+        fzf_compat_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn strips_cosmetic_fzf_flags_keeps_honored() {
+        let out = run(&[
+            "arb", "--fzf", "--ansi", "--border", "--reverse", "--preview-window", "down:3",
+            "--min-height", "15", "--no-sort", "--query", "foo",
+        ]);
+        // Cosmetic bool + value flags gone; honored ones remain.
+        assert!(!out.iter().any(|a| a == "--ansi" || a == "--border" || a == "--reverse"));
+        assert!(!out.iter().any(|a| a == "--preview-window" || a == "down:3"));
+        assert!(!out.iter().any(|a| a == "--min-height" || a == "15"));
+        assert!(out.iter().any(|a| a == "--no-sort"));
+        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"foo".to_string()));
+        assert!(out.iter().any(|a| a == "--fzf"));
+    }
+
+    #[test]
+    fn translates_fzf_plus_and_exact_shorthands() {
+        // `+m` drops (arb is single-select by default); `+s` -> --no-sort.
+        let out = run(&["arb", "--fzf", "+m", "+s", "-e"]);
+        assert!(!out.iter().any(|a| a == "+m" || a == "+s"));
+        assert!(out.iter().any(|a| a == "--no-sort"));
+        assert!(out.iter().any(|a| a == "--exact"));
+        // Outside fzf mode, `-e` is left alone (it's arb's --eval).
+        let out2 = run(&["arb", "-e", "gauge .g"]);
+        assert!(out2.iter().any(|a| a == "-e"));
+        assert!(!out2.iter().any(|a| a == "--exact"));
+    }
+
+    #[test]
+    fn preview_window_equals_form_drops_cleanly() {
+        // `--flag=val` carries its value, so nothing after it should be consumed.
+        let out = run(&["arb", "--fzf", "--preview-window=right:50%", "--query", "q"]);
+        assert!(!out.iter().any(|a| a.starts_with("--preview-window")));
+        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"q".to_string()));
+    }
 }
