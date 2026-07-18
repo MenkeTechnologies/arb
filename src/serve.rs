@@ -12,6 +12,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
@@ -48,12 +51,38 @@ fn handle(
     state: &Arc<Mutex<StreamState>>,
     page: &str,
 ) -> std::io::Result<()> {
-    let path = {
+    // Read the request line + headers (needed for the WebSocket upgrade key).
+    let (path, headers) = {
         let mut reader = BufReader::new(&conn);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        line.split_whitespace().nth(1).unwrap_or("/").to_string()
+        let mut req = String::new();
+        reader.read_line(&mut req)?;
+        let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let t = line.trim_end().to_string();
+            if t.is_empty() {
+                break;
+            }
+            headers.push(t);
+        }
+        (path, headers)
     };
+    let header = |name: &str| -> Option<String> {
+        headers.iter().find_map(|h| {
+            let (k, v) = h.split_once(':')?;
+            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+        })
+    };
+    // `GET /ws` with a WebSocket key: upgrade and push updates (no more polling).
+    if path == "/ws" {
+        if let Some(key) = header("Sec-WebSocket-Key") {
+            return ws_serve(conn, spec, state, &key);
+        }
+    }
     let (ctype, body) = match path.as_str() {
         "/data" => ("application/json", data_json(spec, state)),
         "/" => ("text/html; charset=utf-8", page.to_string()),
@@ -71,6 +100,107 @@ fn handle(
         body.len()
     );
     conn.write_all(resp.as_bytes())
+}
+
+/// Complete the WebSocket handshake, then push the widget data as a text frame
+/// every 250 ms until the client disconnects (a failed write ends the loop).
+fn ws_serve(
+    mut conn: TcpStream,
+    spec: &Spec,
+    state: &Arc<Mutex<StreamState>>,
+    key: &str,
+) -> std::io::Result<()> {
+    let resp = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+        ws_accept(key)
+    );
+    conn.write_all(resp.as_bytes())?;
+    loop {
+        let frame = ws_text_frame(&data_json(spec, state));
+        if conn.write_all(&frame).is_err() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
+/// RFC 6455 handshake response token: `base64(SHA1(key + magic GUID))`.
+fn ws_accept(key: &str) -> String {
+    const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let mut buf = key.as_bytes().to_vec();
+    buf.extend_from_slice(WS_GUID.as_bytes());
+    STANDARD.encode(sha1(&buf))
+}
+
+/// Encode a server→client text frame (FIN + opcode 0x1, unmasked per the RFC).
+fn ws_text_frame(payload: &str) -> Vec<u8> {
+    let data = payload.as_bytes();
+    let mut frame = vec![0x81u8]; // FIN=1, opcode=text
+    let len = data.len();
+    if len < 126 {
+        frame.push(len as u8);
+    } else if len <= u16::MAX as usize {
+        frame.push(126);
+        frame.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        frame.push(127);
+        frame.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(data);
+    frame
+}
+
+/// SHA-1 (FIPS 180-1), hand-rolled so the WebSocket handshake needs no crypto
+/// dependency. Used only for the RFC 6455 accept token, never for security.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let ml = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&ml.to_be_bytes());
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in w.iter_mut().take(16).enumerate() {
+            *word = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, v) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
 }
 
 /// Evaluate every widget against the current stream and return their data as a
@@ -214,21 +344,34 @@ function render(el, it) {\n\
     pre.textContent = it.text || ''; el.appendChild(pre);\n\
   }\n\
 }\n\
+function paint(items) {\n\
+  items.forEach((it, i) => {\n\
+    const el = document.getElementById('wb' + i);\n\
+    if (el) render(el, it);\n\
+  });\n\
+  stat.textContent = 'live \\u00b7 ' + new Date().toLocaleTimeString();\n\
+}\n\
+let polling = false;\n\
 async function tick() {\n\
   try {\n\
     const r = await fetch('/data', {cache: 'no-store'});\n\
-    const items = await r.json();\n\
-    items.forEach((it, i) => {\n\
-      const el = document.getElementById('wb' + i);\n\
-      if (el) render(el, it);\n\
-    });\n\
-    stat.textContent = 'live \\u00b7 ' + new Date().toLocaleTimeString();\n\
-  } catch (e) {\n\
-    stat.textContent = 'disconnected';\n\
-  }\n\
+    paint(await r.json());\n\
+  } catch (e) { stat.textContent = 'disconnected'; }\n\
 }\n\
-tick();\n\
-setInterval(tick, 500);\n";
+function startPolling() {\n\
+  if (polling) return; polling = true;\n\
+  tick(); setInterval(tick, 500);\n\
+}\n\
+function connect() {\n\
+  try {\n\
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';\n\
+    const ws = new WebSocket(proto + location.host + '/ws');\n\
+    ws.onmessage = (ev) => paint(JSON.parse(ev.data));\n\
+    ws.onerror = () => ws.close();\n\
+    ws.onclose = () => startPolling();\n\
+  } catch (e) { startPolling(); }\n\
+}\n\
+connect();\n";
 
 #[cfg(test)]
 mod tests {
@@ -291,6 +434,47 @@ mod tests {
         // Widget paths are escaped into the panel headers.
         assert!(page.contains(".g"));
         assert!(page.contains(".l"));
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn sha1_matches_known_vectors() {
+        // FIPS 180-1 / RFC 3174 test vectors.
+        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            hex(&sha1(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        );
+    }
+
+    #[test]
+    fn ws_accept_matches_rfc6455_example() {
+        // RFC 6455 §1.3: key → accept token.
+        assert_eq!(ws_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    #[test]
+    fn ws_text_frame_encodes_length() {
+        // Short payload: FIN|text, 7-bit length, then bytes.
+        assert_eq!(ws_text_frame("hi"), vec![0x81, 0x02, b'h', b'i']);
+        // 200-byte payload uses the 16-bit extended length (0x7e marker).
+        let big = "x".repeat(200);
+        let f = ws_text_frame(&big);
+        assert_eq!(&f[..4], &[0x81, 126, 0x00, 0xC8]);
+        assert_eq!(f.len(), 4 + 200);
+    }
+
+    #[test]
+    fn served_page_prefers_websocket_with_polling_fallback() {
+        let spec = build(&parse("gauge .g -max 100").unwrap()).unwrap();
+        let page = render_page(&spec);
+        assert!(page.contains("new WebSocket"));
+        assert!(page.contains("startPolling"));
+        assert!(page.contains("/ws"));
     }
 
     #[test]
