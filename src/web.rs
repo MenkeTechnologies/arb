@@ -49,6 +49,12 @@ fn render_panel(out: &mut String, w: &Widget) {
         "<div class=\"pbody\">{}</div>\n",
         escape(&body_text(w)),
     );
+    let badge = if w.source.is_some() {
+        "<footer class=\"psrc live\">\u{25cf} bound to source</footer>\n"
+    } else {
+        "<footer class=\"psrc\">\u{25cb} no source</footer>\n"
+    };
+    out.push_str(badge);
     out.push_str("</section>\n");
 }
 
@@ -122,6 +128,8 @@ h1 { margin: 0 0 1.25rem; color: var(--cyan); font-size: 1.4rem; font-weight: 60
 .ppath { color: var(--cyan); font-weight: 600; overflow-wrap: anywhere; }\n\
 .pkind { color: var(--dim); font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.06em; }\n\
 .pbody { padding: 0.9rem 0.75rem; color: var(--fg); min-height: 3.2rem; }\n\
+.psrc { padding: 0.4rem 0.75rem; border-top: 1px solid var(--edge); font-size: 0.78em; color: var(--dim); }\n\
+.psrc.live { color: var(--cyan); }\n\
 </style>\n";
 
 #[cfg(test)]
@@ -173,6 +181,20 @@ mod tests {
         assert!(html.contains(".b"));
         assert!(html.contains("table"));
         assert!(html.contains("spark"));
+    }
+
+    #[test]
+    fn shows_source_binding_badge() {
+        use crate::spec::Source;
+        let mut bound = widget(".s", WidgetKind::Tail, &[]);
+        bound.source = Some(Source { pipeline: vec![] });
+        let spec = Spec {
+            widgets: vec![bound, widget(".u", WidgetKind::Text, &[])],
+            ..Default::default()
+        };
+        let html = render_html(&spec);
+        assert!(html.contains("bound to source"));
+        assert!(html.contains("no source"));
     }
 
     #[test]
