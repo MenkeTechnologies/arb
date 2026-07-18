@@ -62,6 +62,9 @@ pub struct Controls {
     /// Final selection (fzf mode), filled by the run loop on submit and printed
     /// to stdout by `main`: the marks if any, else the cursor line.
     pub result: Vec<String>,
+    /// The line currently under the cursor (fzf mode), published by the run loop
+    /// so a `--preview` thread can run its command on it as you move.
+    pub current: String,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -297,6 +300,8 @@ pub fn run(
             let sel = cursor.min(matched.len().saturating_sub(1));
 
             let mut c = controls.lock().unwrap();
+            // Publish the cursor line so a `--preview` thread can act on it.
+            c.current = matched.get(sel).cloned().unwrap_or_default();
             if c.toggle {
                 // Tab: toggle the cursor line in the mark set, then advance.
                 c.toggle = false;
@@ -321,7 +326,14 @@ pub fn run(
             }
             let marks = c.marks.clone();
             drop(c);
-            let draw = terminal.draw(|f| render_fzf(f, matched, &filter, sel, &marks, total, err_ref));
+            // Snapshot the `--preview` pane (command output for the cursor line).
+            let prev_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
+                let d = ds.lock().unwrap();
+                (d.lines.iter().cloned().collect(), label.clone())
+            });
+            let prev_ref = prev_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
+            let draw = terminal
+                .draw(|f| render_fzf(f, matched, &filter, sel, &marks, total, err_ref, prev_ref));
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -502,6 +514,7 @@ fn render_err_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
     f.render_widget(List::new(items).block(block), area);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_fzf(
     f: &mut Frame,
     matched: &[String],
@@ -510,6 +523,7 @@ fn render_fzf(
     marks: &[String],
     total: u64,
     err: Option<(&[String], &str)>,
+    preview: Option<(&[String], &str)>,
 ) {
     // Reserve a bottom strip for the stderr pane when present.
     let (top, err_area) = match err {
@@ -523,7 +537,20 @@ fn render_fzf(
     if let (Some(ea), Some((lines, label))) = (err_area, err) {
         render_err_pane(f, ea, label, lines);
     }
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(top);
+    // With `--preview`, split the top: the select list on the left, the preview
+    // pane (command output for the cursor line) on the right.
+    let (main_top, prev_area) = match preview {
+        Some(_) => {
+            let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(top);
+            (cols[0], Some(cols[1]))
+        }
+        None => (top, None),
+    };
+    if let (Some(pa), Some((lines, label))) = (prev_area, preview) {
+        render_output_pane(f, pa, label, lines);
+    }
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(main_top);
     let marked = if marks.is_empty() {
         String::new()
     } else {

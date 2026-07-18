@@ -126,6 +126,12 @@ struct Cli {
     #[arg(long = "run", value_name = "PIPELINE",
         help = "\x1b[32m//\x1b[0m Run 'PROD | _ | CONS': arb spawns them, stderr -> pane")]
     run: Option<String>,
+    /// fzf preview: run this command for the line under the cursor (`{}` is the
+    /// current line, shell-escaped) and show its output in a right pane, updated
+    /// as you move. E.g. `arb --fzf --preview 'bat --color=always {}'`.
+    #[arg(long = "preview", value_name = "CMD",
+        help = "\x1b[32m//\x1b[0m fzf preview: run CMD on the cursor line ({}), output in a pane")]
+    preview: Option<String>,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
@@ -258,13 +264,20 @@ fn main() -> io::Result<()> {
             None
         };
 
-        // Preview pane: `arb -- CMD` (re-run over filtered output) OR the `| CONS`
-        // consumer from `--run` (shelled out). Disabled in fzf mode.
+        // Preview pane. In fzf mode: a per-item `--preview` (run CMD on the cursor
+        // line). Otherwise: `arb -- CMD` / the `| CONS` consumer, re-run over the
+        // whole filtered output.
         let down_cmd: Vec<String> = match &consumer {
             Some(c) => vec!["sh".to_string(), "-c".to_string(), c.clone()],
             None => cli.down.clone(),
         };
-        let down_pane = if cli.fzf || down_cmd.is_empty() {
+        let down_pane = if cli.fzf {
+            cli.preview.as_ref().map(|pv| {
+                let pstate = Arc::new(Mutex::new(StreamState::new()));
+                spawn_item_preview(pv.clone(), controls.clone(), pstate.clone());
+                (pstate, "preview".to_string())
+            })
+        } else if down_cmd.is_empty() {
             None
         } else {
             let dstate = Arc::new(Mutex::new(StreamState::new()));
@@ -590,6 +603,49 @@ fn spawn_preview(
             *d = StreamState::new();
             for l in output {
                 d.push(l);
+            }
+        }
+    });
+}
+
+/// Single-quote a string for safe `sh -c` substitution of `{}` (a line may hold
+/// spaces or shell metacharacters — e.g. a path). `'` -> `'\''`.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// fzf `--preview`: run `template` (with `{}` replaced by the line under the
+/// cursor) whenever the cursor moves, capturing its output into `pstate` for the
+/// preview pane. Debounced; skips re-running on an unchanged line.
+fn spawn_item_preview(
+    template: String,
+    controls: Arc<Mutex<tui::Controls>>,
+    pstate: Arc<Mutex<StreamState>>,
+) {
+    thread::spawn(move || {
+        let mut last = String::from("\u{0}");
+        loop {
+            thread::sleep(Duration::from_millis(120));
+            let (cur, quit) = {
+                let c = controls.lock().unwrap();
+                (c.current.clone(), c.quit)
+            };
+            if quit {
+                break;
+            }
+            if cur == last {
+                continue;
+            }
+            last = cur.clone();
+            if cur.is_empty() {
+                continue;
+            }
+            let cmd = template.replace("{}", &shell_escape(&cur));
+            let output = run_capture(&["sh".to_string(), "-c".to_string(), cmd], &[]);
+            let mut p = pstate.lock().unwrap();
+            *p = StreamState::new();
+            for l in output {
+                p.push(l);
             }
         }
     });
