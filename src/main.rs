@@ -50,6 +50,10 @@ struct Cli {
     /// Validate the spec (parse + build) and exit 0/1 without reading stdin.
     #[arg(long = "check")]
     check: bool,
+    /// With an `out { … }` pipeline, emit results as JSON (array / number /
+    /// object) instead of plain lines — pipe to `jq` or programs.
+    #[arg(long = "json")]
+    json: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -125,7 +129,7 @@ fn main() -> io::Result<()> {
         if needs_stdin {
             read_stdin_sync(&state);
         }
-        emit_out(out_ops, &state)
+        emit_out(out_ops, &state, cli.json)
     } else {
         if needs_stdin {
             read_stdin_sync(&state);
@@ -135,12 +139,32 @@ fn main() -> io::Result<()> {
 }
 
 /// Write the `out { … }` pipeline's result to stdout (arb as a pipe filter).
-fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
+fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
     let st = state.lock().unwrap();
     let raw: Vec<String> = st.lines.iter().cloned().collect();
     let elapsed = st.start.elapsed().as_secs_f64();
+    let result = query::eval(ops, &raw, elapsed);
     let mut out = io::stdout().lock();
-    match query::eval(ops, &raw, elapsed) {
+    if json {
+        let v = match result {
+            QueryResult::Lines(ls) => {
+                serde_json::Value::Array(ls.into_iter().map(serde_json::Value::String).collect())
+            }
+            QueryResult::Scalar(s) => serde_json::Number::from_f64(s)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            QueryResult::Pairs(ps) => {
+                let mut m = serde_json::Map::new();
+                for (k, c) in ps {
+                    m.insert(k, serde_json::Value::Number(c.into()));
+                }
+                serde_json::Value::Object(m)
+            }
+        };
+        writeln!(out, "{}", serde_json::to_string(&v).unwrap_or_default())?;
+        return Ok(());
+    }
+    match result {
         QueryResult::Lines(ls) => {
             for l in ls {
                 writeln!(out, "{l}")?;
