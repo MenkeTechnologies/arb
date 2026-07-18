@@ -310,10 +310,13 @@ tail -f metrics.log | arb --serve --port 8787 -e 'gauge .rps -max 1000
 #  → arb: serving dashboard at http://127.0.0.1:8787/
 ```
 
-Every widget's `source` is evaluated server-side each poll; the page updates in
-place (`/data` returns JSON, the client swaps text via `textContent`, never
-`innerHTML`). `--port 0` picks a free port and prints it. This is the polling v1;
-a WebSocket push path and richer per-widget rendering come next.
+Every widget's `source` is evaluated server-side each poll and rendered as a real
+widget: `gauge` → a labeled bar, `bars`/`histo`/`spark` → bar rows, everything
+else → text. `/data` returns structured JSON (`{scalar,max}`, `{pairs,top}`, or
+`{text}`); the client builds DOM nodes with numeric bar widths and `textContent`
+labels — never `innerHTML` with stream data, so nothing can inject markup.
+`--port 0` picks a free port and prints it. Transport is polling (500 ms); a
+WebSocket push path comes next.
 
 ---
 

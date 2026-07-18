@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::query::{eval, QueryResult};
-use crate::spec::{Spec, Widget};
+use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
 use crate::web::{escape, STYLE};
 
@@ -73,34 +73,64 @@ fn handle(
     conn.write_all(resp.as_bytes())
 }
 
-/// Evaluate every widget against the current stream and return the bodies as a
-/// JSON array `[{path, kind, text}, …]` in spec order (the page maps by index).
+/// Evaluate every widget against the current stream and return their data as a
+/// JSON array in spec order (the page maps by index). Each item is shaped by kind
+/// so the client can render a real widget: `gauge` → `{scalar,max}`, `bars`/
+/// `histo`/`spark` → `{pairs,top}`, everything else → `{text}`.
 fn data_json(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> String {
     let (raw, elapsed): (Vec<String>, f64) = {
         let st = state.lock().unwrap();
         (st.lines.iter().cloned().collect(), st.start.elapsed().as_secs_f64())
     };
-    let items: Vec<serde_json::Value> = spec
-        .widgets
-        .iter()
-        .map(|w| {
-            serde_json::json!({
-                "path": w.path,
-                "kind": w.kind.label(),
-                "text": widget_text(w, &raw, elapsed),
-            })
-        })
-        .collect();
+    let items: Vec<serde_json::Value> =
+        spec.widgets.iter().map(|w| widget_json(w, &raw, elapsed)).collect();
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Render one widget's evaluated body as plain text (client displays verbatim).
-fn widget_text(w: &Widget, raw: &[String], elapsed: f64) -> String {
-    let Some(src) = &w.source else {
+/// One widget's data as JSON, shaped by kind so the client renders a bar/gauge/
+/// text rather than a flat string.
+fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
+    use serde_json::json;
+    let base = |extra: serde_json::Value| {
+        let mut m = json!({ "path": w.path, "kind": w.kind.label() });
+        if let (Some(obj), Some(ex)) = (m.as_object_mut(), extra.as_object()) {
+            for (k, v) in ex {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        m
+    };
+    let opt_f64 = |k: &str, d: f64| w.opts.get(k).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
+    let result = w.source.as_ref().map(|s| eval(&s.pipeline, raw, elapsed));
+    match w.kind {
+        WidgetKind::Gauge => {
+            let scalar = match &result {
+                Some(QueryResult::Scalar(v)) => *v,
+                _ => 0.0,
+            };
+            base(json!({ "scalar": scalar, "max": opt_f64("max", 100.0) }))
+        }
+        WidgetKind::Bars | WidgetKind::Histo | WidgetKind::Spark => {
+            let pairs: Vec<(String, u64)> = match &result {
+                Some(QueryResult::Pairs(p)) => p.clone(),
+                _ => Vec::new(),
+            };
+            let top = w.opts.get("top").and_then(|s| s.parse::<usize>().ok()).unwrap_or(20);
+            base(json!({ "pairs": pairs, "top": top }))
+        }
+        _ => base(json!({ "text": widget_text(w, raw, elapsed, result) })),
+    }
+}
+
+/// Render a text-kind widget's evaluated body as plain text (client displays it
+/// verbatim). `result` is the pre-evaluated pipeline output, if the widget is bound.
+fn widget_text(w: &Widget, raw: &[String], _elapsed: f64, result: Option<QueryResult>) -> String {
+    let Some(result) = result else {
         // No source: show the latest stream line as a lightweight tail.
+        let _ = w;
         return raw.last().cloned().unwrap_or_default();
     };
-    match eval(&src.pipeline, raw, elapsed) {
+    match result {
         QueryResult::Lines(ls) => {
             // Cap to the last 200 lines so a huge stream doesn't bloat each poll.
             let n = ls.len();
@@ -123,7 +153,7 @@ fn render_page(spec: &Spec) -> String {
         panels.push_str(&format!(
             "<section class=\"panel\">\n\
              <header class=\"phead\"><span class=\"ppath\">{}</span><span class=\"pkind\">{}</span></header>\n\
-             <pre class=\"pbody\" id=\"wb{i}\"></pre>\n\
+             <div class=\"pbody\" id=\"wb{i}\"></div>\n\
              </section>\n",
             escape(&w.path),
             escape(w.kind.label()),
@@ -136,8 +166,7 @@ fn render_page(spec: &Spec) -> String {
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>arb dashboard</title>\n{STYLE}\
-         <style>.pbody{{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit;max-height:16rem;overflow:auto}}</style>\n\
+         <title>arb dashboard</title>\n{STYLE}{WIDGET_CSS}\
          </head>\n<body>\n\
          <h1>arb dashboard <span id=\"stat\" class=\"pkind\"></span></h1>\n\
          <main class=\"grid\">\n{panels}</main>\n\
@@ -146,17 +175,52 @@ fn render_page(spec: &Spec) -> String {
     )
 }
 
-/// Client poller: fetch `/data` on an interval and swap each panel's text. Uses
-/// `textContent` (never innerHTML) so stream data can never inject markup.
+/// Extra styles for the live widgets: text bodies, and the label+track+fill bar
+/// rows used by `gauge`/`bars`/`histo`/`spark`.
+const WIDGET_CSS: &str = "<style>\n\
+.pbody { max-height: 16rem; overflow: auto; }\n\
+.txt { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }\n\
+.row { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; }\n\
+.lab { flex: 0 0 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }\n\
+.track { flex: 1; height: 0.8rem; background: rgba(0,229,255,0.08); border-radius: 2px; overflow: hidden; }\n\
+.fill { height: 100%; background: var(--cyan); }\n\
+</style>\n";
+
+/// Client poller: fetch `/data` on an interval and render each widget by kind.
+/// All labels go through `textContent` and bar widths are numeric — stream data
+/// can never inject markup (no `innerHTML` with data).
 const POLLER: &str = "\
 const stat = document.getElementById('stat');\n\
+function bar(label, pct) {\n\
+  const row = document.createElement('div'); row.className = 'row';\n\
+  const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;\n\
+  const track = document.createElement('div'); track.className = 'track';\n\
+  const fill = document.createElement('div'); fill.className = 'fill';\n\
+  fill.style.width = Math.max(0, Math.min(100, pct)) + '%';\n\
+  track.appendChild(fill); row.appendChild(lab); row.appendChild(track);\n\
+  return row;\n\
+}\n\
+function render(el, it) {\n\
+  el.replaceChildren();\n\
+  if (it.kind === 'gauge') {\n\
+    const max = it.max || 100, v = it.scalar || 0;\n\
+    el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0));\n\
+  } else if (it.pairs) {\n\
+    const rows = it.pairs.slice(0, it.top || 20);\n\
+    const maxv = Math.max(1, ...rows.map(p => p[1]));\n\
+    rows.forEach(([k, v]) => el.appendChild(bar(k + '  ' + v, v / maxv * 100)));\n\
+  } else {\n\
+    const pre = document.createElement('pre'); pre.className = 'txt';\n\
+    pre.textContent = it.text || ''; el.appendChild(pre);\n\
+  }\n\
+}\n\
 async function tick() {\n\
   try {\n\
     const r = await fetch('/data', {cache: 'no-store'});\n\
     const items = await r.json();\n\
     items.forEach((it, i) => {\n\
       const el = document.getElementById('wb' + i);\n\
-      if (el) el.textContent = it.text;\n\
+      if (el) render(el, it);\n\
     });\n\
     stat.textContent = 'live \\u00b7 ' + new Date().toLocaleTimeString();\n\
   } catch (e) {\n\
@@ -193,11 +257,27 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
-        // Gauge shows the count scalar; list shows the lines joined.
+        // Gauge carries the count scalar + its max for the client bar.
         assert_eq!(arr[0]["path"], ".g");
-        assert_eq!(arr[0]["text"], "3.00");
+        assert_eq!(arr[0]["scalar"], 3.0);
+        assert_eq!(arr[0]["max"], 100.0);
+        // List carries text (the lines joined).
         assert_eq!(arr[1]["path"], ".l");
         assert_eq!(arr[1]["text"], "a\nb\nc");
+    }
+
+    #[test]
+    fn data_json_bars_carry_pairs() {
+        let spec =
+            build(&parse("histo .h\nsource .h { in; tally }").unwrap()).unwrap();
+        let st = state_with(&["x", "y", "x", "x", "y"]);
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let pairs = json[0]["pairs"].as_array().unwrap();
+        // tally counts occurrences → x:3, y:2 (order is count-desc).
+        assert_eq!(pairs[0][0], "x");
+        assert_eq!(pairs[0][1], 3);
+        assert_eq!(pairs[1][0], "y");
+        assert_eq!(pairs[1][1], 2);
     }
 
     #[test]
@@ -214,8 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn widget_text_without_source_tails_latest_line() {
-        let w = &build(&parse("text .t").unwrap()).unwrap().widgets[0];
-        assert_eq!(widget_text(w, &["x".into(), "y".into()], 0.0), "y");
+    fn widget_without_source_tails_latest_line() {
+        let spec = build(&parse("text .t").unwrap()).unwrap();
+        let val = widget_json(&spec.widgets[0], &["x".into(), "y".into()], 0.0);
+        assert_eq!(val["text"], "y");
     }
 }
