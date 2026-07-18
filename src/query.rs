@@ -64,7 +64,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Where(e) => {
                 cur.retain(|l| {
                     let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
-                    crate::expr::eval_pred(e, x).unwrap_or(false)
+                    let resolve = |name: &str| field_num(l, name);
+                    crate::expr::eval_pred_ctx(e, x, &resolve).unwrap_or(false)
                 });
             }
             QueryOp::Count => return QueryResult::Scalar(cur.len() as f64),
@@ -126,6 +127,34 @@ fn walk(mut cur: Value, path: &[String]) -> Option<Value> {
         };
     }
     Some(cur)
+}
+
+/// Resolve a JSON field of `line` to a number for expression evaluation
+/// (missing / non-numeric / non-JSON -> NaN, which fails numeric predicates).
+fn field_num(line: &str, name: &str) -> f64 {
+    match serde_json::from_str::<Value>(line) {
+        Ok(Value::Object(mut m)) => m
+            .remove(name)
+            .as_ref()
+            .map(value_to_f64)
+            .unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    }
+}
+
+fn value_to_f64(v: &Value) -> f64 {
+    match v {
+        Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        Value::String(s) => s.trim().parse().unwrap_or(f64::NAN),
+        Value::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        _ => f64::NAN,
+    }
 }
 
 /// Render a JSON scalar as a plain string; containers as compact JSON.

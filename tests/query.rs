@@ -92,6 +92,16 @@ fn json_missing_key_is_empty() {
 }
 
 #[test]
+fn where_by_json_field_via_fusevm() {
+    let ops = pipeline("tail .x\nsource .x { in.json; where amount > 100 }");
+    let data = lines(&[r#"{"amount":50}"#, r#"{"amount":150}"#, r#"{"amount":200}"#]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Lines(lines(&[r#"{"amount":150}"#, r#"{"amount":200}"#]))
+    );
+}
+
+#[test]
 fn where_filters_numeric_lines_via_fusevm() {
     let ops = pipeline("tail .x\nsource .x { in; field 2; where x > 100 }");
     assert_eq!(

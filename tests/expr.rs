@@ -40,6 +40,19 @@ fn comparison_predicates_on_fusevm() {
 }
 
 #[test]
+fn field_refs_resolve_via_closure() {
+    use arb::expr::{eval_ctx, eval_pred_ctx};
+    let r = |name: &str| match name {
+        "amount" => 150.0,
+        "fee" => 5.0,
+        _ => f64::NAN,
+    };
+    assert_eq!(eval_ctx(&parse("amount - fee").unwrap(), 0.0, &r).unwrap(), 145.0);
+    assert!(eval_pred_ctx(&parse("amount > 100").unwrap(), 0.0, &r).unwrap());
+    assert!(!eval_pred_ctx(&parse("amount < fee").unwrap(), 0.0, &r).unwrap());
+}
+
+#[test]
 fn rejects_trailing_garbage() {
     assert!(parse("1 + ) 2").is_err());
 }

@@ -3,8 +3,10 @@
 //! This is what "arb runs on fusevm" means concretely — every computed value in
 //! a spec flows through fusevm bytecode, not a bespoke evaluator.
 //!
-//! `x` refers to the pipeline input scalar. `x` is baked into the chunk as a
-//! constant at compile time, so no VM slot state is assumed across `run()`.
+//! `x` is the pipeline input scalar; a bareword identifier (`amount`, `latency`)
+//! is a field of the current record, resolved by the caller's closure. Both are
+//! baked into the chunk as constants per evaluation, so no VM slot state is
+//! assumed across `run()`.
 //! Comparisons (`== != < <= > >=`) lower to fusevm's `Num*` ops and yield a
 //! boolean; `eval_pred` reads the result via `Value::is_truthy` for `where`.
 
@@ -31,6 +33,8 @@ pub enum Expr {
     Num(f64),
     /// The pipeline input scalar.
     Var,
+    /// A named field of the current record, resolved at eval time.
+    Field(String),
     Neg(Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
 }
@@ -49,11 +53,17 @@ pub fn parse(src: &str) -> Result<Expr, String> {
     Ok(e)
 }
 
-/// Lower `e` (with `x` baked in) to a fusevm chunk, run it on the VM, and return
-/// the resulting number.
+/// Evaluate as a number with no field resolver (field refs -> NaN).
 pub fn eval(e: &Expr, x: f64) -> Result<f64, String> {
+    eval_ctx(e, x, &|_| f64::NAN)
+}
+
+/// Lower `e` to a fusevm chunk (with `x` and resolved fields baked in), run it on
+/// the VM, and return the resulting number. `resolve` maps a field name to its
+/// numeric value.
+pub fn eval_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<f64, String> {
     let mut b = ChunkBuilder::new();
-    emit(e, x, &mut b);
+    emit(e, x, resolve, &mut b);
     let mut vm = VM::new(b.build());
     match vm.run() {
         VMResult::Ok(v) => Ok(v.to_float()),
@@ -62,11 +72,16 @@ pub fn eval(e: &Expr, x: f64) -> Result<f64, String> {
     }
 }
 
-/// Evaluate `e` as a predicate on `x` — compiled to fusevm, run on the VM, and
-/// read as a boolean via `Value::is_truthy`.
+/// Evaluate as a predicate with no field resolver.
 pub fn eval_pred(e: &Expr, x: f64) -> Result<bool, String> {
+    eval_pred_ctx(e, x, &|_| f64::NAN)
+}
+
+/// Evaluate `e` as a predicate — compiled to fusevm, run on the VM, read as a
+/// boolean via `Value::is_truthy`. `resolve` maps a field name to its value.
+pub fn eval_pred_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<bool, String> {
     let mut b = ChunkBuilder::new();
-    emit(e, x, &mut b);
+    emit(e, x, resolve, &mut b);
     let mut vm = VM::new(b.build());
     match vm.run() {
         VMResult::Ok(v) => Ok(v.is_truthy()),
@@ -75,7 +90,7 @@ pub fn eval_pred(e: &Expr, x: f64) -> Result<bool, String> {
     }
 }
 
-fn emit(e: &Expr, x: f64, b: &mut ChunkBuilder) {
+fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
     match e {
         Expr::Num(n) => {
             b.emit(Op::LoadFloat(*n), 0);
@@ -83,13 +98,16 @@ fn emit(e: &Expr, x: f64, b: &mut ChunkBuilder) {
         Expr::Var => {
             b.emit(Op::LoadFloat(x), 0);
         }
+        Expr::Field(name) => {
+            b.emit(Op::LoadFloat(resolve(name)), 0);
+        }
         Expr::Neg(a) => {
-            emit(a, x, b);
+            emit(a, x, resolve, b);
             b.emit(Op::Negate, 0);
         }
         Expr::Bin(op, a, c) => {
-            emit(a, x, b);
-            emit(c, x, b);
+            emit(a, x, resolve, b);
+            emit(c, x, resolve, b);
             b.emit(
                 match op {
                     BinOp::Add => Op::Add,
@@ -203,14 +221,28 @@ impl Parser {
                 self.i += 1;
                 Ok(e)
             }
-            Some('x') => {
-                self.i += 1;
-                Ok(Expr::Var)
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                let name = self.ident();
+                Ok(if name == "x" {
+                    Expr::Var
+                } else {
+                    Expr::Field(name)
+                })
             }
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
             Some(c) => Err(format!("calc: unexpected `{c}`")),
             None => Err("calc: unexpected end of expression".into()),
         }
+    }
+
+    fn ident(&mut self) -> String {
+        let start = self.i;
+        while self.i < self.c.len()
+            && (self.c[self.i].is_ascii_alphanumeric() || self.c[self.i] == '_')
+        {
+            self.i += 1;
+        }
+        self.c[start..self.i].iter().collect()
     }
 
     fn number(&mut self) -> Result<Expr, String> {
