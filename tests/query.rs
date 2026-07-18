@@ -144,6 +144,26 @@ fn each_passes_non_array_through() {
 }
 
 #[test]
+fn logfmt_field_by_name_tally() {
+    let ops = pipeline("bars .x\nsource .x { in.logfmt; field level; tally }");
+    let data = lines(&["level=INFO msg=a", "level=ERROR msg=b", "level=INFO msg=c"]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Pairs(vec![("INFO".into(), 2), ("ERROR".into(), 1)])
+    );
+}
+
+#[test]
+fn logfmt_where_numeric_field() {
+    let ops = pipeline("tail .x\nsource .x { in.logfmt; where dur > 100 }");
+    let data = lines(&["dur=50 x=a", "dur=150 x=b", "dur=200 x=c"]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Lines(lines(&["dur=150 x=b", "dur=200 x=c"]))
+    );
+}
+
+#[test]
 fn json_field_by_name_then_tally() {
     let ops = pipeline("bars .x\nsource .x { in.json; field level; tally }");
     let data = lines(&[

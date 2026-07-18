@@ -190,8 +190,24 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
             .ok()
             .and_then(|v| walk(v, path))
             .map(|v| json_to_string(&v))
+            .or_else(|| {
+                if path.len() == 1 {
+                    logfmt_field(line, &path[0])
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default(),
     }
+}
+
+/// Extract a `key=value` (logfmt) field from a line; strips surrounding quotes.
+fn logfmt_field(line: &str, key: &str) -> Option<String> {
+    line.split_whitespace().find_map(|tok| {
+        tok.split_once('=')
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| v.trim_matches('"').to_string())
+    })
 }
 
 /// The 1-based whitespace column `n` of `line` ("" if absent; 0 = whole line).
@@ -241,14 +257,14 @@ fn fmt_num(v: f64) -> String {
 /// Resolve a JSON field of `line` to a number for expression evaluation
 /// (missing / non-numeric / non-JSON -> NaN, which fails numeric predicates).
 fn field_num(line: &str, name: &str) -> f64 {
-    match serde_json::from_str::<Value>(line) {
-        Ok(Value::Object(mut m)) => m
-            .remove(name)
-            .as_ref()
-            .map(value_to_f64)
-            .unwrap_or(f64::NAN),
-        _ => f64::NAN,
+    if let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(line) {
+        if let Some(v) = m.remove(name) {
+            return value_to_f64(&v);
+        }
     }
+    logfmt_field(line, name)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(f64::NAN)
 }
 
 fn value_to_f64(v: &Value) -> f64 {

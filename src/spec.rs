@@ -253,7 +253,7 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
     let mut saw_in = false;
     for c in cmds {
         match c.name.as_str() {
-            "in" | "in.json" | "in.html" | "in.xml" => saw_in = true,
+            "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
             "sel" => {
                 let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
                 let mut css_parts = Vec::new();
