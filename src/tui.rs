@@ -210,6 +210,7 @@ pub fn run(
     state: Arc<Mutex<StreamState>>,
     controls: Arc<Mutex<Controls>>,
     down: Option<(Arc<Mutex<StreamState>>, String)>,
+    err: Option<(Arc<Mutex<StreamState>>, String)>,
     fzf: bool,
 ) -> io::Result<()> {
     let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
@@ -244,6 +245,18 @@ pub fn run(
         if quit {
             break Ok(());
         }
+        // Snapshot the error pane (spawned producer's stderr) — a bordered strip
+        // at the bottom, so upstream errors show inside arb, never on the terminal.
+        let err_snap: Option<(Vec<String>, String)> = err.as_ref().map(|(es, label)| {
+            let e = es.lock().unwrap();
+            let n = e.lines.len();
+            let tail = e.lines.iter().skip(n.saturating_sub(200)).cloned().collect();
+            (tail, format!("{label} ({})", e.total))
+        });
+        let err_ref = err_snap
+            .as_ref()
+            .filter(|(l, _)| !l.is_empty())
+            .map(|(l, lab)| (l.as_slice(), lab.as_str()));
         if fzf {
             // fzf select mode: incrementally fuzzy-match the stream (each line
             // scored once), rank best-first, cursor highlights one, Enter resolves.
@@ -308,7 +321,7 @@ pub fn run(
             }
             let marks = c.marks.clone();
             drop(c);
-            let draw = terminal.draw(|f| render_fzf(f, matched, &filter, sel, &marks, total));
+            let draw = terminal.draw(|f| render_fzf(f, matched, &filter, sel, &marks, total, err_ref));
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -326,7 +339,7 @@ pub fn run(
         let st = state.lock().unwrap();
         let draw = terminal.draw(|f| {
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
-            render(f, spec, &st, &filter, down_ref);
+            render(f, spec, &st, &filter, down_ref, err_ref);
         });
         drop(st);
         if let Err(e) = draw {
@@ -347,11 +360,24 @@ fn render(
     st: &StreamState,
     filter: &str,
     down: Option<(&[String], &str)>,
+    err: Option<(&[String], &str)>,
 ) {
-    // Reserve a one-row filter bar at the very bottom; widgets fill the rest.
-    let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
+    // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
+    let err_h = match err {
+        Some((lines, _)) => ((lines.len() as u16) + 2).clamp(3, 8),
+        None => 0,
+    };
+    let chunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(err_h),
+        Constraint::Length(1),
+    ])
+    .split(f.area());
     let mut area = chunks[0];
-    let bar = chunks[1];
+    let bar = chunks[2];
+    if let Some((lines, label)) = err {
+        render_err_pane(f, chunks[1], label, lines);
+    }
 
     // With a downstream command, split the main area: stream dashboard on the
     // left, the captured `-- CMD` output pane on the right.
@@ -457,8 +483,46 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'stati
 /// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
 /// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
 /// selection visible. Cursor 0 is the newest (bottom) line.
-fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize, marks: &[String], total: u64) {
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(f.area());
+/// A red-bordered pane for a spawned command's stderr (`--run` producer errors),
+/// so upstream errors show inside arb instead of scribbling over the TUI.
+fn render_err_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(format!(" \u{26a0} {label} "));
+    let inner_w = (area.width as usize).saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let skip = lines.len().saturating_sub(inner_h);
+    let items: Vec<ListItem> = lines
+        .iter()
+        .skip(skip)
+        .map(|l| ListItem::new(clip(l, inner_w)))
+        .collect();
+    f.render_widget(List::new(items).block(block), area);
+}
+
+fn render_fzf(
+    f: &mut Frame,
+    matched: &[String],
+    filter: &str,
+    sel: usize,
+    marks: &[String],
+    total: u64,
+    err: Option<(&[String], &str)>,
+) {
+    // Reserve a bottom strip for the stderr pane when present.
+    let (top, err_area) = match err {
+        Some((lines, _)) => {
+            let h = ((lines.len() as u16) + 2).clamp(3, 10);
+            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(h)]).split(f.area());
+            (rows[0], Some(rows[1]))
+        }
+        None => (f.area(), None),
+    };
+    if let (Some(ea), Some((lines, label))) = (err_area, err) {
+        render_err_pane(f, ea, label, lines);
+    }
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(top);
     let marked = if marks.is_empty() {
         String::new()
     } else {

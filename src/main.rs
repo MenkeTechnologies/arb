@@ -10,7 +10,7 @@
 //! binds). The expression layer, fusevm lowering, web target, actors, and package
 //! manager are later milestones (see SPEC.md) and are not faked here.
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -118,6 +118,14 @@ struct Cli {
     #[arg(long = "fzf",
         help = "\x1b[32m//\x1b[0m fzf mode: filter + select one line, printed to stdout on Enter")]
     fzf: bool,
+    /// Run a pipeline with arb as the interactive stage, e.g.
+    /// `arb --fzf --run 'sudo find / | _ | grep foo'`. arb spawns the
+    /// surrounding commands (each via `sh -c`, so globs/quotes work) and controls
+    /// their fds: the producer's stdout feeds arb's stream, its stderr goes to a
+    /// pane instead of corrupting the TUI.
+    #[arg(long = "run", value_name = "PIPELINE",
+        help = "\x1b[32m//\x1b[0m Run 'PROD | _ | CONS': arb spawns them, stderr -> pane")]
+    run: Option<String>,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
@@ -150,17 +158,31 @@ fn main() -> io::Result<()> {
     // Bare `arb` on an interactive terminal — no spec/`-e`/`-p` and nothing
     // piped in — drops into the REPL rather than erroring on the stdin-tail
     // default (which needs a pipe). A piped `find / | arb` still tails.
+    // A run-pipeline: `--run`, or a positional containing the `_` arb-stage marker
+    // (`arb --fzf 'find / | _ | grep x'`). When the positional IS the pipeline,
+    // arb runs it rather than loading it as a spec file.
+    let run_pipeline: Option<String> = cli
+        .run
+        .clone()
+        .or_else(|| cli.spec.as_ref().filter(|s| is_arb_pipeline(s)).cloned());
+    let positional_pipeline = cli.run.is_none() && run_pipeline.is_some();
+
     let no_spec_args = cli.spec.is_none() && cli.eval.is_none() && cli.preset.is_none();
-    if no_spec_args && io::stdin().is_terminal() {
+    if no_spec_args && run_pipeline.is_none() && io::stdin().is_terminal() {
         arb::repl::run();
         return Ok(());
     }
 
-    let spec = match load_spec(&cli) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("arb: {e}");
-            std::process::exit(1);
+    let spec = if positional_pipeline {
+        // The positional was a pipeline, not a spec file — use the default tail.
+        spec::build(&parser::parse("tail .stream\nsource .stream { in }").unwrap()).unwrap()
+    } else {
+        match load_spec(&cli) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("arb: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -182,8 +204,18 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    // `--run 'PROD | arb | CONS'`: arb spawns the surrounding commands and owns
+    // their fds. The producer's stdout feeds the stream, its stderr an error pane.
+    let (producer, consumer) = match &run_pipeline {
+        Some(p) => {
+            let (pr, co) = parse_pipeline(p);
+            (Some(pr), co)
+        }
+        None => (None, None),
+    };
+
     let needs_stdin = spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
-    if needs_stdin && io::stdin().is_terminal() {
+    if needs_stdin && run_pipeline.is_none() && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
     }
@@ -206,34 +238,55 @@ fn main() -> io::Result<()> {
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
-        if needs_stdin {
-            // Tee the live filtered stream to stdout (only when piped onward, so
-            // arb never blocks or corrupts the terminal). fzf mode never tees — it
-            // emits the chosen line on Enter, not the stream. The filter narrows
-            // the passthrough in real time — the megafilter.
-            let tee = !cli.fzf && !io::stdout().is_terminal();
-            spawn_reader(state.clone(), tee, controls.clone());
-        }
+        // Feed the stream: from a spawned producer (`--run`) or from stdin.
+        let err_pane = if let Some(prod) = &producer {
+            match spawn_producer(prod, state.clone()) {
+                Ok(es) => Some((es, "stderr".to_string())),
+                Err(e) => {
+                    eprintln!("arb: run: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            if needs_stdin {
+                // Tee the live filtered stream to stdout (only when piped onward,
+                // so arb never blocks or corrupts the terminal). fzf mode never
+                // tees. The filter narrows the passthrough live — the megafilter.
+                let tee = !cli.fzf && !io::stdout().is_terminal();
+                spawn_reader(state.clone(), tee, controls.clone());
+            }
+            None
+        };
 
-        // Optional `arb -- CMD`: a re-run preview (disabled in fzf mode). CMD is
-        // re-executed over the CURRENT filtered buffer whenever the filter or the
-        // stream changes; its output (stdout+stderr) is captured and shown in a
-        // pane — always in sync with the filter, never accumulating stale
-        // pre-filter results, and never printing to the terminal.
-        let down_pane = if cli.fzf || cli.down.is_empty() {
+        // Preview pane: `arb -- CMD` (re-run over filtered output) OR the `| CONS`
+        // consumer from `--run` (shelled out). Disabled in fzf mode.
+        let down_cmd: Vec<String> = match &consumer {
+            Some(c) => vec!["sh".to_string(), "-c".to_string(), c.clone()],
+            None => cli.down.clone(),
+        };
+        let down_pane = if cli.fzf || down_cmd.is_empty() {
             None
         } else {
             let dstate = Arc::new(Mutex::new(StreamState::new()));
-            spawn_preview(cli.down.clone(), state.clone(), controls.clone(), dstate.clone());
-            Some((dstate, cli.down.join(" ")))
+            spawn_preview(down_cmd.clone(), state.clone(), controls.clone(), dstate.clone());
+            let label = consumer.clone().unwrap_or_else(|| cli.down.join(" "));
+            Some((dstate, label))
         };
-        let outcome = tui::run(&spec, state, controls.clone(), down_pane, cli.fzf);
+        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf);
         if cli.fzf {
-            // On Enter (submit) print the selection — marked lines, or the cursor
-            // line — to stdout. Abort (Esc/Ctrl-C) exits 130 with no output.
+            // On Enter (submit) emit the selection (marked lines, or the cursor
+            // line). With a `| CONS` consumer, pipe the selection through it first
+            // (`find / | _ | perl -pe …` transforms the picked lines). Abort
+            // (Esc/Ctrl-C) exits 130 with no output.
             let c = controls.lock().unwrap();
             if c.submit {
-                for line in &c.result {
+                let out = match &consumer {
+                    Some(cons) => {
+                        run_capture(&["sh".into(), "-c".into(), cons.clone()], &c.result)
+                    }
+                    None => c.result.clone(),
+                };
+                for line in out {
                     println!("{line}");
                 }
             } else {
@@ -402,6 +455,71 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// so `find / | arb | consumer` feeds `consumer` continuously while the TUI
 /// renders to /dev/tty — arb never blocks the pipeline. A closed consumer stops
 /// the passthrough but the TUI keeps updating.
+/// Whether a string is an arb pipeline: it has a bare `_` stage (the marker for
+/// "arb goes here"), e.g. `sudo find / | _ | perl -pe '…'`.
+fn is_arb_pipeline(s: &str) -> bool {
+    s.split('|').any(|seg| seg.trim() == "_")
+}
+
+/// Split an arb pipeline on the `_` stage marker into (producer, consumer).
+/// `find / | _ | grep x` -> ("find /", Some("grep x")); no `_` marker -> the
+/// whole string is the producer. (Segments are shelled out per-stage; a zshrs
+/// lexer can replace that later without changing arb's fd orchestration.)
+fn parse_pipeline(s: &str) -> (String, Option<String>) {
+    let segs: Vec<&str> = s.split('|').map(str::trim).collect();
+    match segs.iter().position(|seg| *seg == "_") {
+        Some(p) => {
+            let producer = segs[..p].join(" | ");
+            let consumer = segs[p + 1..].join(" | ");
+            (
+                producer,
+                if consumer.is_empty() {
+                    None
+                } else {
+                    Some(consumer)
+                },
+            )
+        }
+        None => (s.trim().to_string(), None),
+    }
+}
+
+/// Drain any reader (a spawned command's stdout or stderr) line-by-line into a
+/// `StreamState` — used to feed arb's stream from the producer's stdout and the
+/// error pane from its stderr.
+fn spawn_source_reader<R: io::Read + Send + 'static>(reader: R, state: Arc<Mutex<StreamState>>) {
+    thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            match line {
+                Ok(l) => state.lock().unwrap().push(l),
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// Spawn the producer command (`sh -c`) with arb owning its fds: stdout streams
+/// into `state`, stderr into a fresh `StreamState` returned for the error pane.
+/// The child is detached (runs on its own; killed when arb exits).
+fn spawn_producer(
+    producer: &str,
+    state: Arc<Mutex<StreamState>>,
+) -> io::Result<Arc<Mutex<StreamState>>> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(producer)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let out = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
+    let err = child.stderr.take().ok_or_else(|| io::Error::other("no stderr"))?;
+    drop(child);
+    spawn_source_reader(out, state);
+    let err_state = Arc::new(Mutex::new(StreamState::new()));
+    spawn_source_reader(err, err_state.clone());
+    Ok(err_state)
+}
+
 fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
     thread::spawn(move || {
         // Only hold the stdout lock when actually teeing. Otherwise (e.g. --fzf,
