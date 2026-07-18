@@ -1320,3 +1320,17 @@ fn bytes_and_duration_humanize() {
     // Non-numeric passes through unchanged.
     assert_eq!(f("bytes", &["n/a"]), QueryResult::Lines(lines(&["n/a"])));
 }
+
+#[test]
+fn fields_projects_and_reorders_columns() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    // Project a subset of whitespace columns (1-based), keeping order.
+    assert_eq!(
+        f("fields 1 4", &["alice 100 33 vim", "bob 200 44 bash"]),
+        QueryResult::Lines(lines(&["alice vim", "bob bash"]))
+    );
+    // Reorder columns.
+    assert_eq!(f("fields 3 1", &["a b c"]), QueryResult::Lines(lines(&["c a"])));
+    // Out-of-range columns are empty.
+    assert_eq!(f("fields 1 9", &["only"]), QueryResult::Lines(lines(&["only "])));
+}

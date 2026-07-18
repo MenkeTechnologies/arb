@@ -31,6 +31,9 @@ pub enum QueryOp {
     Reject(Regex),
     /// Replace each line with a selected field (whitespace column or JSON key path).
     Field(FieldSel),
+    /// Project multiple whitespace columns (1-based), space-joined, keeping the
+    /// given order — `fields 1 3` on "a b c d" -> "a c". For columnar input.
+    Fields(Vec<usize>),
     /// Flatten JSON-array lines into one line per element (jq `[]`); non-array
     /// lines pass through unchanged.
     Each,
@@ -293,6 +296,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Field(sel) => {
                 for l in cur.iter_mut() {
                     *l = extract_field(l, sel);
+                }
+            }
+            QueryOp::Fields(cols) => {
+                for l in cur.iter_mut() {
+                    *l = cols.iter().map(|&n| nth_col(l, n)).collect::<Vec<_>>().join(" ");
                 }
             }
             QueryOp::Each => {
@@ -1177,6 +1185,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
             QueryOp::Match(_)
                 | QueryOp::Reject(_)
                 | QueryOp::Field(_)
+                | QueryOp::Fields(_)
                 | QueryOp::Each
                 | QueryOp::Keys
                 | QueryOp::Vals

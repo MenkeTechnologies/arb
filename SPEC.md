@@ -90,7 +90,8 @@ send "text"              send input to spawned process (Expect)
 ## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 
 ```
-field NAME        key (jq .name); field a b c = a.b.c
+field NAME        key (jq .name); field a b c = a.b.c; field N = Nth ws column
+fields N M …     project/reorder whitespace columns (1-based): fields 1 3 -> cols 1 and 3
 each              iterate (jq [])
 find TAG          recursive descent (xpath //)
 attr NAME         attribute (xpath @, css)

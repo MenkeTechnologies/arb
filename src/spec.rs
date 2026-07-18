@@ -800,6 +800,18 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
             "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
+            "fields" => {
+                let cols: Vec<usize> = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .filter_map(|s| s.parse::<usize>().ok())
+                    .collect();
+                if cols.is_empty() {
+                    return Err("fields: expected column numbers (e.g. fields 1 3)".into());
+                }
+                ops.push(QueryOp::Fields(cols));
+            }
             "each" => ops.push(QueryOp::Each),
             "count" => ops.push(QueryOp::Count),
             "rate" => ops.push(QueryOp::Rate),
