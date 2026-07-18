@@ -117,6 +117,23 @@ merge           merge all json objects into one (later keys win)
 floor           floor each numeric line
 ceil            ceil each numeric line
 clamp LO HI     clamp each numeric line into [LO,HI]
+abs             absolute value of each numeric line
+round           round each numeric line to the nearest integer
+commafy         thousands-group each numeric line (1234567 -> 1,234,567)
+
+delta           consecutive differences of the numeric series (n -> n-1) — a counter's rate-of-change
+cumsum          running (cumulative) total of the numeric series
+sma N           trailing simple moving average, window N (length-preserving; smooths a noisy series)
+ewma A          exponentially-weighted moving average, smoothing factor A in (0,1] (s0=x0)
+
+median          median of numeric lines (reducer)
+stddev          population standard deviation (reducer)
+percentile N    Nth percentile 0-100, nearest-rank (reducer); p50 p90 p95 p99 are sugar
+range           max minus min of numeric lines (reducer)
+product         product of numeric lines (reducer)
+bins N          bucket numeric lines into N equal-width bins -> (label -> count) pairs
+
+apply .name     splice an `input .name` widget's live value in as a sub-pipeline (megafilter/map)
 
 sort_by F   stable-sort json records by field F (numeric when all values parse, else lexical; non-objects last)
 unique_by F   keep first JSON record per distinct value of field F (dedup by F)
@@ -157,12 +174,19 @@ index N  slice A B  positional
 ## 9. Widgets ("Tk" register)
 
 ```
-text .t -label L          tail .t -label L        table .t -cols {a b c}
-list .t                   gauge .t -label L -max N spark .t -label L -window N
-bars .t -label L          histo .t                chart .t -kind line
+text .t -label L          tail .t -label L        table .t -cols "a,b,c"
+list .t                   gauge .t -label L -max N spark .t
+bars .t -label L          histo .t                chart .t
+select .s -prompt P -header H     input .i -placeholder P    # interactive
 tabs .t -tabs {a b}       block .t -title T -border  frame .f
 .t configure -max 200     # live reconfigure
 ```
+
+Any widget takes `-color NAME` (green/red/yellow/orange/magenta/blue/white/gray,
+default cyan) to tint its border and accent — same color in the TUI and web.
+`select` is an interactive fuzzy picker (fzf as a one-widget spec; `source`
+projects the candidate display, `search` derives a separate match key); `input`
+is a live field whose value drives `apply`/`bind`/`out`.
 
 ## 10. Layout (auto by default)
 
@@ -238,10 +262,14 @@ supervise p { on crash { restart } }
 
 ```
 target tui                 # default
-target web -port 8080      # served zgui page + WS
+target web -port 8080      # served page + WS
 theme cyberpunk            # shared HUD scheme (matches sibling apps)
 set refresh 250            # ms redraw throttle
 ```
+
+Ships today as `arb --serve --port N`: a std-only HTTP server renders the same
+spec as a live browser dashboard, pushing widget data over a WebSocket (hand-rolled
+handshake, no dependency) with automatic fallback to polling `/data`.
 
 ## 17. Modules & presets (presets = stdlib script imports)
 
