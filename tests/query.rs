@@ -516,3 +516,363 @@ fn attr_drops_missing() {
         other => panic!("expected Lines, got {other:?}"),
     }
 }
+
+#[test]
+fn sort_by_orders_json_records_numerically_and_stably() {
+    let ops = pipeline("tail .x\nsource .x { in.json; sort_by age }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        r#"{"name":"b","age":5}"#.to_string(),
+        "not-json".to_string(),
+        r#"{"name":"c","age":5}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"name":"b","age":5}"#,  // numeric (not lexical: "30" would precede "5")
+                r#"{"name":"c","age":5}"#,  // stable: b before c on equal keys
+                r#"{"name":"a","age":30}"#,
+                "not-json",                 // non-object sinks after, input order
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn unique_by_keeps_first_record_per_field_value() {
+    let ops = pipeline("tail .x\nsource .x { in.json; unique_by name }");
+    let lines = vec![
+        r#"{"name":"a","v":1}"#.to_string(),
+        r#"{"name":"b","v":2}"#.to_string(),
+        r#"{"name":"a","v":3}"#.to_string(),
+        r#"{"name":"b","v":4}"#.to_string(),
+        r#"{"name":"c","v":5}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"name":"a","v":1}"#,
+                r#"{"name":"b","v":2}"#,
+                r#"{"name":"c","v":5}"#,
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn count_by_groups_json_records_by_field() {
+    let ops = pipeline("tail .x\nsource .x { in.json; count_by dept }");
+    let lines = vec![
+        r#"{"dept":"eng","name":"a"}"#.to_string(),
+        r#"{"dept":"eng","name":"b"}"#.to_string(),
+        r#"{"dept":"sales","name":"c"}"#.to_string(),
+        "plain".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Pairs(ps) => assert_eq!(
+            ps,
+            vec![
+                ("eng".to_string(), 2u64),
+                ("plain".to_string(), 1u64),
+                ("sales".to_string(), 1u64),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn min_by_returns_record_with_smallest_field() {
+    let ops = pipeline("tail .x\nsource .x { in.json; min_by age }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        r#"{"name":"b","age":10}"#.to_string(),
+        r#"{"name":"c","age":20}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"name":"b","age":10}"#]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn max_by_returns_record_with_largest_field() {
+    let ops = pipeline("tail .x\nsource .x { in.json; max_by age }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        r#"{"name":"b","age":45}"#.to_string(),
+        r#"{"name":"c","age":12}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        // Must return the FULL record for the max field, not just the value,
+        // and must pick 45 (max) rather than 12 (min) — catches a min/max swap.
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"name":"b","age":45}"#]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn has_retains_only_objects_with_key() {
+    let ops = pipeline("tail .x\nsource .x { in.json; has age }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        r#"{"name":"b"}"#.to_string(),
+        "not json".to_string(),
+        r#"["age"]"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"name":"a","age":30}"#]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn entries_expands_json_object_to_key_value_lines() {
+    let ops = pipeline("tail .x\nsource .x { in.json; entries }");
+    let lines = vec![
+        r#"{"name":"a","age":30}"#.to_string(),
+        "not json".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"key":"age","value":30}"#.to_string(),
+                r#"{"key":"name","value":"a"}"#.to_string(),
+                "not json".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn flatten_expands_nested_json_arrays_one_level() {
+    // [1,[2,3],4] -> 1, 2, 3, 4  (nested array [2,3] is expanded, unlike `each`)
+    let ops = pipeline("tail .x\nsource .x { in.json; flatten }");
+    let lines = vec!["[1,[2,3],4]".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["1", "2", "3", "4"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn add_reduces_json_arrays() {
+    let ops = pipeline("tail .x\nsource .x { in.json; add }");
+    let lines = vec![
+        "[1, 2, 3]".to_string(),
+        r#"["a", "b", "c"]"#.to_string(),
+        "[]".to_string(),
+        r#"{"name":"keep"}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                "6".to_string(),
+                "abc".to_string(),
+                String::new(),
+                r#"{"name":"keep"}"#.to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn over_keeps_lines_strictly_greater_than_threshold() {
+    let ops = pipeline("tail .x\nsource .x { in; over 10 }");
+    let lines = vec![
+        "5".to_string(),
+        "10".to_string(),
+        "10.5".to_string(),
+        "42".to_string(),
+        "nan-ish".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["10.5".to_string(), "42".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn under_keeps_lines_strictly_below_threshold() {
+    let ops = pipeline("tail .x\nsource .x { in; under 10 }");
+    let lines = vec![
+        "5".to_string(),
+        "10".to_string(),
+        "15".to_string(),
+        "abc".to_string(),
+        "9.5".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["5".to_string(), "9.5".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn between_keeps_inclusive_numeric_range() {
+    let ops = pipeline("tail .x\nsource .x { in; between 10 20 }");
+    let lines = vec![
+        "5".to_string(),
+        "10".to_string(),
+        "15".to_string(),
+        "20".to_string(),
+        "25".to_string(),
+        "abc".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["10", "15", "20"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn enumerate_prefixes_one_based_index_and_tab() {
+    let ops = pipeline("tail .x\nsource .x { in; enumerate }");
+    let lines = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                "1\talpha".to_string(),
+                "2\tbeta".to_string(),
+                "3\tgamma".to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn words_splits_lines_on_whitespace_and_drops_empties() {
+    let ops = pipeline("tail .x\nsource .x { in; words }");
+    let lines = vec![
+        "the  quick brown".to_string(),
+        "".to_string(),
+        "   ".to_string(),
+        "fox".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["the", "quick", "brown", "fox"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn dedup_collapses_only_adjacent_duplicates() {
+    let ops = pipeline("tail .x\nsource .x { in; dedup }");
+    let lines = vec![
+        "a".to_string(),
+        "a".to_string(),
+        "b".to_string(),
+        "a".to_string(),
+        "a".to_string(),
+        "a".to_string(),
+        "c".to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            // runs of "a" collapse, but the later "a" survives because it is not adjacent to the first run
+            assert_eq!(ls, vec!["a", "b", "a", "c"]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn tailn_keeps_last_n_lines() {
+    let ops = pipeline("tail .x\nsource .x { in; tailn 2 }");
+    let input = vec![
+        "a".to_string(),
+        "b".to_string(),
+        "c".to_string(),
+        "d".to_string(),
+    ];
+    match arb::query::eval(&ops, &input, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["c".to_string(), "d".to_string()]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn pad_right_pads_to_min_width_without_truncating() {
+    let ops = pipeline("tail .x\nsource .x { in; pad 5 }");
+    let lines = vec!["ab".to_string(), "abcdef".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["ab   ".to_string(), "abcdef".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn lpad_pads_short_lines_and_leaves_long_ones() {
+    let ops = pipeline("tail .x\nsource .x { in; lpad 4 }");
+    let lines = vec!["a".to_string(), "bb".to_string(), "toolong".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["   a".to_string(), "  bb".to_string(), "toolong".to_string()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn grepf_filters_by_json_field() {
+    let ops = pipeline("tail .x\nsource .x { in.json; grepf name /^a/ }");
+    let lines = vec![
+        r#"{"name":"alice","age":30}"#.to_string(),
+        r#"{"name":"bob","age":25}"#.to_string(),
+        r#"{"name":"amir","age":40}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"name":"alice","age":30}"#.to_string(),
+                r#"{"name":"amir","age":40}"#.to_string(),
+            ]
+        ),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn flip_reverses_characters_per_line() {
+    let ops = pipeline("tail .x\nsource .x { in; flip }");
+    let lines = vec![
+        "abc".to_string(),
+        "héllo".to_string(),
+        String::new(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["cba".to_string(), "olléh".to_string(), String::new()]);
+        }
+        other => panic!("got {other:?}"),
+    }
+}

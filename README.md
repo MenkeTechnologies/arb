@@ -155,13 +155,26 @@ A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
 | `//a/@href` | `find a; attr href` |
 | `div.card h2` | `sel {div.card h2}` |
 
-The verbs live today are `in`, `match`/`grep`, `reject`/`grepv`, `field N`/`field
-NAME`, `count`, `rate`, and `tally` — over line and JSON streams (`in.json`,
-nested key paths), `pick K…` (jq object projection) — plus a fusevm-computed expression layer: `where PRED`
-(filter), `map EXPR` (per-line transform), and `calc EXPR` (reduce), all lowered
-to a `fusevm::Chunk` and run on the VM, with field-aware references
-(`where ms > 1000`, `map bytes / 1024`). They render into
-`text`/`tail`/`list`/`gauge`/`bars`/`histo` widgets, arranged by `grid`.
+The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
+CSV/TSV (`in.csv`/`in.tsv`), and HTML streams, in families:
+
+- **Filter** — `match`/`grep`, `reject`/`grepv`, `contains`, `starts`, `ends`,
+  `nonempty`, `numeric`, `over N`, `under N`, `between A B`, `has KEY`.
+- **Extract / shape** — `field`, `pick K…` (jq projection), `cut`, `find TAG` +
+  `attr NAME` + `text` (xpath/css: `//a/@href`), `sel {CSS}`, `keys`, `vals`,
+  `entries`, `flatten`, `each`.
+- **Transform** — `map EXPR`, `upper`/`lower`/`trim`, `replace`, `prepend`/
+  `append`, `pad`/`lpad`, `flip`, `words`, `enumerate`, `join`.
+- **Order / dedup** — `sort`, `sort_by F`, `uniq`, `unique_by F`, `dedup`, `rev`,
+  `first`/`last`/`take`/`drop`/`tailn`/`nth`/`slice`, `sample`.
+- **Aggregate / reduce** — `count`, `rate`, `tally`, `count_by F`, `sum`, `min`/
+  `max`, `min_by F`/`max_by F`, `avg`, `median`, `stddev`, `p95`, `product`,
+  `add`, `range`, `bins`.
+
+The expression layer — `where PRED` (filter), `map EXPR` (per-line transform),
+`calc EXPR` (reduce) — lowers to a `fusevm::Chunk` and runs on the VM, with
+field-aware references (`where ms > 1000`, `map bytes / 1024`). Results render
+into `text`/`tail`/`list`/`gauge`/`bars`/`histo` widgets, arranged by `grid`.
 
 ---
 

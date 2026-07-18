@@ -461,6 +461,120 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     .join(" ");
                 ops.push(QueryOp::Map(crate::expr::parse(&src)?));
             }
+            "sort_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("sort_by: expected a field name".into());
+                }
+                ops.push(QueryOp::SortBy(field));
+            }
+            "unique_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("unique_by: expected a field name".into());
+                }
+                ops.push(QueryOp::UniqueBy(field));
+            }
+            "count_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("count_by: expected a field name".into());
+                }
+                ops.push(QueryOp::CountBy(field));
+            }
+            "min_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("min_by: expected a field name".into());
+                }
+                ops.push(QueryOp::MinBy(field));
+            }
+            "max_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("max_by: expected a field name".into());
+                }
+                ops.push(QueryOp::MaxBy(field));
+            }
+            "has" => {
+                let key = str_arg(c);
+                if key.is_empty() {
+                    return Err("has: expected a key name".into());
+                }
+                ops.push(QueryOp::Has(key));
+            }
+            "entries" => {
+                if !c.args.is_empty() { return Err("entries: takes no arguments".into()); }
+                ops.push(QueryOp::Entries);
+            }
+            "flatten" => ops.push(QueryOp::Flatten),
+            "add" => ops.push(QueryOp::Add),
+            "over" => {
+                let n = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or_else(|| "over: expected a numeric threshold".to_string())?;
+                ops.push(QueryOp::Over(n));
+            }
+            "under" => {
+                let n: f64 = str_arg(c)
+                    .parse()
+                    .map_err(|_| "under: expected a number".to_string())?;
+                ops.push(QueryOp::Under(n));
+            }
+            "between" => {
+                let lo = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or_else(|| "between: expected two numbers A B".to_string())?;
+                let hi = c
+                    .args
+                    .get(1)
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or_else(|| "between: expected two numbers A B".to_string())?;
+                ops.push(QueryOp::Between(lo, hi));
+            }
+            "enumerate" => {
+                ops.push(QueryOp::Enumerate);
+            }
+            "words" => {
+                if !c.args.is_empty() { return Err("words: takes no arguments".into()); }
+                ops.push(QueryOp::Words);
+            }
+            "dedup" => ops.push(QueryOp::Dedup),
+            "tailn" => ops.push(QueryOp::Tailn(count_arg(c, "tailn")?)),
+            "pad" => {
+                let n = count_arg(c, "pad")?;
+                ops.push(QueryOp::Pad(n));
+            }
+            "lpad" => ops.push(QueryOp::Lpad(count_arg(c, "lpad")?)),
+            "grepf" => {
+                let field = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or_else(|| "grepf: expected FIELD and /re/".to_string())?
+                    .to_string();
+                let raw = c
+                    .args
+                    .get(1)
+                    .and_then(Arg::as_str)
+                    .ok_or_else(|| "grepf: expected a pattern".to_string())?;
+                let pat = raw
+                    .strip_prefix('/')
+                    .and_then(|s| s.strip_suffix('/'))
+                    .unwrap_or(raw);
+                let re = regex::Regex::new(pat).map_err(|e| format!("grepf: bad regex: {e}"))?;
+                ops.push(QueryOp::Grepf(field, re));
+            }
+            "flip" => {
+                ops.push(QueryOp::Flip);
+            }
             "contains" => ops.push(QueryOp::Contains(str_arg(c))),
             "starts" => ops.push(QueryOp::Starts(str_arg(c))),
             "ends" => ops.push(QueryOp::Ends(str_arg(c))),

@@ -97,6 +97,27 @@ attr NAME         attribute (xpath @, css)
 sel { CSS }       CSS selector (html)
 where(PRED)       filter (jq select)
 pick a b c        project object to keys (jq {a,b,c}); keeps listed order
+sort_by F   stable-sort json records by field F (numeric when all values parse, else lexical; non-objects last)
+unique_by F   keep first JSON record per distinct value of field F (dedup by F)
+count_by F    count json records grouped by field F (value -> count, count desc)
+min_by F      return the JSON record whose numeric field F is smallest
+max_by F     emit the record with the largest numeric field F (reducer)
+has KEY          keep only JSON-object lines that contain key KEY
+entries          jq to_entries: emit {"key":k,"value":v} per key of each JSON object line
+flatten          flatten a JSON array, expanding one level of nested arrays
+add               jq add: sum a numeric JSON-array line, concat a string array, [] -> ""
+over N          keep numeric lines strictly greater than N (drops non-numeric)
+under N            keep numeric lines strictly less than N
+between A B   keep numeric lines x with A <= x <= B (inclusive), drop the rest
+enumerate         prefix each line with its 1-based index and a tab
+words                split each line on whitespace into one word per line (flatten)
+dedup                collapse adjacent duplicate lines to one (classic uniq)
+tailn N       keep the last N lines (complement of take)
+pad N            right-pad each line with spaces to a minimum width N (no truncation)
+lpad N          left-pad each line with spaces to minimum width N
+grepf FIELD /re/   keep lines whose FIELD (json key or 1-based ws column) matches /re/
+flip            reverse the characters of each line (Unicode scalar reversal)
+
 keys  vals        jq keys/values
 map(FN)           transform each
 count sum min max avg tally    aggregates

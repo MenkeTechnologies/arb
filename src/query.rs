@@ -94,6 +94,57 @@ pub enum QueryOp {
     /// From element fragments, emit each element's inner text; non-element lines
     /// pass through unchanged.
     Text,
+    /// Stable-sort JSON-record lines by FIELD; numeric if every field value
+    /// parses as a number, else lexicographic on the field's string value.
+    /// Non-object lines sink after the sorted records in input order.
+    SortBy(String),
+    /// Keep the first record for each distinct value of FIELD, preserving input
+    /// order. JSON-object lines dedup by that field's value; other lines dedup by
+    /// the whole line.
+    UniqueBy(String),
+    /// Group JSON records by the value of FIELD and count each group, returning
+    /// value -> count pairs sorted by count desc then value asc; non-object lines
+    /// are counted under their whole-line text. Reducer (early return).
+    CountBy(String),
+    /// Reducer: emit the single JSON record whose numeric FIELD is smallest (records with a missing/non-numeric FIELD are ignored; empty input yields no lines).
+    MinBy(String),
+    /// Reducer: emit the single record whose numeric FIELD is the largest.
+    MaxBy(String),
+    /// Retain only JSON-object lines that contain KEY; all other lines (missing key, non-object, unparseable) are dropped.
+    Has(String),
+    /// jq to_entries: expand each JSON object line into one `{"key":<k>,"value":<v>}` line per key (BTreeMap key order); non-object lines pass through.
+    Entries,
+    /// For each JSON-array line, emit each element (via json_to_string); if an
+    /// element is itself a JSON array, emit ITS elements instead (one level
+    /// deeper than `each`). Non-array lines pass through unchanged.
+    Flatten,
+    /// jq `add`: reduce a JSON array line to a single value — sum numeric
+    /// arrays (fmt_num), concatenate non-numeric arrays via their string
+    /// values, empty array -> "". Non-array lines pass through unchanged.
+    Add,
+    /// Keep only lines that parse as a number strictly greater than `N`.
+    /// Lines that do not parse as `f64` are dropped.
+    Over(f64),
+    /// Keep only numeric lines whose value is strictly less than N; drop non-numeric lines.
+    Under(f64),
+    /// Keep numeric lines x where lo <= x <= hi (inclusive); non-numeric lines are dropped.
+    Between(f64, f64),
+    /// Prefix each line with its 1-based index and a tab: "1\t<line>".
+    Enumerate,
+    /// Split each line on whitespace and emit one word per line (flatten); empty lines produce nothing.
+    Words,
+    /// Collapse runs of adjacent identical lines to a single line (classic uniq), leaving non-adjacent repeats intact.
+    Dedup,
+    /// Keep only the last N lines (complement of `take`, which keeps the first N). N>=len keeps all.
+    Tailn(usize),
+    /// Right-pad each line with spaces to a minimum visible width N (no truncation if the line is already longer).
+    Pad(usize),
+    /// Left-pad each line with spaces to a minimum width of N (lines already >= N are unchanged).
+    Lpad(usize),
+    /// Retain lines whose FIELD (json key or 1-based whitespace column) matches the regex.
+    Grepf(String, regex::Regex),
+    /// Reverse the Unicode scalar characters of each line (chars().rev()).
+    Flip,
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -366,6 +417,209 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
             }
+            QueryOp::SortBy(field) => {
+                // Split object lines (carrying their field value) from the rest;
+                // non-objects keep their relative input order and sink to the end.
+                let mut objs: Vec<(String, String)> = Vec::new();
+                let mut rest: Vec<String> = Vec::new();
+                for l in cur.drain(..) {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(&l) {
+                        let key = m.get(field).map(json_to_string).unwrap_or_default();
+                        objs.push((key, l));
+                    } else {
+                        rest.push(l);
+                    }
+                }
+                let all_numeric =
+                    !objs.is_empty() && objs.iter().all(|(k, _)| k.trim().parse::<f64>().is_ok());
+                if all_numeric {
+                    // slice::sort_by is stable — equal keys preserve input order.
+                    objs.sort_by(|a, b| {
+                        let na = a.0.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        let nb = b.0.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                } else {
+                    objs.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+                cur = objs.into_iter().map(|(_, l)| l).collect();
+                cur.extend(rest);
+            }
+            QueryOp::UniqueBy(field) => {
+                let mut seen: HashSet<String> = HashSet::new();
+                cur.retain(|l| {
+                    let key = match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => {
+                            m.get(field).map(json_to_string).unwrap_or_default()
+                        }
+                        _ => l.clone(),
+                    };
+                    seen.insert(key)
+                });
+            }
+            QueryOp::CountBy(field) => {
+                let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+                for l in &cur {
+                    let key = match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => m.get(field).map(json_to_string).unwrap_or_default(),
+                        _ => l.clone(),
+                    };
+                    *counts.entry(key).or_insert(0) += 1;
+                }
+                let mut pairs: Vec<(String, u64)> = counts.into_iter().collect();
+                pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                return QueryResult::Pairs(pairs);
+            }
+            QueryOp::MinBy(field) => {
+                let best = cur
+                    .iter()
+                    .filter(|l| !field_num(l, field).is_nan())
+                    .min_by(|a, b| {
+                        field_num(a, field)
+                            .partial_cmp(&field_num(b, field))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                return QueryResult::Lines(best.into_iter().cloned().collect());
+            }
+            QueryOp::MaxBy(field) => {
+                // Ignore lines whose FIELD is absent/non-numeric (field_num -> NaN),
+                // then keep the record with the greatest value. On ties the last
+                // maximal record wins (std max_by semantics). Empty input -> no lines.
+                let best = cur
+                    .iter()
+                    .filter(|l| !field_num(l, field).is_nan())
+                    .max_by(|a, b| {
+                        field_num(a, field)
+                            .partial_cmp(&field_num(b, field))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .cloned();
+                return QueryResult::Lines(best.into_iter().collect());
+            }
+            QueryOp::Has(key) => {
+                cur.retain(|l| {
+                    matches!(
+                        serde_json::from_str::<Value>(l),
+                        Ok(Value::Object(ref m)) if m.contains_key(key)
+                    )
+                });
+            }
+            QueryOp::Entries => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => {
+                            for (k, v) in &m {
+                                out.push(format!(
+                                    "{{\"key\":{},\"value\":{}}}",
+                                    Value::String(k.clone()),
+                                    v
+                                ));
+                            }
+                        }
+                        _ => out.push(l.clone()),
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Flatten => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Array(arr)) => {
+                            for el in &arr {
+                                match el {
+                                    Value::Array(inner) => {
+                                        out.extend(inner.iter().map(json_to_string));
+                                    }
+                                    other => out.push(json_to_string(other)),
+                                }
+                            }
+                        }
+                        _ => out.push(l.clone()),
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Add => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(l) {
+                        if arr.is_empty() {
+                            *l = String::new();
+                        } else if arr.iter().all(Value::is_number) {
+                            let sum: f64 = arr.iter().filter_map(Value::as_f64).sum();
+                            *l = fmt_num(sum);
+                        } else {
+                            *l = arr.iter().map(json_to_string).collect::<String>();
+                        }
+                    }
+                }
+            }
+            QueryOp::Over(n) => {
+                cur.retain(|l| l.trim().parse::<f64>().map(|v| v > *n).unwrap_or(false));
+            }
+            QueryOp::Under(n) => {
+                cur.retain(|l| l.trim().parse::<f64>().map(|v| v < *n).unwrap_or(false));
+            }
+            QueryOp::Between(lo, hi) => {
+                cur.retain(|l| {
+                    let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
+                    x >= *lo && x <= *hi
+                });
+            }
+            QueryOp::Enumerate => {
+                for (i, l) in cur.iter_mut().enumerate() {
+                    *l = format!("{}\t{}", i + 1, l);
+                }
+            }
+            QueryOp::Words => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    out.extend(l.split_whitespace().map(str::to_string));
+                }
+                cur = out;
+            }
+            QueryOp::Dedup => {
+                cur.dedup();
+            }
+            QueryOp::Tailn(n) => {
+                let len = cur.len();
+                if *n < len {
+                    cur.drain(0..len - *n);
+                }
+            }
+            QueryOp::Pad(n) => {
+                let n = *n;
+                for l in cur.iter_mut() {
+                    *l = format!("{:<width$}", l, width = n);
+                }
+            }
+            QueryOp::Lpad(width) => {
+                let w = *width;
+                for l in cur.iter_mut() {
+                    *l = format!("{:>width$}", l, width = w);
+                }
+            }
+            QueryOp::Grepf(field, re) => {
+                cur.retain(|l| {
+                    let val = if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
+                        m.get(field).map(json_to_string).unwrap_or_default()
+                    } else if let Ok(idx) = field.parse::<usize>() {
+                        l.split_whitespace()
+                            .nth(idx.saturating_sub(1))
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
+                    re.is_match(&val)
+                });
+            }
+            QueryOp::Flip => {
+                for l in cur.iter_mut() {
+                    *l = l.chars().rev().collect();
+                }
+            }
             QueryOp::Contains(s) => cur.retain(|l| l.contains(s.as_str())),
             QueryOp::Starts(p) => cur.retain(|l| l.starts_with(p.as_str())),
             QueryOp::Ends(s) => cur.retain(|l| l.ends_with(s.as_str())),
@@ -539,6 +793,17 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Lower
                 | QueryOp::Trim
                 | QueryOp::Replace(_, _)
+                | QueryOp::Has(_)
+                | QueryOp::Entries
+                | QueryOp::Add
+                | QueryOp::Over(_)
+                | QueryOp::Under(_)
+                | QueryOp::Between(_, _)
+                | QueryOp::Pad(_)
+                | QueryOp::Lpad(_)
+                | QueryOp::Grepf(_, _)
+                | QueryOp::Flip
+
         )
     })
 }
