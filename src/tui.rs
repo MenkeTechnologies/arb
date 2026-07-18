@@ -49,13 +49,18 @@ pub struct Controls {
     pub quit: bool,
     /// fzf select mode: cursor offset from the newest (bottom) filtered line.
     pub cursor: usize,
-    /// Enter pressed in fzf mode — the run loop resolves `selected` and exits.
+    /// Enter pressed in fzf mode — the run loop fills `result` and exits.
     pub submit: bool,
-    /// The chosen line (fzf mode), set by the run loop on submit; printed to
-    /// stdout by `main`. `None` = aborted with no selection.
-    pub selected: Option<String>,
-    /// Whether the key handler interprets nav/Enter as fzf select controls.
+    /// Whether the key handler interprets nav/Tab/Enter as fzf select controls.
     pub fzf: bool,
+    /// Tab-marked lines (multi-select). Emitted on Enter when non-empty.
+    pub marks: Vec<String>,
+    /// Tab pressed — the run loop toggles the cursor line in `marks`, since only
+    /// it knows the current filtered list + cursor.
+    pub toggle: bool,
+    /// Final selection (fzf mode), filled by the run loop on submit and printed
+    /// to stdout by `main`: the marks if any, else the cursor line.
+    pub result: Vec<String>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -144,6 +149,7 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                     }
                     0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_sub(1),
                     0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_add(1),
+                    0x09 if fzf => c.toggle = true, // Tab: mark/unmark (multi-select)
                     0x1b => {
                         // Esc: fzf mode aborts; otherwise clear the filter (or quit
                         // when it is already empty).
@@ -222,11 +228,33 @@ pub fn run(
             scored.sort_by(|a, b| b.0.cmp(&a.0));
             let matched: Vec<String> = scored.into_iter().map(|(_, l)| l).collect();
             let sel = cursor.min(matched.len().saturating_sub(1));
+
+            let mut c = controls.lock().unwrap();
+            if c.toggle {
+                // Tab: toggle the cursor line in the mark set, then advance.
+                c.toggle = false;
+                if let Some(line) = matched.get(sel) {
+                    match c.marks.iter().position(|m| m == line) {
+                        Some(pos) => {
+                            c.marks.remove(pos);
+                        }
+                        None => c.marks.push(line.clone()),
+                    }
+                }
+                c.cursor = c.cursor.saturating_add(1);
+            }
             if submit {
-                controls.lock().unwrap().selected = matched.get(sel).cloned();
+                // Emit the marks if any (multi-select), else the cursor line.
+                c.result = if c.marks.is_empty() {
+                    matched.get(sel).cloned().into_iter().collect()
+                } else {
+                    c.marks.clone()
+                };
                 break Ok(());
             }
-            let draw = terminal.draw(|f| render_fzf(f, &matched, &filter, sel));
+            let marks = c.marks.clone();
+            drop(c);
+            let draw = terminal.draw(|f| render_fzf(f, &matched, &filter, sel, &marks));
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -318,15 +346,27 @@ fn render(
 /// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
 /// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
 /// selection visible. Cursor 0 is the newest (bottom) line.
-fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize) {
+fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize, marks: &[String]) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(f.area());
-    let prompt = format!("> {filter}\u{258f}   {} match(es)  ·  Enter select · Ctrl-C abort · Ctrl-J/K move", matched.len());
+    let marked = if marks.is_empty() {
+        String::new()
+    } else {
+        format!(" · {} marked", marks.len())
+    };
+    let prompt = format!(
+        "> {filter}\u{258f}   {}{marked}  ·  Enter · Tab mark · Ctrl-J/K · Ctrl-C",
+        matched.len()
+    );
     f.render_widget(Paragraph::new(prompt), chunks[0]);
 
     let inner_w = chunks[1].width as usize;
+    // Marked lines get a bullet prefix; the cursor line is highlighted by the List.
     let items: Vec<ListItem> = matched
         .iter()
-        .map(|l| ListItem::new(clip(l, inner_w)))
+        .map(|l| {
+            let mark = if marks.iter().any(|m| m == l) { "●" } else { " " };
+            ListItem::new(format!("{mark}{}", clip(l, inner_w.saturating_sub(1))))
+        })
         .collect();
     let mut state = ListState::default();
     if !matched.is_empty() {

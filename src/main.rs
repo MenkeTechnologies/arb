@@ -223,11 +223,15 @@ fn main() -> io::Result<()> {
         };
         let outcome = tui::run(&spec, state, controls.clone(), down_pane, cli.fzf);
         if cli.fzf {
-            // Emit the selected line (Enter) to stdout; abort (Esc/Ctrl-C) exits
-            // 130 with no output, like fzf.
-            match controls.lock().unwrap().selected.take() {
-                Some(line) => println!("{line}"),
-                None => std::process::exit(130),
+            // On Enter (submit) print the selection — marked lines, or the cursor
+            // line — to stdout. Abort (Esc/Ctrl-C) exits 130 with no output.
+            let c = controls.lock().unwrap();
+            if c.submit {
+                for line in &c.result {
+                    println!("{line}");
+                }
+            } else {
+                std::process::exit(130);
             }
         }
         outcome
