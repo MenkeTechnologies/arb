@@ -156,7 +156,10 @@ A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
 | `div.card h2` | `sel {div.card h2}` |
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
-CSV/TSV (`in.csv`/`in.tsv`), and HTML streams, in families:
+CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML
+(`in.toml`), and HTML streams — one query engine over every format (the yq leg):
+`in.yaml`/`in.toml` parse the document to JSON so every JSON verb applies. In
+families:
 
 - **Filter** — `match`/`grep`, `reject`/`grepv`, `contains`, `starts`, `ends`,
   `nonempty`, `numeric`, `over N`, `under N`, `between A B`, `has KEY`.

@@ -150,6 +150,13 @@ pub enum QueryOp {
     Csv,
     /// Same as `Csv` but tab-separated (TSV).
     Tsv,
+    /// Parse the accumulated stream as a YAML document (or `---`-separated
+    /// multi-document) and emit each document as a JSON line, so the JSON verbs
+    /// (`field`/`pick`/`keys`/`each`) work over it (the yq leg).
+    Yaml,
+    /// Parse the accumulated stream as one TOML document and emit it as a JSON
+    /// object line.
+    Toml,
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -318,6 +325,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::Csv => cur = to_json_records(&cur, ','),
             QueryOp::Tsv => cur = to_json_records(&cur, '\t'),
+            QueryOp::Yaml => cur = yaml_to_json(&cur),
+            QueryOp::Toml => cur = toml_to_json(&cur),
             QueryOp::Sort { numeric, reverse } => {
                 if *numeric {
                     cur.sort_by(|a, b| {
@@ -831,6 +840,26 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
 /// commas are not yet handled.)
 /// Parse a header + data rows of a delimited stream into JSON object strings
 /// keyed by the header, so `field NAME` works over CSV/TSV.
+/// Parse the stream as a YAML document (or `---`-separated multi-document) and
+/// emit each document as a compact JSON line. Unparseable documents are dropped.
+fn yaml_to_json(lines: &[String]) -> Vec<String> {
+    let doc = lines.join("\n");
+    doc.split("\n---\n")
+        .filter(|c| !c.trim().is_empty())
+        .filter_map(|c| serde_yaml::from_str::<Value>(c).ok())
+        .map(|v| v.to_string())
+        .collect()
+}
+
+/// Parse the stream as one TOML document and emit it as a JSON object line
+/// (empty if it does not parse).
+fn toml_to_json(lines: &[String]) -> Vec<String> {
+    match toml::from_str::<Value>(&lines.join("\n")) {
+        Ok(v) => vec![v.to_string()],
+        Err(_) => Vec::new(),
+    }
+}
+
 fn to_json_records(lines: &[String], delim: char) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();

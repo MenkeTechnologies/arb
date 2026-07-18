@@ -876,3 +876,33 @@ fn flip_reverses_characters_per_line() {
         other => panic!("got {other:?}"),
     }
 }
+
+#[test]
+fn in_yaml_parses_to_json_records() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; field name }");
+    let lines = vec!["name: alice".to_string(), "age: 30".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["alice"]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn in_yaml_multidoc_counts() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; count }");
+    let lines = vec!["a: 1".to_string(), "---".to_string(), "b: 2".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Scalar(n) => assert_eq!(n, 2.0),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn in_toml_parses_nested_field() {
+    let ops = pipeline("tail .x\nsource .x { in.toml; field nested port }");
+    let lines = vec!["[nested]".to_string(), "port = 8080".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["8080"]),
+        other => panic!("got {other:?}"),
+    }
+}
