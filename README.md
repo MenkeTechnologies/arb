@@ -154,6 +154,20 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
 - Matched chars highlight yellow; keeps the entire stream (no line drop), so
   marks persist and a huge `find /` stays fully selectable.
 
+**`--fzf` is a DSL spec, not a hardcoded mode.** It synthesizes a one-widget
+`select` spec — so the select surface is expressible directly, and `-prompt`/
+`-header` become widget opts:
+
+```sh
+git ls-files | arb --fzf                          # sugar for the spec below
+git ls-files | arb -e 'select .files -prompt "pick> " -header files
+                       source .files { in }'       # identical: fzf as a spec
+```
+
+A `select` widget anywhere in a spec puts the TUI in select mode, so fzf is just
+one shape the DSL can build — the same DSL that builds dashboards and the
+`input`/`apply` transform editor above.
+
 ### Pipeline orchestrator — `arb '<PROD> | _ | <CONS>'`
 
 arb runs a whole pipeline with `_` marking its own interactive stage, so it owns

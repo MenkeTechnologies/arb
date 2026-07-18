@@ -174,3 +174,15 @@ fn apply_resolves_input_pipeline() {
         other => panic!("got {other:?}"),
     }
 }
+
+#[test]
+fn select_widget_parses_with_opts() {
+    // fzf-as-a-spec: a `select` widget with prompt/header opts.
+    let s = build(&parse("select .files -prompt \"pick> \" -header files\nsource .files { in }").unwrap())
+        .unwrap();
+    assert_eq!(s.widgets.len(), 1);
+    assert_eq!(s.widgets[0].kind, WidgetKind::Select);
+    assert_eq!(s.widgets[0].opts.get("prompt").map(String::as_str), Some("pick> "));
+    assert_eq!(s.widgets[0].opts.get("header").map(String::as_str), Some("files"));
+    assert!(s.widgets[0].source.is_some());
+}

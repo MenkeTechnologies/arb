@@ -27,6 +27,11 @@ pub enum WidgetKind {
     /// An editable text field. Its live value is bound into pipelines via
     /// `apply .name` (parse the value as a query pipeline) — the megafilter/map.
     Input,
+    /// An interactive fuzzy-select list over the stream (the fzf surface as a
+    /// widget). Its presence puts the TUI in select mode: type to fuzzy-filter,
+    /// arrows/Ctrl-N/P move the cursor, Tab marks, Enter emits the picked lines.
+    /// `-prompt`/`-header` opts set the prompt line and a header above the list.
+    Select,
 }
 
 impl WidgetKind {
@@ -45,6 +50,7 @@ impl WidgetKind {
             "block" => WidgetKind::Block,
             "frame" => WidgetKind::Frame,
             "input" => WidgetKind::Input,
+            "select" => WidgetKind::Select,
             _ => return None,
         })
     }
@@ -64,6 +70,7 @@ impl WidgetKind {
             WidgetKind::Block => "block",
             WidgetKind::Frame => "frame",
             WidgetKind::Input => "input",
+            WidgetKind::Select => "select",
         }
     }
 }

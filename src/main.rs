@@ -193,8 +193,9 @@ fn main() -> io::Result<()> {
     }
 
     let spec = if positional_pipeline {
-        // The positional was a pipeline, not a spec file — use the default tail.
-        spec::build(&parser::parse("tail .stream\nsource .stream { in }").unwrap()).unwrap()
+        // The positional was a pipeline, not a spec file — use the zero-config
+        // default (a select list under `--fzf`, otherwise a stream tail).
+        spec::build(&parser::parse(default_spec_src(cli.fzf)).unwrap()).unwrap()
     } else {
         match load_spec(&cli) {
             Ok(s) => s,
@@ -204,6 +205,18 @@ fn main() -> io::Result<()> {
             }
         }
     };
+
+    // Select mode is the fzf surface expressed as a widget: `--fzf` synthesizes a
+    // `select` spec, and a hand-written `select .name` widget turns it on too — so
+    // fzf mode is literally a one-widget DSL spec. The select widget's `-prompt`/
+    // `-header` opts feed the prompt line and header when the flags weren't passed.
+    let fzf_mode = cli.fzf || spec.widgets.iter().any(|w| w.kind == spec::WidgetKind::Select);
+    let (sel_prompt, sel_header) = spec
+        .widgets
+        .iter()
+        .find(|w| w.kind == spec::WidgetKind::Select)
+        .map(|w| (w.opts.get("prompt").cloned(), w.opts.get("header").cloned()))
+        .unwrap_or((None, None));
 
     if cli.html {
         print!("{}", arb::web::render_html(&spec));
@@ -233,7 +246,8 @@ fn main() -> io::Result<()> {
         None => (None, None),
     };
 
-    let needs_stdin = spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
+    let needs_stdin =
+        fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
     if needs_stdin && run_pipeline.is_none() && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
@@ -241,7 +255,7 @@ fn main() -> io::Result<()> {
 
     // fzf select mode keeps every line (no ring drop), so marks persist and the
     // cursor stays put as the stream grows; the dashboard uses the bounded ring.
-    let state = Arc::new(Mutex::new(if cli.fzf {
+    let state = Arc::new(Mutex::new(if fzf_mode {
         StreamState::with_cap(usize::MAX)
     } else {
         StreamState::new()
@@ -271,7 +285,7 @@ fn main() -> io::Result<()> {
                 // Tee the live filtered stream to stdout (only when piped onward,
                 // so arb never blocks or corrupts the terminal). fzf mode never
                 // tees. The filter narrows the passthrough live — the megafilter.
-                let tee = !cli.fzf && !io::stdout().is_terminal();
+                let tee = !fzf_mode && !io::stdout().is_terminal();
                 spawn_reader(state.clone(), tee, controls.clone());
             }
             None
@@ -284,7 +298,7 @@ fn main() -> io::Result<()> {
             Some(c) => vec!["sh".to_string(), "-c".to_string(), c.clone()],
             None => cli.down.clone(),
         };
-        let down_pane = if cli.fzf {
+        let down_pane = if fzf_mode {
             cli.preview.as_ref().map(|pv| {
                 let pstate = Arc::new(Mutex::new(StreamState::new()));
                 spawn_item_preview(pv.clone(), controls.clone(), pstate.clone());
@@ -300,8 +314,9 @@ fn main() -> io::Result<()> {
         };
         {
             let mut c = controls.lock().unwrap();
-            c.prompt = cli.prompt.clone().unwrap_or_default();
-            c.header = cli.header.clone().unwrap_or_default();
+            // Flags win; else fall back to the `select` widget's -prompt/-header.
+            c.prompt = cli.prompt.clone().or(sel_prompt.clone()).unwrap_or_default();
+            c.header = cli.header.clone().or(sel_header.clone()).unwrap_or_default();
             // Form mode: register `input .name` widgets so typing edits them and
             // `apply .name` resolves against their live values.
             c.inputs = spec
@@ -311,8 +326,8 @@ fn main() -> io::Result<()> {
                 .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
                 .collect();
         }
-        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf, cli.height.clone());
-        if cli.fzf {
+        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, fzf_mode, cli.height.clone());
+        if fzf_mode {
             // On Enter (submit) emit the selection (marked lines, or the cursor
             // line). With a `| CONS` consumer, pipe the selection through it first
             // (`find / | _ | perl -pe …` transforms the picked lines). Abort
@@ -483,10 +498,21 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
     } else if let Some(path) = &cli.spec {
         std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?
     } else {
-        // Zero-config default: a full-screen tail of stdin.
-        "tail .stream\nsource .stream { in }".to_string()
+        // Zero-config default: a select list under `--fzf`, else a stream tail.
+        default_spec_src(cli.fzf).to_string()
     };
     spec::build(&parser::parse(&src)?)
+}
+
+/// The synthesized spec source when the user gave no spec/`-e`/`-p`. `--fzf`
+/// yields a one-widget `select` list (fzf as a DSL spec); otherwise a full-screen
+/// tail of stdin. Both bind `in` so the shared stream feeds the widget.
+fn default_spec_src(fzf: bool) -> &'static str {
+    if fzf {
+        "select .sel\nsource .sel { in }"
+    } else {
+        "tail .stream\nsource .stream { in }"
+    }
 }
 
 /// Read stdin into the shared stream for the TUI. When `tee`, each line is also

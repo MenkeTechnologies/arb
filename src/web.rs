@@ -87,8 +87,12 @@ fn body_text(w: &Widget) -> String {
             Some(c) => format!("table (cols={})", c),
             None => "table".to_string(),
         },
-        WidgetKind::Tabs | WidgetKind::Block | WidgetKind::Frame | WidgetKind::Input => {
-            match opt("title").or_else(|| opt("placeholder")) {
+        WidgetKind::Tabs
+        | WidgetKind::Block
+        | WidgetKind::Frame
+        | WidgetKind::Input
+        | WidgetKind::Select => {
+            match opt("title").or_else(|| opt("placeholder")).or_else(|| opt("prompt")) {
                 Some(t) => format!("{} ({})", w.kind.label(), t),
                 None => w.kind.label().to_string(),
             }
