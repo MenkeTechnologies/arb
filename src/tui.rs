@@ -4,6 +4,7 @@
 //! lines and `gauge` renders a scalar against `-max`. Widget kinds without a
 //! renderer yet show an honest placeholder rather than faking output.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,11 @@ pub struct Controls {
     pub prompt: String,
     /// fzf header line shown above the list (`--header`); empty = no header.
     pub header: String,
+    /// `input .name` widget values (name, current text) for DSL form mode. When
+    /// non-empty the TUI is a form: typing edits the focused input, Tab cycles.
+    pub inputs: Vec<(String, String)>,
+    /// Index of the focused input in `inputs`.
+    pub focus: usize,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -177,6 +183,9 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                 };
                 let mut c = controls.lock().unwrap();
                 let fzf = c.fzf;
+                // Form mode: `input` widgets present (and not fzf) — typing edits
+                // the focused input, Tab cycles focus.
+                let form = !fzf && !c.inputs.is_empty();
                 let mut i = 0;
                 while i < n {
                     let b = buf[i];
@@ -203,26 +212,49 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_add(1),
                         0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_sub(1),
                         0x09 if fzf => c.toggle = true, // Tab: mark/unmark
+                        0x09 if form => {
+                            // Tab: cycle focus between inputs.
+                            let nlen = c.inputs.len();
+                            c.focus = (c.focus + 1) % nlen;
+                        }
                         0x1b => {
-                            // Esc: fzf aborts; else clear the filter (or quit if empty).
-                            if fzf || c.filter.is_empty() {
+                            if form {
+                                let f = c.focus;
+                                c.inputs[f].1.clear();
+                            } else if fzf || c.filter.is_empty() {
                                 c.quit = true;
                                 break 'read;
+                            } else {
+                                c.filter.clear();
+                                c.cursor = 0;
                             }
-                            c.filter.clear();
-                            c.cursor = 0;
                         }
                         0x08 | 0x7f => {
-                            c.filter.pop();
-                            c.cursor = 0;
+                            if form {
+                                let f = c.focus;
+                                c.inputs[f].1.pop();
+                            } else {
+                                c.filter.pop();
+                                c.cursor = 0;
+                            }
                         }
                         0x15 => {
-                            c.filter.clear();
-                            c.cursor = 0;
+                            if form {
+                                let f = c.focus;
+                                c.inputs[f].1.clear();
+                            } else {
+                                c.filter.clear();
+                                c.cursor = 0;
+                            }
                         }
                         0x20..=0x7e => {
-                            c.filter.push(b as char);
-                            c.cursor = 0;
+                            if form {
+                                let f = c.focus;
+                                c.inputs[f].1.push(b as char);
+                            } else {
+                                c.filter.push(b as char);
+                                c.cursor = 0;
+                            }
                         }
                         _ => {}
                     }
@@ -433,10 +465,19 @@ pub fn run(
             let tail = d.lines.iter().skip(n.saturating_sub(1000)).cloned().collect();
             (tail, label.clone())
         });
+        // Snapshot live `input .name` values (form mode) so bound `apply .name`
+        // pipelines resolve against what the user has typed, and the focused
+        // field renders highlighted.
+        let (inputs, focus_name): (HashMap<String, String>, Option<String>) = {
+            let c = controls.lock().unwrap();
+            let map = c.inputs.iter().cloned().collect();
+            let focus = c.inputs.get(c.focus).map(|(n, _)| n.clone());
+            (map, focus)
+        };
         let st = state.lock().unwrap();
         let draw = terminal.draw(|f| {
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
-            render(f, spec, &st, &filter, down_ref, err_ref);
+            render(f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref());
         });
         drop(st);
         if let Err(e) = draw {
@@ -464,6 +505,8 @@ fn render(
     filter: &str,
     down: Option<(&[String], &str)>,
     err: Option<(&[String], &str)>,
+    inputs: &HashMap<String, String>,
+    focus: Option<&str>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -518,9 +561,53 @@ fn render(
     let rects = compute_rects(area, spec);
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
-        let result = w.source.as_ref().map(|s| eval(&s.pipeline, &raw, elapsed));
+        // Input widgets are interactive fields, not stream views: render the live
+        // value with the focused field highlighted.
+        if w.kind == WidgetKind::Input {
+            let name = w.path.trim_start_matches('.');
+            let val = inputs.get(name).map(String::as_str).unwrap_or("");
+            render_input(f, rects[i], w, val, focus == Some(name));
+            continue;
+        }
+        // Resolve `apply .name` placeholders against the live input values before
+        // evaluating, so a bound pipeline reflects what the user has typed.
+        let result = w.source.as_ref().map(|s| {
+            let pipeline = crate::spec::resolve_pipeline(&s.pipeline, inputs);
+            eval(&pipeline, &raw, elapsed)
+        });
         render_widget(f, rects[i], w, st, &raw, result);
     }
+}
+
+/// Render an `input .name` widget as an editable field: `label: value▏`, with a
+/// cyan border + reversed caret when focused. `placeholder`/`title` opts supply
+/// the label and dimmed empty-state hint.
+fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool) {
+    let label = w
+        .opts
+        .get("title")
+        .or_else(|| w.opts.get("placeholder"))
+        .map(String::as_str)
+        .unwrap_or_else(|| w.path.trim_start_matches('.'));
+    let border = if focused { Color::Cyan } else { Color::DarkGray };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(format!(" {label} "));
+    let body = if focused {
+        Line::from(vec![
+            Span::raw(val.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+        ])
+    } else if val.is_empty() {
+        Line::from(Span::styled(
+            w.opts.get("placeholder").cloned().unwrap_or_default(),
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(Span::raw(val.to_string()))
+    };
+    f.render_widget(Paragraph::new(body).block(block), area);
 }
 
 /// One rect per widget. Auto vertical stack unless any widget has a grid cell,

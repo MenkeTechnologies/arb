@@ -150,3 +150,27 @@ fn regex_literal_spans_quotes_and_spaces() {
     let spec = build(&parse(src).unwrap()).expect("quote/space regex should build");
     assert_eq!(spec.widgets.len(), 1);
 }
+
+#[test]
+fn apply_resolves_input_pipeline() {
+    use std::collections::HashMap;
+    // A source using `apply .q` — the input .q holds a transform pipeline.
+    let s = build(&parse("list .after\nsource .after { in; apply .q }").unwrap()).unwrap();
+    let ops = &s.widgets[0].source.as_ref().unwrap().pipeline;
+    // With .q = "field 2; upper", the resolved pipeline applies field+upper.
+    let mut inputs = HashMap::new();
+    inputs.insert("q".to_string(), "field 2; upper".to_string());
+    let resolved = arb::spec::resolve_pipeline(ops, &inputs);
+    let lines = vec!["a bob".to_string(), "c dan".to_string()];
+    match arb::query::eval(&resolved, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["BOB", "DAN"]),
+        other => panic!("got {other:?}"),
+    }
+    // Empty input → no transform (identity).
+    let empty: HashMap<String, String> = HashMap::new();
+    let resolved0 = arb::spec::resolve_pipeline(ops, &empty);
+    match arb::query::eval(&resolved0, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, lines),
+        other => panic!("got {other:?}"),
+    }
+}

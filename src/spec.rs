@@ -24,6 +24,9 @@ pub enum WidgetKind {
     Tabs,
     Block,
     Frame,
+    /// An editable text field. Its live value is bound into pipelines via
+    /// `apply .name` (parse the value as a query pipeline) — the megafilter/map.
+    Input,
 }
 
 impl WidgetKind {
@@ -41,6 +44,7 @@ impl WidgetKind {
             "tabs" => WidgetKind::Tabs,
             "block" => WidgetKind::Block,
             "frame" => WidgetKind::Frame,
+            "input" => WidgetKind::Input,
             _ => return None,
         })
     }
@@ -59,6 +63,7 @@ impl WidgetKind {
             WidgetKind::Tabs => "tabs",
             WidgetKind::Block => "block",
             WidgetKind::Frame => "frame",
+            WidgetKind::Input => "input",
         }
     }
 }
@@ -92,6 +97,34 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
     let mut spec = Spec::default();
     build_into(&mut spec, cmds, 0)?;
     Ok(spec)
+}
+
+/// Resolve `apply .name` placeholders against live `input` widget values: each
+/// `Apply(name)` is replaced by the query pipeline parsed from that input's
+/// current text (empty/invalid → dropped). Called every render frame so a
+/// before/after transform pane updates as the user edits the input.
+pub fn resolve_pipeline(
+    ops: &[QueryOp],
+    inputs: &std::collections::HashMap<String, String>,
+) -> Vec<QueryOp> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            QueryOp::Apply(name) => {
+                if let Some(val) = inputs.get(name).filter(|v| !v.trim().is_empty()) {
+                    // Parse the input text as a pipeline body (prefix `in;` so it
+                    // is a valid source body) and splice its ops in.
+                    if let Ok(cmds) = crate::parser::parse(&format!("in; {val}")) {
+                        if let Ok(sub) = pipeline_from_body(&cmds) {
+                            out.extend(sub);
+                        }
+                    }
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
 }
 
 /// Process `cmds` into `spec`. `import NAME` resolves and inlines a module
@@ -779,6 +812,11 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     .unwrap_or(raw);
                 let re = regex::Regex::new(pat).map_err(|e| format!("grepf: bad regex: {e}"))?;
                 ops.push(QueryOp::Grepf(field, re));
+            }
+            "apply" => {
+                let name = str_arg(c);
+                let name = name.strip_prefix('.').unwrap_or(&name).to_string();
+                ops.push(QueryOp::Apply(name));
             }
             "basename" => ops.push(QueryOp::Basename),
             "dirname" => ops.push(QueryOp::Dirname),

@@ -171,6 +171,27 @@ arb --fzf 'sudo find / | _ | perl -pe "s|Application|APP|"'
 Each stage is shelled out (`sh -c`, so globs/quotes work); arb wires the
 fds between them. (`--run 'PIPELINE'` is the explicit-flag form.)
 
+### Interactive editor — `input` widget + `apply` verb
+
+fzf is one TUI. The DSL builds arbitrary ones. An `input .name` widget is a live
+editable field; the `apply .name` verb splices its current value into a source
+pipeline, re-evaluated every frame. That makes a **before/after transform editor**
+a spec, not a mode:
+
+```sh
+printf 'alice\nbob\ncarol\n' | arb -e '
+  input .q -placeholder "transform (e.g. upper)"
+  list  .before
+  list  .after
+  source .before { in }
+  source .after  { in; apply .q }'
+#  type `upper` in the field → the .after pane recomputes `in; upper` live
+```
+
+`Tab` cycles focus between fields, typing edits the focused one, `Esc`/`Ctrl-U`
+clear it. Any query verb (`upper`, `field N`, `grep /re/`, `commafy`, …) is valid
+after `apply`, so the field drives the whole downstream pipeline interactively.
+
 ---
 
 ## [0x03] DESIGN

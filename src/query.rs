@@ -155,6 +155,10 @@ pub enum QueryOp {
     /// Group a numeric line's integer part with thousands separators
     /// (`1234567` -> `1,234,567`); non-numeric lines pass through.
     Commafy,
+    /// Placeholder for `apply .name`: at render time it is replaced by the query
+    /// pipeline typed into the `input .name` widget (the megafilter/map binding).
+    /// Left in a pipeline unsubstituted it is a no-op.
+    Apply(String),
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -701,6 +705,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     *l = commafy(l);
                 }
             }
+            // Resolved to the input widget's pipeline before eval; a no-op if it
+            // survives (empty input, or eval reached without substitution).
+            QueryOp::Apply(_) => {}
             QueryOp::B64 => {
                 for l in cur.iter_mut() {
                     *l = STANDARD.encode(l.as_bytes());

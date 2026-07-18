@@ -302,6 +302,14 @@ fn main() -> io::Result<()> {
             let mut c = controls.lock().unwrap();
             c.prompt = cli.prompt.clone().unwrap_or_default();
             c.header = cli.header.clone().unwrap_or_default();
+            // Form mode: register `input .name` widgets so typing edits them and
+            // `apply .name` resolves against their live values.
+            c.inputs = spec
+                .widgets
+                .iter()
+                .filter(|w| w.kind == spec::WidgetKind::Input)
+                .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
+                .collect();
         }
         let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf, cli.height.clone());
         if cli.fzf {
