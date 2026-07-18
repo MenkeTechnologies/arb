@@ -176,14 +176,20 @@ fn main() -> io::Result<()> {
 
     let state = Arc::new(Mutex::new(StreamState::new()));
 
-    // Interactive TUI only when stdout is a terminal AND key events are
-    // reachable (a `/dev/tty` we can open — see `tui::events_available`). With a
-    // terminal stdout but no controlling tty (CI, a detached exec), fall through
-    // to the non-interactive paths below instead of entering raw mode and
-    // crashing on the event reader.
-    if io::stdout().is_terminal() && tui::events_available() {
+    // Interactive TUI whenever a controlling terminal is reachable (a `/dev/tty`
+    // we can open — see `tui::events_available`); the TUI renders THERE, not to
+    // stdout, so it runs even when stdout is piped onward. Exception: an explicit
+    // `out { … }` reshape with a downstream consumer takes the data path below so
+    // the consumer gets the transformed stream. With no controlling tty (CI, a
+    // detached exec) it also falls through, instead of crashing on the reader.
+    let downstream_reshape = spec.out.is_some() && !io::stdout().is_terminal();
+    if tui::events_available() && !downstream_reshape {
         if needs_stdin {
-            spawn_reader(state.clone());
+            // Tee stdin→stdout live only when piped onward, so a downstream
+            // consumer still receives the stream (`find / | arb | consumer`)
+            // without arb ever blocking the pipeline. When stdout is the terminal
+            // the TUI already owns it (via /dev/tty), so no tee.
+            spawn_reader(state.clone(), !io::stdout().is_terminal());
         }
         tui::run(&spec, state)
     } else if let Some(out_ops) = &spec.out {
@@ -342,13 +348,24 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
     spec::build(&parser::parse(&src)?)
 }
 
-fn spawn_reader(state: Arc<Mutex<StreamState>>) {
+/// Read stdin into the shared stream for the TUI. When `tee`, each line is also
+/// written to stdout immediately (a live passthrough for a downstream consumer),
+/// so `find / | arb | consumer` feeds `consumer` continuously while the TUI
+/// renders to /dev/tty — arb never blocks the pipeline. A closed consumer stops
+/// the passthrough but the TUI keeps updating.
+fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool) {
     thread::spawn(move || {
+        let mut out = io::stdout().lock();
+        let mut downstream_open = tee;
         for line in io::stdin().lock().lines() {
-            match line {
-                Ok(l) => state.lock().unwrap().push(l),
+            let l = match line {
+                Ok(l) => l,
                 Err(_) => break,
+            };
+            if downstream_open && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
+                downstream_open = false;
             }
+            state.lock().unwrap().push(l);
         }
     });
 }

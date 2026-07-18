@@ -4,13 +4,15 @@
 //! lines and `gauge` renders a scalar against `-max`. Widget kinds without a
 //! renderer yet show an honest placeholder rather than faking output.
 
-use std::io::{self, Stdout};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::Duration;
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -37,46 +39,59 @@ pub fn events_available() -> bool {
         .is_ok()
 }
 
-/// Run the TUI until the user quits (`q`/Esc/Ctrl-C). Any I/O error inside the
-/// loop breaks out so the terminal is always restored (raw mode off, alternate
-/// screen left, cursor shown) before the error is returned — never left wedged.
-pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let mut terminal: Terminal<CrosstermBackend<Stdout>> =
-        Terminal::new(CrosstermBackend::new(stdout))?;
-
-    let mut last_draw = Instant::now() - Duration::from_secs(1);
-    let outcome = loop {
-        if last_draw.elapsed() >= Duration::from_millis(120) {
-            last_draw = Instant::now();
-            let st = state.lock().unwrap();
-            let draw = terminal.draw(|f| render(f, spec, &st));
-            drop(st);
-            if let Err(e) = draw {
-                break Err(e);
-            }
-        }
-        // Key events come from `/dev/tty` (see `events_available`), so they
-        // arrive even though stdin is carrying the data pipe. Errors break the
-        // loop rather than `?`-propagating, so the restore code below still runs.
-        match event::poll(Duration::from_millis(50)) {
-            Ok(true) => match event::read() {
-                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                    let quit = matches!(k.code, KeyCode::Char('q') | KeyCode::Esc)
-                        || (k.code == KeyCode::Char('c')
-                            && k.modifiers.contains(KeyModifiers::CONTROL));
-                    if quit {
-                        break Ok(());
-                    }
+/// Spawn a thread that reads key bytes straight from `/dev/tty` and flags quit
+/// on `q` / Esc / Ctrl-C. We read the terminal device directly — exactly how
+/// `vipe` gets the keyboard while stdin carries the pipe — instead of using
+/// crossterm's event source, whose `mio`-on-tty reader fails to initialize on
+/// some hosts (the "failed to initialize input reader" crash on `find / | arb`).
+/// Raw mode (set on the terminal device by `enable_raw_mode`) makes these bytes
+/// arrive unbuffered, so a single keypress is seen immediately.
+fn spawn_key_reader(quit: Arc<AtomicBool>) {
+    if let Ok(mut tty) = OpenOptions::new().read(true).open("/dev/tty") {
+        thread::spawn(move || {
+            let mut buf = [0u8; 1];
+            while let Ok(1) = tty.read(&mut buf) {
+                if matches!(buf[0], b'q' | 0x1b | 0x03) {
+                    quit.store(true, Ordering::SeqCst);
+                    break;
                 }
-                Ok(_) => {}
-                Err(e) => break Err(e),
-            },
-            Ok(false) => {}
-            Err(e) => break Err(e),
+            }
+        });
+    }
+}
+
+/// Run the TUI until the user quits (`q`/Esc/Ctrl-C). Renders to `/dev/tty` (the
+/// terminal), NOT stdout — like fzf — so stdout stays a clean data channel for a
+/// downstream consumer (`find / | arb | consumer`). Unlike fzf, arb never blocks
+/// the pipeline: the caller tees stdin→stdout live in a separate thread while
+/// this loop draws. The terminal is always restored (raw mode off, alternate
+/// screen left, cursor shown) before returning, even on a draw error.
+pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
+    let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+    enable_raw_mode()?;
+    // Wrap the tty in the backend before entering the alternate screen: the
+    // backend is write-only, so `execute!` isn't ambiguous over `File`'s Read +
+    // Write `by_ref`.
+    let mut terminal = Terminal::new(CrosstermBackend::new(tty))?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+
+    let quit = Arc::new(AtomicBool::new(false));
+    spawn_key_reader(quit.clone());
+
+    // Redraw on a fixed cadence so live stream updates show; the key reader runs
+    // independently, so the render loop never blocks on input (the pipeline keeps
+    // flowing regardless of keypresses).
+    let outcome = loop {
+        if quit.load(Ordering::SeqCst) {
+            break Ok(());
         }
+        let st = state.lock().unwrap();
+        let draw = terminal.draw(|f| render(f, spec, &st));
+        drop(st);
+        if let Err(e) = draw {
+            break Err(e);
+        }
+        thread::sleep(Duration::from_millis(120));
     };
 
     disable_raw_mode()?;
