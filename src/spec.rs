@@ -82,6 +82,9 @@ pub struct Widget {
 #[derive(Debug, Default)]
 pub struct Spec {
     pub widgets: Vec<Widget>,
+    /// Downstream output pipeline (`out { … }`): applied to the stream and
+    /// written to stdout, so arb can *modify* a pipe, not just visualize it.
+    pub out: Option<Vec<QueryOp>>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -138,6 +141,12 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             };
             let pipeline = pipeline_from_body(body)?;
             set_source(spec, path, Source { pipeline })?;
+        } else if c.name == "out" {
+            let body = match c.args.first() {
+                Some(Arg::Block(b)) => b,
+                _ => return Err("out: expected `{ body }`".into()),
+            };
+            spec.out = Some(pipeline_from_body(body)?);
         } else if c.name == "grid" {
             let path = c
                 .args

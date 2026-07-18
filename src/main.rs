@@ -16,7 +16,7 @@ use std::thread;
 
 use clap::Parser;
 
-use arb::query::{self, QueryResult};
+use arb::query::{self, QueryOp, QueryResult};
 use arb::spec::{self, Spec};
 use arb::stream::StreamState;
 use arb::{parser, tui};
@@ -65,7 +65,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let needs_stdin = spec.widgets.iter().any(|w| w.source.is_some());
+    let needs_stdin = spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
     if needs_stdin && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
@@ -78,12 +78,40 @@ fn main() -> io::Result<()> {
             spawn_reader(state.clone());
         }
         tui::run(&spec, state)
+    } else if let Some(out_ops) = &spec.out {
+        // Piped downstream: arb modifies the stream — emit the `out` pipeline.
+        if needs_stdin {
+            read_stdin_sync(&state);
+        }
+        emit_out(out_ops, &state)
     } else {
         if needs_stdin {
             read_stdin_sync(&state);
         }
         dump(&spec, &state)
     }
+}
+
+/// Write the `out { … }` pipeline's result to stdout (arb as a pipe filter).
+fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
+    let st = state.lock().unwrap();
+    let raw: Vec<String> = st.lines.iter().cloned().collect();
+    let elapsed = st.start.elapsed().as_secs_f64();
+    let mut out = io::stdout().lock();
+    match query::eval(ops, &raw, elapsed) {
+        QueryResult::Lines(ls) => {
+            for l in ls {
+                writeln!(out, "{l}")?;
+            }
+        }
+        QueryResult::Scalar(v) => writeln!(out, "{v}")?,
+        QueryResult::Pairs(ps) => {
+            for (k, c) in ps {
+                writeln!(out, "{k}\t{c}")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate a spec and copy it into `~/.arb/lib/NAME.arb` so it can later be run

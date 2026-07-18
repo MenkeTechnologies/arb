@@ -122,6 +122,20 @@ fn import_then_extend_with_own_widget() {
 }
 
 #[test]
+fn out_block_defines_downstream_pipeline() {
+    let s = build(&parse("out { in; match /ERROR/ }").unwrap()).unwrap();
+    assert!(s.out.is_some());
+    assert_eq!(s.out.as_ref().unwrap().len(), 1);
+}
+
+#[test]
+fn out_and_widgets_coexist() {
+    let s = build(&parse("tail .t; source .t { in }; out { in; field 1 }").unwrap()).unwrap();
+    assert_eq!(s.widgets.len(), 1);
+    assert!(s.out.is_some());
+}
+
+#[test]
 fn unknown_verb_ignored() {
     let s = build(&parse("frobnicate .x\ntext .a").unwrap()).unwrap();
     assert_eq!(s.widgets.len(), 1);
