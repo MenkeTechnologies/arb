@@ -21,38 +21,95 @@ use arb::spec::{self, Spec};
 use arb::stream::StreamState;
 use arb::{parser, tui};
 
+// Cyberpunk `-h` help — help template, ASCII banner, and footer, ported from the
+// `temprs` (`tp -h`) house style (`temprs/src/model/opts.rs`): `{before-help}`
+// banner, cyberpunk section dividers, green `//` per-option prefixes, and a
+// `── SYSTEM ──` footer. clap emits raw ANSI in these verbatim.
+const HELP_TEMPLATE: &str = "
+{before-help}
+{about}
+
+\x1b[33m  USAGE:\x1b[0m {usage}
+
+\x1b[36m  ── OPTIONS ────────────────────────────────────────────\x1b[0m
+{options}
+\x1b[36m  ── POSITIONAL ─────────────────────────────────────────\x1b[0m
+{positionals}
+{after-help}";
+
+const BANNER: &str = concat!(
+    "\x1b[36m █████╗ ██████╗ ██████╗\x1b[0m\n",
+    "\x1b[36m██╔══██╗██╔══██╗██╔══██╗\x1b[0m\n",
+    "\x1b[35m███████║██████╔╝██████╔╝\x1b[0m\n",
+    "\x1b[35m██╔══██║██╔══██╗██╔══██╗\x1b[0m\n",
+    "\x1b[31m██║  ██║██║  ██║██████╔╝\x1b[0m\n",
+    "\x1b[31m╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝\x1b[0m\n",
+    "\x1b[36m ┌──────────────────────────────────────────────────────┐\x1b[0m\n",
+    "\x1b[36m │ STATUS: ONLINE  // SIGNAL: ████████░░ // v",
+    env!("CARGO_PKG_VERSION"),
+    "\x1b[36m      │\x1b[0m\n",
+    "\x1b[36m └──────────────────────────────────────────────────────┘\x1b[0m\n",
+    "\x1b[35m  >> A TUI FOR EVERY PIPELINE // FULL SPECTRUM <<\x1b[0m"
+);
+
+const AFTER: &str = concat!(
+    "\x1b[36m  ── SYSTEM ─────────────────────────────────────────\x1b[0m\n",
+    "\x1b[35m  v",
+    env!("CARGO_PKG_VERSION"),
+    " \x1b[0m// \x1b[33m(c) MenkeTechnologies\x1b[0m\n",
+    "\x1b[35m  A TUI for every pipeline.\x1b[0m\n",
+    "\x1b[33m  >>> PIPE IN. SHAPE THE STREAM. OWN YOUR OUTPUT. <<<\x1b[0m\n",
+    "\x1b[36m ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m"
+);
+
 /// arb — pipe a stream in, get a live TUI.
 #[derive(Parser, Debug)]
-#[command(name = "arb", version, about = "Visualize and modify Unix pipelines.")]
+#[command(
+    name = "arb",
+    version,
+    about = "Visualize and modify Unix pipelines.",
+    help_template = HELP_TEMPLATE,
+    before_help = BANNER,
+    after_help = AFTER,
+)]
 struct Cli {
     /// Dashboard spec file (.arb).
+    #[arg(help = "\x1b[32m//\x1b[0m Dashboard spec file (.arb)")]
     spec: Option<String>,
     /// Inline spec, e.g. `-e 'gauge .g -max 100; source .g { in; count }'`.
-    #[arg(short = 'e', long = "eval")]
+    #[arg(short = 'e', long = "eval",
+        help = "\x1b[32m//\x1b[0m Inline spec, e.g. -e 'gauge .g -max 100; source .g { in; count }'")]
     eval: Option<String>,
     /// Run a preset / stdlib module by name, e.g. `-p logs` (== `import logs`).
-    #[arg(short = 'p', long = "preset")]
+    #[arg(short = 'p', long = "preset",
+        help = "\x1b[32m//\x1b[0m Run a preset / stdlib module by name (== import NAME)")]
     preset: Option<String>,
     /// List available presets (bundled stdlib + `~/.arb/lib`) and exit.
-    #[arg(short = 'l', long = "list")]
+    #[arg(short = 'l', long = "list",
+        help = "\x1b[32m//\x1b[0m List available presets (stdlib + ~/.arb/lib) and exit")]
     list: bool,
     /// Save a spec as a named user preset in `~/.arb/lib`, then exit.
     /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
-    #[arg(long = "save", value_name = "NAME")]
+    #[arg(long = "save", value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Save a spec (FILE or -e SRC) as a named user preset, then exit")]
     save: Option<String>,
     /// Interactive REPL — author + test specs against a sample buffer.
-    #[arg(short = 'r', long = "repl")]
+    #[arg(short = 'r', long = "repl",
+        help = "\x1b[32m//\x1b[0m Interactive REPL — author + test specs against a sample buffer")]
     repl: bool,
     /// Generate a static HTML dashboard from the spec to stdout, then exit
     /// (`arb -p logs --html > dash.html`).
-    #[arg(long = "html")]
+    #[arg(long = "html",
+        help = "\x1b[32m//\x1b[0m Emit a static HTML dashboard from the spec to stdout, then exit")]
     html: bool,
     /// Validate the spec (parse + build) and exit 0/1 without reading stdin.
-    #[arg(long = "check")]
+    #[arg(long = "check",
+        help = "\x1b[32m//\x1b[0m Validate the spec (parse + build) and exit 0/1, no stdin")]
     check: bool,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.
-    #[arg(long = "json")]
+    #[arg(long = "json",
+        help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines")]
     json: bool,
 }
 
