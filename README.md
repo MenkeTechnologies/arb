@@ -140,9 +140,11 @@ A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
 
 The verbs live today are `in`, `match`/`grep`, `reject`/`grepv`, `field N`/`field
 NAME`, `count`, `rate`, and `tally` — over line and JSON streams (`in.json`,
-nested key paths) — plus `calc` (arithmetic that compiles to fusevm bytecode and
-runs on the VM). They render into `text`/`tail`/`list`/`gauge`/`bars`/`histo`
-widgets, arranged by `grid`.
+nested key paths) — plus a fusevm-computed expression layer: `where PRED`
+(filter), `map EXPR` (per-line transform), and `calc EXPR` (reduce), all lowered
+to a `fusevm::Chunk` and run on the VM, with field-aware references
+(`where ms > 1000`, `map bytes / 1024`). They render into
+`text`/`tail`/`list`/`gauge`/`bars`/`histo` widgets, arranged by `grid`.
 
 ---
 
@@ -188,7 +190,7 @@ Early. The committed tree covers:
   per-widget derived data rendering into `gauge`/`bars`/`histo`; and `calc` —
   arithmetic that compiles to fusevm bytecode and runs on the VM.
 
-The rest of the language — the full expression layer (`where` / `fn` / lambdas),
+The rest of the language — the rest of the expression layer (`fn` / lambdas),
 the full query superset, interactive pipe-shaping controls, Expect-style stream
 reactions, the web target, actors, and a package manager for sharing dashboards —
 is specified in [`SPEC.md`](SPEC.md) and lands across later milestones. Nothing
