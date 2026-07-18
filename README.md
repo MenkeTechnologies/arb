@@ -17,7 +17,7 @@
 > *"A pipeline dumps text at you; arb turns it into an interface."*
 
 **arb** — visualize and modify Unix pipelines. Pipe a stream in and arb spawns a
-dynamic TUI (and, later, a served web page) built from a declarative,
+dynamic TUI or a served web page, built from a declarative,
 Tcl/Tk-flavored spec. It is a `jq`/`xpath`/`css`/`yq` superset, an interactive
 megafilter/map over the live passthrough, and an original language on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM + three-tier
@@ -52,8 +52,8 @@ displays it. Highlights:
 
 - **Pipe-native** — terminal-invoked, pipe-driven. No daemon; the web target
   spawns a local UI host on demand (like `textual serve`), not a server you run.
-- **Dual target** — the same spec renders to a ratatui TUI or, later, a served
-  `zgui` web page + WebSocket, sharing the cyberpunk HUD scheme with its siblings.
+- **Dual target** — the same spec renders to a ratatui TUI or a served web page
+  + WebSocket (`arb --serve`), sharing the cyberpunk HUD scheme with its siblings.
 - **One query engine** — a `jq`/`xpath`/`css`/`yq` superset over JSON, XML, HTML,
   YAML, TOML, and CSV.
 - **Megafilter/map** — interactive controls render *and* feed `out`, so a
@@ -449,7 +449,7 @@ take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 ## [0x06] ARCHITECTURE
 
 ```
-stdin  →  lexer  →  parser (AST)  →  Spec interp  →  ratatui TUI  (served zgui web + WS later)
+stdin  →  lexer  →  parser (AST)  →  Spec interp  →  ratatui TUI  (or served web + WS)
                                           │
                               source query pipeline over the live stream
                               (calc / expressions lower to fusevm bytecode)
@@ -465,24 +465,38 @@ layout construction is plain Rust construction and needs no VM.
 
 ## [0x07] STATUS & ROADMAP
 
-Early. The committed tree covers:
+**Shipped** — the daily-driver path (pipe in → parse spec → query → render, in
+the terminal or the browser) is complete:
 
-- **M0** — zero-config live-tail TUI (ratatui) + headless summary; count/rate
-  header, ring buffer, `q`/Esc/Ctrl-C quit.
-- **M1** — the Tcl-flavored reader, the declarative widget/`source` interpreter
-  with `.x <- in` binds, and multi-widget render of `text`/`tail`/`list`.
-- **M2** *(expanding)* — the source query pipeline: `in`, `match`/`grep`,
-  `reject`/`grepv`, `field N`/`field NAME`, `count`, `rate`, `tally` over line
-  and JSON streams (`in.json`, nested key paths), arranged by `grid`, with
-  per-widget derived data rendering into `gauge`/`bars`/`histo`; and `calc` —
-  arithmetic that compiles to fusevm bytecode and runs on the VM.
+- **Language** — the Tcl-flavored reader, the declarative widget / `source` /
+  `out` interpreter, `.x <- in` binds, `fn`/lambda expressions, and `calc` /
+  `where` predicates that lower to `fusevm` bytecode and run on the VM.
+- **Widgets** — `text`, `tail`, `list`, `gauge`, `bars`, `histo`, `spark`,
+  `chart`, `table`, `tabs`, `block`, `frame` render in the TUI; `input` is a live
+  editable field and `select` an fzf-style fuzzy picker. Auto-layout by default,
+  `grid` (with `-span`/`-rowspan`/`-colspan`) to override, per-widget `-color`.
+- **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
+  [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
+- **Megafilter/map** — `out { … }` shapes the downstream passthrough; `input`
+  fields feed `apply`/`bind` live.
+- **Web target** — `arb --serve` hosts the same spec as a live browser dashboard
+  over a hand-rolled WebSocket (RFC 6455), with a `/data` polling fallback;
+  `arb --html` emits a static snapshot.
+- **Reactions & events** — `expect /re/ set|quit` and `bind C-<key> set|quit`.
+- **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution,
+  and a local preset library (`--save`/`--install`/`--uninstall`/`--installed`).
+- **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
+  pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
-The rest of the language — the rest of the expression layer (`fn` / lambdas),
-the full query superset, interactive pipe-shaping controls, Expect-style stream
-reactions, the web target, actors, and a package manager for sharing dashboards —
-is specified in [`SPEC.md`](SPEC.md) and lands across later milestones. Nothing
-is faked: unrecognized widget verbs are ignored so specs stay forward-compatible,
-and unbuilt features are absent, not stubbed.
+**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — LSP/DAP
+frontends, the full expect/bind action vocabulary
+(`alert`/`flash`/`beep`/`exec`) and block form, control-path predicates
+(`where(lat < .th)`), a networked package registry (`publish`/`search`/native
+ABI), and upstream-command sniffing for the shareable-dashboard ecosystem.
+Akka-style actors are **out of scope** — dataflow / pub-sub belong to `stryke`.
+
+Nothing is faked: unrecognized widget verbs are ignored so specs stay
+forward-compatible, and unbuilt features are absent, not stubbed.
 
 ---
 

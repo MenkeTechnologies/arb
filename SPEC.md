@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or web page (zgui)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, has **Akka-style actor concurrency**, its own **Tcl/Tk-flavored DSL**, **LSP/DAP + rkyv** reused from sibling frontends, and a **package manager** so users share dashboards — *a TUI for every pipeline*.
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (Planned: LSP/DAP stdio frontends. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -246,6 +246,10 @@ bind .ps <Click>   { … }     bind <Resize> { … }
 
 ## 15. Actors — Akka-style concurrency
 
+> **❌ Out of scope (not built, not planned).** Dataflow / actors / pub-sub belong
+> to `stryke`; arb stays in the UI-generation lane to avoid duplication. The
+> sketch below is retained as design rationale only — see §21.
+
 ```
 actor worker(state) {
     on job(x) { reply heavy(x) }
@@ -322,35 +326,46 @@ Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream comma
 
 ## 20. Architecture (fusevm frontend, original — mechanics ported, semantics fresh)
 
-Deps (rubyrs-lean): `fusevm{jit,jit-disk-cache,aot}`, `rkyv`/`bincode`/`memmap2`, `clap`, `ratatui`+`crossterm`; web (feature-gated): async http+ws; parsers: serde_json/quick-xml/serde_yaml/toml/csv + html.
+Deps (rubyrs-lean): `fusevm{jit}`, `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json`/`serde_yaml`/`toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
+
+Actual tree:
 
 ```
-src/lexer.rs     Tcl-flavored reader           (original)
-src/parser.rs    widget cmds + expr grammar     (original)
-src/ast.rs
-src/compiler.rs  AST → fusevm::Chunk            (original lowering)
-src/host.rs      extension ops: ratatui/zgui/query/actors (Value::Obj heap)
-src/query.rs     jq/xpath/css/yq engine
-src/tui.rs       ratatui backend
-src/web.rs       zgui codegen + WS server (feature: web)
-src/actor.rs     Akka-style runtime (feature: actors)
-src/module.rs    import/resolution
-src/pkg.rs       package manager (arb.toml, install/publish)
-src/cache.rs     rkyv bytecode cache ~/.arb/    (pattern ported from rubyrs)
-src/lsp.rs src/dap.rs   stdio JSON-RPC          (shape ported)
-src/cli.rs src/main.rs src/repl.rs src/banner.rs
+src/lexer.rs     Tcl-flavored reader
+src/parser.rs    command + block grammar → AST
+src/ast.rs       AST types (Command / Arg)
+src/spec.rs      spec interpreter: widgets, source/out pipelines, query-verb
+                 parse, import resolution, preset library
+src/query.rs     jq/xpath/css/yq engine (pipeline eval over every format)
+src/expr.rs      expression layer: fn/lambdas/operators → fusevm::Chunk on the VM
+src/stream.rs    stdin ring buffer + stream stats
+src/tui.rs       ratatui backend: render, event loop, fzf mode
+src/serve.rs     live web server + WebSocket push
+src/web.rs       static HTML snapshot export (--html)
+src/repl.rs      interactive REPL (--repl)
+src/banner.rs    startup/help art
+src/main.rs      CLI (clap) + dispatch
+src/lib.rs       crate root
 ```
 
-Transfers from siblings = **mechanics only** (fusevm embedding, rkyv cache, lsp/dap stdio, pkg ABI). Language design (lexer/parser/ast/compiler/semantics) is arb-original.
+The compute core (expressions, `calc`, `where`) lowers to a `fusevm::Chunk` and
+runs on the VM; declarative widget/layout construction is plain Rust and needs no
+VM. Language design (lexer/parser/ast/interp/semantics) is arb-original.
+
+Planned files (see §21 — specified, not yet in the tree): module namespacing,
+networked package registry, LSP/DAP stdio frontends. (Actors are out of scope —
+§21.)
 
 ## 21. Milestones
 
-0. **Walking skeleton** — `echo hi | arb -e 'text .t <- in'`: lex→parse→lower→fusevm→one ratatui widget from stdin.
-1. Core widgets + auto-layout + `source`/query basics.
-2. Presets/imports/modules + stdlib (logs/http/json/table/top/metrics).
-3. Interactive controls + `out` passthrough shaping (megafilter/map).
-4. Expect reactions + events/bind.
-5. Web target (zgui codegen + WS).
-6. Actors.
-7. Package manager + registry + ecosystem.
-8. LSP/DAP.
+Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
+
+0. ✅ **Walking skeleton** — `echo hi | arb -e 'text .t <- in'`: lex→parse→lower→fusevm→one ratatui widget from stdin.
+1. ✅ Core widgets + auto-layout + `source`/query basics.
+2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics). *(module namespacing `import X as Y`: 🟡)*
+3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(control-path predicates `where(lat < .th)`: ⬜)*
+4. 🟡 Expect reactions + events/bind — `expect /re/ set|quit`, `bind C-<key> set|quit` ship; full action vocab (`alert`/`flash`/`beep`/`exec`) + block form: ⬜.
+5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard; `arb --html` static export.
+6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
+7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) ships; networked registry (`publish`/`search`/native ABI) + ecosystem: ⬜.
+8. ⬜ LSP/DAP.
