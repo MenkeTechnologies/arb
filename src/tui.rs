@@ -16,7 +16,8 @@ use ratatui::crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
@@ -222,12 +223,15 @@ pub fn run(
     controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
 
-    // fzf-mode cache: re-scoring the whole (potentially huge) buffer every frame
-    // would be too slow, so we recompute the ranked match list only when the
-    // filter changes or a short debounce elapses, and reuse it otherwise.
-    let mut fzf_matched: Vec<String> = Vec::new();
-    let mut fzf_last_filter = String::from("\u{0}"); // sentinel: forces first compute
-    let mut fzf_last = Instant::now() - Duration::from_secs(1);
+    // fzf-mode incremental match state. Each stream line is scored ONCE as it
+    // arrives (indices are stable — the fzf buffer never drops), not the whole
+    // buffer every frame. Empty filter appends in stream order; a real filter
+    // accumulates scored hits, re-sorted into the display list on a short debounce.
+    let mut fzf_filter = String::from("\u{0}"); // sentinel: forces initial reset
+    let mut fzf_processed = 0usize; // stream lines already scored
+    let mut fzf_hits: Vec<(i32, String)> = Vec::new(); // matching lines (non-empty filter)
+    let mut fzf_matched: Vec<String> = Vec::new(); // display list
+    let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
@@ -241,29 +245,42 @@ pub fn run(
             break Ok(());
         }
         if fzf {
-            // fzf select mode: fuzzy-match + rank the stream, best first; a cursor
-            // highlights one line, Enter resolves it and exits.
-            let now = Instant::now();
-            if filter != fzf_last_filter || now.duration_since(fzf_last) >= Duration::from_millis(200)
+            // fzf select mode: incrementally fuzzy-match the stream (each line
+            // scored once), rank best-first, cursor highlights one, Enter resolves.
+            let total;
             {
                 let st = state.lock().unwrap();
-                fzf_matched = if filter.is_empty() {
-                    st.lines.iter().cloned().collect()
-                } else {
-                    let mut scored: Vec<(i32, String)> = st
-                        .lines
-                        .iter()
-                        .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
-                        .collect();
-                    // Stable sort by score desc — ties keep stream order.
-                    scored.sort_by(|a, b| b.0.cmp(&a.0));
-                    scored.into_iter().map(|(_, l)| l).collect()
-                };
-                fzf_last_filter = filter.clone();
-                fzf_last = now;
+                total = st.total;
+                if filter != fzf_filter {
+                    // Filter changed — restart matching from scratch.
+                    fzf_hits.clear();
+                    fzf_matched.clear();
+                    fzf_processed = 0;
+                    fzf_filter = filter.clone();
+                }
+                let empty = filter.is_empty();
+                for i in fzf_processed..st.lines.len() {
+                    let line = &st.lines[i];
+                    if empty {
+                        fzf_matched.push(line.clone()); // stream order, no scoring
+                    } else if let Some(sc) = fuzzy_score(line, &filter) {
+                        fzf_hits.push((sc, line.clone()));
+                    }
+                }
+                fzf_processed = st.lines.len();
+            }
+            // Non-empty filter: re-sort accumulated hits into the display list on a
+            // short debounce (cheap — only matching lines, not the whole buffer).
+            if !filter.is_empty() {
+                let now = Instant::now();
+                if now.duration_since(fzf_last_sort) >= Duration::from_millis(150) {
+                    let mut h = fzf_hits.clone();
+                    h.sort_by(|a, b| b.0.cmp(&a.0));
+                    fzf_matched = h.into_iter().map(|(_, l)| l).collect();
+                    fzf_last_sort = now;
+                }
             }
             let matched = &fzf_matched;
-            let total = state.lock().unwrap().total;
             let sel = cursor.min(matched.len().saturating_sub(1));
 
             let mut c = controls.lock().unwrap();
@@ -380,6 +397,63 @@ fn render(
 /// One rect per widget. Auto vertical stack unless any widget has a grid cell,
 /// in which case a rows×cols grid is built and each widget placed in its cell
 /// (widgets sharing a cell overlap; last-drawn wins). Spans arrive later.
+/// Char indices in `line` that the fuzzy pattern matched (greedy, in order) —
+/// used to highlight matched characters, fzf-style. Smart-case like `fuzzy_score`.
+pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
+    if pat.is_empty() {
+        return Vec::new();
+    }
+    let cased = pat.chars().any(|c| c.is_uppercase());
+    let norm = |c: char| if cased { c } else { c.to_ascii_lowercase() };
+    let l: Vec<char> = line.chars().collect();
+    let mut positions = Vec::new();
+    let mut li = 0;
+    for pc in pat.chars() {
+        let target = norm(pc);
+        while li < l.len() {
+            if norm(l[li]) == target {
+                positions.push(li);
+                li += 1;
+                break;
+            }
+            li += 1;
+        }
+    }
+    positions
+}
+
+/// Build a styled list line for fzf mode: a mark gutter (`+` for a Tab-marked
+/// line) followed by the text with fuzzy-matched characters highlighted.
+fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'static> {
+    let text: String = line.chars().take(width.saturating_sub(2)).collect();
+    let gutter = if marked {
+        Span::styled("+ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw("  ")
+    };
+    if filter.is_empty() {
+        return Line::from(vec![gutter, Span::raw(text)]);
+    }
+    let pos: std::collections::HashSet<usize> = match_positions(&text, filter).into_iter().collect();
+    let hl = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let mut spans = vec![gutter];
+    let mut cur = String::new();
+    let mut cur_hl = false;
+    for (i, ch) in text.chars().enumerate() {
+        let h = pos.contains(&i);
+        if h != cur_hl && !cur.is_empty() {
+            let s = std::mem::take(&mut cur);
+            spans.push(if cur_hl { Span::styled(s, hl) } else { Span::raw(s) });
+        }
+        cur_hl = h;
+        cur.push(ch);
+    }
+    if !cur.is_empty() {
+        spans.push(if cur_hl { Span::styled(cur, hl) } else { Span::raw(cur) });
+    }
+    Line::from(spans)
+}
+
 /// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
 /// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
 /// selection visible. Cursor 0 is the newest (bottom) line.
@@ -390,29 +464,33 @@ fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize, marks
     } else {
         format!(" ({})", marks.len())
     };
-    // fzf-style counter: matched/total (marked).
-    let prompt = format!(
-        "> {filter}\u{258f}   {}/{total}{marked}  ·  Enter · Tab · \u{2191}\u{2193}/Ctrl-JK · Ctrl-C",
-        matched.len()
-    );
+    // fzf-style prompt: cyan "> ", the query with a cursor bar, then a cyan
+    // matched/total(marked) counter and dim key hints.
+    let cyan = Style::default().fg(Color::Cyan);
+    let prompt = Line::from(vec![
+        Span::styled("> ", cyan.add_modifier(Modifier::BOLD)),
+        Span::raw(format!("{filter}\u{258f}")),
+        Span::styled(format!("   {}/{total}{marked}", matched.len()), cyan),
+        Span::styled(
+            "   Enter select · Tab mark · \u{2191}\u{2193} move · Ctrl-C abort",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
     f.render_widget(Paragraph::new(prompt), chunks[0]);
 
     let inner_w = chunks[1].width as usize;
-    // Marked lines get a bullet prefix; the cursor line is highlighted by the List.
     let items: Vec<ListItem> = matched
         .iter()
-        .map(|l| {
-            let mark = if marks.iter().any(|m| m == l) { "●" } else { " " };
-            ListItem::new(format!("{mark}{}", clip(l, inner_w.saturating_sub(1))))
-        })
+        .map(|l| ListItem::new(fzf_line(l, filter, inner_w, marks.iter().any(|m| m == l))))
         .collect();
     let mut state = ListState::default();
     if !matched.is_empty() {
         state.select(Some(sel.min(matched.len() - 1)));
     }
+    // Cyan pointer + a subtle highlight bar on the cursor line, fzf-style.
     let list = List::new(items)
-        .highlight_symbol("> ")
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_symbol("\u{25b6} ")
+        .highlight_style(Style::default().bg(Color::Rgb(38, 38, 46)).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, chunks[1], &mut state);
 }
 

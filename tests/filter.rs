@@ -57,3 +57,14 @@ fn fuzzy_smart_case() {
     assert!(fuzzy_score("README", "READ").is_some());
     assert!(fuzzy_score("readme", "READ").is_none());
 }
+
+#[test]
+fn match_positions_marks_matched_chars() {
+    use arb::tui::match_positions;
+    // "abc" over "alphabetic": a(0) b(5) c(9)
+    assert_eq!(match_positions("alphabetic", "abc"), vec![0, 5, 9]);
+    // no match → empty
+    assert_eq!(match_positions("hello", "xyz"), Vec::<usize>::new());
+    // empty pattern → nothing highlighted
+    assert_eq!(match_positions("anything", ""), Vec::<usize>::new());
+}
