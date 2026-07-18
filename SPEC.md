@@ -193,10 +193,9 @@ is a live field whose value drives `apply`/`bind`/`out`.
 ## 10. Layout (auto by default)
 
 ```
-# no pack/grid → widgets auto-tile (grid flow). Only add geometry to override.
-pack .top -side top|bottom|left|right -size 40%
-grid .a -row 0 -col 0 -span 2
-rows { .a; .b }   cols { .a; .b }
+# no grid → widgets auto-tile (vertical flow). Only add geometry to override.
+grid .a -row 0 -col 0 -span 2          # -span = colspan; -rowspan/-colspan explicit
+grid .b -row 1 -col 0
 ```
 
 ## 11. Binding

@@ -934,7 +934,7 @@ fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) 
     f.render_widget(List::new(items).block(block), area);
 }
 
-fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
+pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
     let ws = &spec.widgets;
     let grid_mode = ws.iter().any(|w| w.grid.is_some());
     if !grid_mode {
@@ -942,16 +942,33 @@ fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
         let cons: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
         return Layout::vertical(cons).split(area).to_vec();
     }
-    let pos: Vec<(usize, usize)> = ws.iter().map(|w| w.grid.unwrap_or((0, 0))).collect();
-    let rows = pos.iter().map(|(r, _)| *r).max().unwrap_or(0) + 1;
-    let cols = pos.iter().map(|(_, c)| *c).max().unwrap_or(0) + 1;
+    // Each widget occupies `(row, col)` and spans `(rowspan, colspan)` cells.
+    let cells: Vec<(usize, usize, usize, usize)> = ws
+        .iter()
+        .map(|w| {
+            let (r, c) = w.grid.unwrap_or((0, 0));
+            let (rs, cs) = w.span;
+            (r, c, rs.max(1), cs.max(1))
+        })
+        .collect();
+    let rows = cells.iter().map(|(r, _, rs, _)| r + rs).max().unwrap_or(1).max(1);
+    let cols = cells.iter().map(|(_, c, _, cs)| c + cs).max().unwrap_or(1).max(1);
     let row_cons: Vec<Constraint> = (0..rows).map(|_| Constraint::Ratio(1, rows as u32)).collect();
     let row_chunks = Layout::vertical(row_cons).split(area);
-    pos.iter()
-        .map(|(r, c)| {
-            let col_cons: Vec<Constraint> =
-                (0..cols).map(|_| Constraint::Ratio(1, cols as u32)).collect();
-            Layout::horizontal(col_cons).split(row_chunks[*r])[*c]
+    let col_cons: Vec<Constraint> = (0..cols).map(|_| Constraint::Ratio(1, cols as u32)).collect();
+    cells
+        .iter()
+        .map(|&(r, c, rs, cs)| {
+            // Vertical extent: rows r .. r+rs; horizontal: cols c .. c+cs.
+            let top = row_chunks[r.min(rows - 1)];
+            let bottom = row_chunks[(r + rs - 1).min(rows - 1)];
+            let y = top.y;
+            let height = bottom.y + bottom.height - top.y;
+            let band = Rect { x: area.x, y, width: area.width, height };
+            let col_chunks = Layout::horizontal(col_cons.clone()).split(band);
+            let left = col_chunks[c.min(cols - 1)];
+            let right = col_chunks[(c + cs - 1).min(cols - 1)];
+            Rect { x: left.x, y, width: right.x + right.width - left.x, height }
         })
         .collect()
 }
@@ -1154,5 +1171,42 @@ fn render_widget(
             let msg = format!("{} — not yet rendered", w.kind.label());
             f.render_widget(Paragraph::new(msg).block(block), area);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_rects;
+    use crate::parser::parse;
+    use crate::spec::build;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn grid_span_widget_covers_multiple_cells() {
+        // .main spans both columns of the top row; .a/.b split the bottom row.
+        let spec = build(
+            &parse(
+                "chart .main\ngauge .a\ngauge .b\n\
+                 grid .main -row 0 -col 0 -span 2\ngrid .a -row 1 -col 0\ngrid .b -row 1 -col 1",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rects = compute_rects(Rect { x: 0, y: 0, width: 100, height: 100 }, &spec);
+        assert_eq!(rects.len(), 3);
+        // .main: full width, top half.
+        assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height), (0, 0, 100, 50));
+        // .a: bottom-left, .b: bottom-right.
+        assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0, 50, 50));
+        assert_eq!((rects[2].x, rects[2].y, rects[2].width), (50, 50, 50));
+    }
+
+    #[test]
+    fn no_grid_auto_stacks_vertically() {
+        let spec = build(&parse("gauge .a\ngauge .b").unwrap()).unwrap();
+        let rects = compute_rects(Rect { x: 0, y: 0, width: 80, height: 40 }, &spec);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].height, 20);
+        assert_eq!(rects[1].y, 20);
     }
 }

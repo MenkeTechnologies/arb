@@ -154,6 +154,7 @@ mod tests {
             source: None,
             search: None,
             grid: None,
+            span: (1, 1),
         }
     }
 

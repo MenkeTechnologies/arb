@@ -94,6 +94,9 @@ pub struct Widget {
     pub search: Option<Vec<QueryOp>>,
     /// Grid cell `(row, col)` set by a `grid` command; `None` = auto-stacked.
     pub grid: Option<(usize, usize)>,
+    /// Grid span `(rows, cols)` from `grid -rowspan`/`-colspan` (`-span` = colspan);
+    /// `(1, 1)` = a single cell. Lets a chart span multiple cells while gauges take one.
+    pub span: (usize, usize),
 }
 
 /// A key binding: a control key that triggers a [`BindAction`] in the TUI.
@@ -242,6 +245,7 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 source: None,
                 search: None,
                 grid: None,
+                span: (1, 1),
             });
         } else if c.name == "source" {
             let path = c
@@ -308,12 +312,13 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .and_then(Arg::as_str)
                 .ok_or("grid: missing path")?;
             let o = parse_opts(&c.args[1..]);
-            let cell = |k| {
-                o.get(k)
-                    .and_then(|s: &String| s.parse::<usize>().ok())
-                    .unwrap_or(0)
+            let opt = |k: &str, d: usize| {
+                o.get(k).and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(d)
             };
-            set_grid(spec, path, (cell("row"), cell("col")))?;
+            // `-span` is a colspan shorthand; `-rowspan`/`-colspan` are explicit.
+            let colspan = opt("colspan", opt("span", 1)).max(1);
+            let rowspan = opt("rowspan", 1).max(1);
+            set_grid(spec, path, (opt("row", 0), opt("col", 0)), (rowspan, colspan))?;
         } else if c.name.starts_with('.') {
             // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
             if c.args.first().and_then(Arg::as_str) == Some("<-")
@@ -1229,10 +1234,16 @@ fn set_search(spec: &mut Spec, path: &str, pipeline: Vec<QueryOp>) -> Result<(),
     Err(format!("search: no widget named `{path}`"))
 }
 
-fn set_grid(spec: &mut Spec, path: &str, cell: (usize, usize)) -> Result<(), String> {
+fn set_grid(
+    spec: &mut Spec,
+    path: &str,
+    cell: (usize, usize),
+    span: (usize, usize),
+) -> Result<(), String> {
     for w in &mut spec.widgets {
         if w.path == path {
             w.grid = Some(cell);
+            w.span = span;
             return Ok(());
         }
     }
