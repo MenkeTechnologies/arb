@@ -51,8 +51,11 @@ pub enum QueryOp {
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
     Vals,
-    /// Line-list transforms.
-    Sort,
+    /// Line-list transforms. `Sort` supports numeric (`-n`) and reverse (`-r`).
+    Sort {
+        numeric: bool,
+        reverse: bool,
+    },
     Uniq,
     Rev,
     First,
@@ -172,7 +175,20 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
-            QueryOp::Sort => cur.sort(),
+            QueryOp::Sort { numeric, reverse } => {
+                if *numeric {
+                    cur.sort_by(|a, b| {
+                        let na = a.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        let nb = b.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                } else {
+                    cur.sort();
+                }
+                if *reverse {
+                    cur.reverse();
+                }
+            }
             QueryOp::Uniq => {
                 let mut seen = HashSet::new();
                 cur.retain(|l| seen.insert(l.clone()));

@@ -296,7 +296,13 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "avg" => ops.push(QueryOp::Avg),
             "keys" => ops.push(QueryOp::Keys),
             "vals" => ops.push(QueryOp::Vals),
-            "sort" => ops.push(QueryOp::Sort),
+            "sort" => {
+                let flags: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
+                ops.push(QueryOp::Sort {
+                    numeric: flags.contains(&"-n"),
+                    reverse: flags.contains(&"-r"),
+                });
+            }
             "uniq" => ops.push(QueryOp::Uniq),
             "rev" => ops.push(QueryOp::Rev),
             "first" => ops.push(QueryOp::First),

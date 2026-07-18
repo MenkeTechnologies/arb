@@ -101,6 +101,24 @@ fn sort_then_uniq() {
 }
 
 #[test]
+fn numeric_sort_ascending() {
+    let ops = pipeline("tail .x\nsource .x { in; sort -n }");
+    assert_eq!(
+        eval(&ops, &lines(&["40", "1200", "90", "2500", "300"]), 1.0),
+        QueryResult::Lines(lines(&["40", "90", "300", "1200", "2500"]))
+    );
+}
+
+#[test]
+fn numeric_sort_reverse_top_n() {
+    let ops = pipeline("tail .x\nsource .x { in; sort -n -r; take 3 }");
+    assert_eq!(
+        eval(&ops, &lines(&["40", "1200", "90", "2500", "300"]), 1.0),
+        QueryResult::Lines(lines(&["2500", "1200", "300"]))
+    );
+}
+
+#[test]
 fn take_and_drop() {
     assert_eq!(
         eval(
