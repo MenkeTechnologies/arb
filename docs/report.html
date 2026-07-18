@@ -87,7 +87,7 @@
       <section class="tutorial-section">
         <h2>Summary</h2>
         <p>A pipeline dumps text at you; arb turns it into an interface. Drop <code>arb</code> into a pipe and a small declarative spec — Tcl/Tk-flavored, but not Tcl — describes widgets, layout, a uniform query over any format, and interactive controls. Those controls feed back into the passthrough, so arb can sit mid-pipe and <em>shape</em> what the downstream consumer receives, not just display it. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> alongside <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>, reusing that shared bytecode VM and JIT rather than shipping its own.</p>
-        <p>arb is an <strong>original language in stryke's class — not a port</strong>, and deliberately lean (rubyrs-scale, not stryke-scale). It is early. <strong>M0</strong> ships the zero-config live-tail — <code>find / | arb</code> renders the stream in a full-screen ratatui TUI with a live count and rate, degrading to a headless summary with no controlling terminal on stdout. <strong>M1</strong> adds the Tcl-flavored reader and the declarative widget/<code>source</code> interpreter with multi-widget render; <strong>M2</strong> (in progress) builds out the source query pipeline — <code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>/<code>field NAME</code>, <code>count</code>, <code>rate</code>, <code>tally</code> over line and JSON streams (<code>in.json</code>, nested key paths) — with per-widget derived data rendering into <code>gauge</code>/<code>bars</code>/<code>histo</code>. The expression layer, fusevm lowering, the full query surface, the web target, actors, and the package manager arrive across the later milestones specified in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>. Nothing is faked — unrecognized widget verbs are ignored for forward compatibility, and unbuilt features are absent, not stubbed.</p>
+        <p>arb is an <strong>original language in stryke's class — not a port</strong>, and deliberately lean (rubyrs-scale, not stryke-scale). Built today: a full query engine (a <code>jq</code>/<code>xpath</code>/<code>css</code>/<code>yq</code> superset, ~90 verbs over line, JSON, CSV/TSV, YAML, TOML, and HTML — including numeric / stats / time-series verbs like <code>percentile</code>, <code>delta</code>/<code>cumsum</code>, <code>sma</code>/<code>ewma</code>) whose expression layer lowers arithmetic to <code>fusevm</code> bytecode; nine rendered widgets (<code>text</code>/<code>tail</code>/<code>list</code>/<code>gauge</code>/<code>bars</code>/<code>histo</code>/<code>spark</code>/<code>chart</code>/<code>table</code>, each <code>-color</code> themeable); the interactive <strong>megafilter/map</strong> (<code>input</code>/<code>apply</code>/<code>out</code> reshape the piped output live, driven by typing or a key <code>bind</code>); a fuzzy <code>select</code> mode (fzf as a one-widget spec); stream reactions (<code>expect /re/</code> → action); a web target (<code>arb --serve</code> — the same spec as a live browser dashboard over a hand-rolled WebSocket, no dependency); and a package manager (<code>--install</code>/<code>--uninstall</code>/<code>--installed</code>) for shareable dashboard specs. Actors are out of scope — dataflow / pub-sub is stryke's domain. Editor tooling (LSP/DAP) remains planned; the full grammar is in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>. Nothing is faked — unrecognized widget verbs are ignored for forward compatibility, and unbuilt features are absent, not stubbed.</p>
       </section>
 
       <hr class="section-rule">
@@ -106,14 +106,14 @@
       <hr class="section-rule">
 
       <section class="tutorial-section">
-        <h2>Target architecture on fusevm</h2>
-        <p>arb is <em>designed</em> as a fusevm frontend: the spec is meant to lower to <code>fusevm::Chunk</code> bytecode and run on the shared VM + three-tier Cranelift JIT, while ratatui / zgui / query / actor behaviour is served by an extension-op host over a <code>Value::Obj</code> heap. The M1/M2 tree is still a <strong>direct interpreter</strong> — the reader builds a <code>Spec</code> that the ratatui backend renders and the query pipeline evaluates over the live stream; the fusevm lowering is a later milestone. The target execution path is:</p>
-<pre>arb spec  →  lexer  →  parser → AST  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
-                                              │
-                                   host: ratatui / zgui / query / actors
+        <h2>Architecture on fusevm</h2>
+        <p>arb's computational core runs on fusevm: the expression layer (<code>src/expr.rs</code>) lowers arithmetic to a <code>fusevm::Chunk</code> and executes on the shared VM + three-tier Cranelift JIT. Declarative widget/layout construction needs no VM and stays plain Rust — the reader builds a <code>Spec</code> that the ratatui backend renders (and <code>src/serve.rs</code> serves over HTTP/WebSocket), with <code>source</code> bodies evaluated by the query pipeline over the live stream. The execution path is:</p>
+<pre>arb spec  →  lexer  →  parser → AST  →  Spec (widgets/sources/out/binds)
+                                              │        └ expressions → fusevm bytecode → VM + JIT
+                                   render: ratatui TUI  /  --serve HTTP + WebSocket
                                    stream: stdin(.json/.xml/.html/.yaml/.toml/.csv)</pre>
         <div class="feature-grid">
-          <div class="feature-card"><h4>Shared engine</h4><p>Planned deps pull <code>fusevm</code> from crates.io with the <code>jit</code>, <code>jit-disk-cache</code>, and <code>aot</code> features. JIT and VM improvements land once and benefit zshrs, stryke, rubyrs, elisp, and arb together.</p></div>
+          <div class="feature-card"><h4>Shared engine</h4><p>arb depends on <code>fusevm</code> (the <code>jit</code> feature) from crates.io. JIT and VM improvements land once and benefit zshrs, stryke, rubyrs, elisp, and arb together.</p></div>
           <div class="feature-card"><h4>Mechanics reused, semantics original</h4><p>Transfers from siblings are mechanics only — fusevm embedding, the rkyv cache, the LSP/DAP stdio shape, the package-manager ABI. The lexer, parser, AST, lowering, and semantics are arb-original.</p></div>
           <div class="feature-card"><h4>One query engine</h4><p>A single vocabulary (a jq/xpath/css/yq superset) works uniformly over JSON, XML, HTML, YAML, TOML, and CSV — <code>field</code>, <code>each</code>, <code>find</code>, <code>attr</code>, <code>sel</code>, <code>where</code>, and aggregates.</p></div>
           <div class="feature-card"><h4>Megafilter/map passthrough</h4><p>Interactive controls (<code>filter</code>, <code>facet</code>, <code>slider</code>) render AND feed <code>out</code>, so a control's path used as a value is its current state — arb filters and maps the downstream output live.</p></div>
@@ -124,19 +124,19 @@
 
       <section class="tutorial-section">
         <h2>Milestones</h2>
-        <p>arb lands in stages. M0–M2 are in the tree (M2 still expanding); everything past them is specified in SPEC.md and not yet built.</p>
+        <p>arb landed in stages; the table reflects the current tree. The query engine, expression layer, interactive controls, reactions, web target, and package manager are built; actors are out of scope, and editor tooling remains planned.</p>
         <table class="file-table">
           <thead><tr><th>Milestone</th><th>State</th><th>Scope</th></tr></thead>
           <tbody>
             <tr><td>M0 · walking skeleton</td><td>Implemented</td><td>Zero-config live-tail TUI + headless summary; count/rate header, ring buffer, <code>q</code>/Esc/Ctrl-C (<code>src/main.rs</code>).</td></tr>
             <tr><td>M1 · spec interpreter + widgets</td><td>Implemented</td><td>Tcl-flavored reader, declarative widget/<code>source</code> interp, <code>.x &lt;- in</code> binds, multi-widget render (<code>src/lexer.rs</code>, <code>src/parser.rs</code>, <code>src/ast.rs</code>, <code>src/spec.rs</code>, <code>src/tui.rs</code>).</td></tr>
-            <tr><td>M2 · query pipeline + widgets <em>(expanding)</em></td><td>Implemented</td><td><code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>/<code>field NAME</code>, <code>count</code>, <code>rate</code>, <code>tally</code> over line and JSON streams (<code>in.json</code>, nested key paths); per-widget derived data into <code>gauge</code>/<code>bars</code>/<code>histo</code> (<code>src/query.rs</code>).</td></tr>
-            <tr><td>M2+ · presets / richer query</td><td>Planned</td><td>Modules, imports, preset dashboards; CSV/XML/HTML/YAML/TOML extraction, <code>where(pred)</code>, sort / group / uniq.</td></tr>
-            <tr><td>M3 · controls + <code>out</code></td><td>Planned</td><td>Interactive controls that megafilter/map the passthrough.</td></tr>
-            <tr><td>M4 · Expect + events</td><td>Planned</td><td>Stream reactions (<code>expect</code>) and Tk-style <code>bind</code> events.</td></tr>
-            <tr><td>M5 · web target</td><td>Planned</td><td>Served zgui page + WebSocket live update (<code>-t web</code>).</td></tr>
-            <tr><td>M6 · actors</td><td>Planned</td><td>Akka-style actors, pools, <code>ask</code>/<code>tell</code>, stream fan-out.</td></tr>
-            <tr><td>M7 · package manager</td><td>Planned</td><td>Script + native packages, <code>arb install/add/publish</code>, the shared-dashboard registry.</td></tr>
+            <tr><td>M2 · query pipeline + widgets</td><td>Implemented</td><td>~90 verbs (a jq/xpath/css/yq superset) over line, JSON, CSV/TSV, YAML, TOML, HTML; numeric / stats / time-series (<code>percentile</code>, <code>delta</code>/<code>cumsum</code>, <code>sma</code>/<code>ewma</code>, <code>median</code>/<code>stddev</code>/<code>bins</code>); nine <code>-color</code>-themeable widgets incl. <code>spark</code>/<code>chart</code>/<code>table</code> (<code>src/query.rs</code>).</td></tr>
+            <tr><td>M2+ · presets / expression layer</td><td>Implemented</td><td>Stdlib + user presets; <code>where(pred)</code>, sort / group / uniq; the expression layer (<code>where</code>/<code>map</code>/ternary) lowering arithmetic to <code>fusevm</code> bytecode (<code>src/expr.rs</code>).</td></tr>
+            <tr><td>M3 · controls + <code>out</code></td><td>Implemented</td><td>The megafilter/map — <code>input</code>/<code>apply</code> splice a live transform into <code>source</code>/<code>out</code>; plus the fuzzy <code>select</code> mode (fzf as a spec).</td></tr>
+            <tr><td>M4 · Expect + events</td><td>Implemented</td><td>Stream reactions (<code>expect /re/</code> → action) and Tk-style key <code>bind</code>s, one shared action vocabulary.</td></tr>
+            <tr><td>M5 · web target</td><td>Implemented</td><td><code>arb --serve</code>: a std-only HTTP server renders the same spec as a live browser dashboard, WebSocket push with a polling fallback (<code>src/serve.rs</code>).</td></tr>
+            <tr><td>M6 · actors</td><td>Out of scope</td><td>Dropped: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation family (no duplication).</td></tr>
+            <tr><td>M7 · package manager</td><td>Implemented</td><td>Install / uninstall / list shareable dashboard specs (<code>--install</code>/<code>--uninstall</code>/<code>--installed</code>); install validates first. A remote registry plugs into the same resolver next.</td></tr>
             <tr><td>M8 · LSP / DAP</td><td>Planned</td><td>Editor tooling over stdio JSON-RPC.</td></tr>
           </tbody>
         </table>
@@ -146,25 +146,22 @@
 
       <section class="tutorial-section">
         <h2>Module layout</h2>
-        <p>The <em>present</em> rows are in the tree today (a lib + bin: the front-end is unit-testable without a terminal); the <em>planned</em> rows are the target layout the later milestones fill in.</p>
+        <p>A lib + bin: the front-end is unit-testable without a terminal (168 tests). The <em>present</em> rows are in the tree today; <code>lsp.rs</code>/<code>dap.rs</code> remain planned.</p>
         <table class="file-table">
           <thead><tr><th>File</th><th>State</th><th>Role</th></tr></thead>
           <tbody>
-            <tr><td>src/main.rs</td><td>present</td><td>Entry point. Loads a spec (or synthesizes a tail), wires stdin → ratatui or headless output.</td></tr>
+            <tr><td>src/main.rs</td><td>present</td><td>Entry point + CLI. Loads/synthesizes a spec; wires stdin → TUI, <code>--serve</code>, or headless out; the megafilter tee and orchestrator.</td></tr>
             <tr><td>src/lexer.rs</td><td>present</td><td>Tcl-flavored reader (original).</td></tr>
             <tr><td>src/parser.rs</td><td>present</td><td>Widget commands + block grammar (original).</td></tr>
             <tr><td>src/ast.rs</td><td>present</td><td>Command syntax tree.</td></tr>
-            <tr><td>src/spec.rs</td><td>present</td><td>Command tree → <code>Spec</code> (widgets, <code>source</code> pipelines, binds).</td></tr>
-            <tr><td>src/query.rs</td><td>present</td><td>Source query pipeline (M2 verbs; jq/xpath/css/yq surface grows here).</td></tr>
+            <tr><td>src/spec.rs</td><td>present</td><td>Command tree → <code>Spec</code> (widgets, <code>source</code>/<code>search</code>/<code>out</code> pipelines, <code>bind</code>/<code>expect</code>, presets, package manager).</td></tr>
+            <tr><td>src/expr.rs</td><td>present</td><td>Expression layer → <code>fusevm::Chunk</code>, run on the VM (original lowering).</td></tr>
+            <tr><td>src/query.rs</td><td>present</td><td>Source query pipeline — the ~90-verb jq/xpath/css/yq surface over every format.</td></tr>
             <tr><td>src/stream.rs</td><td>present</td><td>Live stream state feeding the widgets.</td></tr>
-            <tr><td>src/tui.rs</td><td>present</td><td>ratatui backend.</td></tr>
-            <tr><td>src/compiler.rs</td><td>planned</td><td>AST → <code>fusevm::Chunk</code> (original lowering).</td></tr>
-            <tr><td>src/host.rs</td><td>planned</td><td>Extension ops over a <code>Value::Obj</code> heap.</td></tr>
-            <tr><td>src/web.rs</td><td>planned</td><td>zgui codegen + WS server (feature: web).</td></tr>
-            <tr><td>src/actor.rs</td><td>planned</td><td>Akka-style runtime (feature: actors).</td></tr>
-            <tr><td>src/module.rs</td><td>planned</td><td>import / resolution.</td></tr>
-            <tr><td>src/pkg.rs</td><td>planned</td><td>Package manager (arb.toml, install/publish).</td></tr>
-            <tr><td>src/cache.rs</td><td>planned</td><td>rkyv bytecode cache under <code>~/.arb/</code>.</td></tr>
+            <tr><td>src/tui.rs</td><td>present</td><td>ratatui backend (widgets, fzf select, key handler).</td></tr>
+            <tr><td>src/serve.rs</td><td>present</td><td>Web target: std HTTP server + hand-rolled WebSocket push.</td></tr>
+            <tr><td>src/web.rs</td><td>present</td><td>Static HTML dashboard export.</td></tr>
+            <tr><td>src/repl.rs</td><td>present</td><td>reedline REPL (<code>arb --repl</code>).</td></tr>
             <tr><td>src/lsp.rs / src/dap.rs</td><td>planned</td><td>stdio JSON-RPC (shape reused from siblings).</td></tr>
           </tbody>
         </table>
@@ -174,7 +171,7 @@
 
       <section class="tutorial-section">
         <h2>Dependency posture</h2>
-        <p>arb is a standalone crate (MIT). The current manifest is deliberately minimal — <code>ratatui</code> 0.29 (with its <code>crossterm</code> backend), <code>clap</code> 4.5, and <code>regex</code> 1 for the match/reject verbs. Later milestones add <code>fusevm{jit,jit-disk-cache,aot}</code>, <code>rkyv</code>/<code>bincode</code>/<code>memmap2</code> for the cache, the format parsers (<code>serde_json</code> / <code>quick-xml</code> / <code>serde_yaml</code> / <code>toml</code> / <code>csv</code> + html), and feature-gated async http + ws for the web target. Release builds use <code>lto = true</code> and <code>strip = true</code>.</p>
+        <p>arb is a standalone crate (MIT), and stays lean by staying std-first. Deps: <code>fusevm</code> (<code>jit</code>) for the computational core; <code>ratatui</code> 0.29 (with its <code>crossterm</code> backend) for the TUI; <code>clap</code> 4.5 for the CLI; <code>regex</code> 1 for the match/extract verbs; the format parsers <code>serde_json</code> / <code>serde_yaml</code> / <code>scraper</code> (HTML) for the uniform query; <code>base64</code> / <code>percent-encoding</code> for the encode verbs; <code>rayon</code> for parallel fuzzy match; and <code>reedline</code> / <code>nu-ansi-term</code> / <code>toml</code> for the REPL. The web target's HTTP + WebSocket server is hand-rolled over <code>std::net</code> — no async runtime or web framework, and the handshake's SHA-1 is hand-rolled too, so <code>--serve</code> adds no dependency. Release builds use <code>lto = true</code> and <code>strip = true</code>.</p>
       </section>
 
       <hr class="section-rule">
