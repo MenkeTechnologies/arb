@@ -41,6 +41,9 @@ pub enum Expr {
     Neg(Box<Expr>),
     /// Logical negation: truthy input -> 0, falsy -> 1.
     Not(Box<Expr>),
+    /// Membership: `left in [a, b, c]` — truthy iff `left` equals any element
+    /// (jq `IN`). Empty list is always falsy.
+    InList(Box<Expr>, Vec<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
 }
 
@@ -115,6 +118,21 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
             emit(a, x, resolve, b);
             b.emit(Op::LoadFloat(0.0), 0);
             b.emit(Op::NumEq, 0);
+        }
+        Expr::InList(left, items) => {
+            // Sum of `(left == item)` over the list; truthy iff any matched.
+            if items.is_empty() {
+                b.emit(Op::LoadFloat(0.0), 0);
+            } else {
+                for (k, it) in items.iter().enumerate() {
+                    emit(left, x, resolve, b);
+                    emit(it, x, resolve, b);
+                    b.emit(Op::NumEq, 0);
+                    if k > 0 {
+                        b.emit(Op::Add, 0);
+                    }
+                }
+            }
         }
         // `and`/`or` operate on truthiness: normalize each side to 0/1 first,
         // then `and` = product (1 iff both 1), `or` = sum (>=1 iff either 1).
@@ -224,11 +242,39 @@ impl Parser {
 
     fn comparison(&mut self) -> Result<Expr, String> {
         let mut left = self.additive()?;
+        if self.match_kw("in") {
+            return self.in_list(left);
+        }
         while let Some(op) = self.cmp_op() {
             let right = self.additive()?;
             left = Expr::Bin(op, Box::new(left), Box::new(right));
         }
         Ok(left)
+    }
+
+    /// Parse the `[a, b, c]` right-hand side of an `in` membership test.
+    fn in_list(&mut self, left: Expr) -> Result<Expr, String> {
+        if self.peek() != Some('[') {
+            return Err("in: expected `[` after `in`".into());
+        }
+        self.i += 1;
+        let mut items = Vec::new();
+        loop {
+            if self.peek() == Some(']') {
+                self.i += 1;
+                break;
+            }
+            items.push(self.additive()?);
+            match self.peek() {
+                Some(',') => self.i += 1,
+                Some(']') => {
+                    self.i += 1;
+                    break;
+                }
+                _ => return Err("in: expected `,` or `]`".into()),
+            }
+        }
+        Ok(Expr::InList(Box::new(left), items))
     }
 
     /// Consume a comparison operator (`< <= > >= == !=`) if one is next.

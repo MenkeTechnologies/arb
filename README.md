@@ -180,8 +180,9 @@ families:
 
 The expression layer — `where PRED` (filter), `map EXPR` (per-line transform),
 `calc EXPR` (reduce) — lowers to a `fusevm::Chunk` and runs on the VM, with
-field-aware references and compound predicates via `and`/`or`/`not`
-(`where ms > 1000 and status >= 500`, `map bytes / 1024`, `where not healthy`).
+field-aware references, compound predicates via `and`/`or`/`not`, and set
+membership `in [a, b, c]` (`where ms > 1000 and status in [500, 502, 503]`,
+`map bytes / 1024`, `where not healthy`).
 Results render into `text`/`tail`/`list`/`gauge`/`bars`/`histo` widgets, arranged
 by `grid`.
 

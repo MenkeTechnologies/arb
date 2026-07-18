@@ -82,3 +82,18 @@ fn keyword_not_confused_with_identifier_prefix() {
     use arb::expr::eval_pred_ctx;
     assert!(eval_pred_ctx(&e, 0.0, &|n| if n == "android" { 1.0 } else { f64::NAN }).unwrap());
 }
+
+#[test]
+fn in_list_membership_on_fusevm() {
+    use arb::expr::eval_pred;
+    assert!(eval_pred(&parse("x in [200, 301, 404]").unwrap(), 404.0).unwrap());
+    assert!(!eval_pred(&parse("x in [200, 301, 404]").unwrap(), 500.0).unwrap());
+    // single element
+    assert!(eval_pred(&parse("x in [5]").unwrap(), 5.0).unwrap());
+    // empty list is always falsy
+    assert!(!eval_pred(&parse("x in []").unwrap(), 5.0).unwrap());
+    // composes with `not` and `and`
+    assert!(eval_pred(&parse("not x in [2]").unwrap(), 3.0).unwrap());
+    assert!(eval_pred(&parse("x in [1, 2] and x > 1").unwrap(), 2.0).unwrap());
+    assert!(!eval_pred(&parse("x in [1, 2] and x > 1").unwrap(), 1.0).unwrap());
+}
