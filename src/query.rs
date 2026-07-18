@@ -1056,6 +1056,39 @@ pub fn table_data(lines: &[String], cols: Option<&str>) -> (Vec<String>, Vec<Vec
     (headers, rows)
 }
 
+/// Parse lines as a numeric series for the `spark` widget — each line's first
+/// whitespace token that parses as a number; non-numeric lines are skipped.
+pub fn numeric_series(lines: &[String]) -> Vec<f64> {
+    lines
+        .iter()
+        .filter_map(|l| l.split_whitespace().next().and_then(|t| t.parse::<f64>().ok()))
+        .collect()
+}
+
+/// Render a numeric series as a unicode sparkline (`▁▂▃▄▅▆▇█`), scaled between
+/// the series min and max. Shared by the TUI and web so both draw the same shape.
+/// A flat series renders as the lowest tick; an empty series is the empty string.
+pub fn sparkline(values: &[f64]) -> String {
+    const TICKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if values.is_empty() {
+        return String::new();
+    }
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let range = max - min;
+    values
+        .iter()
+        .map(|&v| {
+            let idx = if range <= 0.0 {
+                0
+            } else {
+                (((v - min) / range) * 7.0).round() as usize
+            };
+            TICKS[idx.min(7)]
+        })
+        .collect()
+}
+
 /// The number of columns a table needs to hold `headers` and `rows` (at least 1).
 pub fn table_ncols(headers: &[String], rows: &[Vec<String>]) -> usize {
     rows.iter()

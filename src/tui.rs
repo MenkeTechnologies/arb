@@ -1042,6 +1042,22 @@ fn render_widget(
                 .data(&shown[..]);
             f.render_widget(chart, area);
         }
+        WidgetKind::Spark => {
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(lines),
+            };
+            // Keep only the newest points that fit the width.
+            let cap = (area.width as usize).saturating_sub(2).max(1);
+            let start = series.len().saturating_sub(cap);
+            let spark = crate::query::sparkline(&series[start..]);
+            f.render_widget(
+                Paragraph::new(spark).style(Style::default().fg(Color::Cyan)).block(block),
+                area,
+            );
+        }
         WidgetKind::Table => {
             let src_lines: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),

@@ -240,13 +240,24 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
             };
             base(json!({ "scalar": scalar, "max": opt_f64("max", 100.0) }))
         }
-        WidgetKind::Bars | WidgetKind::Histo | WidgetKind::Spark => {
+        WidgetKind::Bars | WidgetKind::Histo => {
             let pairs: Vec<(String, u64)> = match &result {
                 Some(QueryResult::Pairs(p)) => p.clone(),
                 _ => Vec::new(),
             };
             let top = w.opts.get("top").and_then(|s| s.parse::<usize>().ok()).unwrap_or(20);
             base(json!({ "pairs": pairs, "top": top }))
+        }
+        WidgetKind::Spark => {
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(raw),
+            };
+            let n = series.len();
+            let series = &series[n.saturating_sub(400)..]; // cap points per poll
+            base(json!({ "spark": crate::query::sparkline(series) }))
         }
         WidgetKind::Table => {
             let lines: Vec<String> = match &result {
@@ -329,6 +340,7 @@ const WIDGET_CSS: &str = "<style>\n\
 .tbl { border-collapse: collapse; width: 100%; font-size: 0.9em; }\n\
 .tbl th, .tbl td { border: 1px solid var(--edge); padding: 2px 6px; text-align: left; white-space: nowrap; }\n\
 .tbl th { color: var(--cyan); position: sticky; top: 0; background: var(--panel); }\n\
+.spark { color: var(--cyan); font-size: 2rem; line-height: 1; letter-spacing: 1px; word-break: break-all; }\n\
 </style>\n";
 
 /// Client poller: fetch `/data` on an interval and render each widget by kind.
@@ -350,6 +362,9 @@ function render(el, it) {\n\
   if (it.kind === 'gauge') {\n\
     const max = it.max || 100, v = it.scalar || 0;\n\
     el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0));\n\
+  } else if (it.spark !== undefined) {\n\
+    const s = document.createElement('div'); s.className = 'spark';\n\
+    s.textContent = it.spark || '\\u2014'; el.appendChild(s);\n\
   } else if (it.rows) {\n\
     const t = document.createElement('table'); t.className = 'tbl';\n\
     if (it.headers && it.headers.length) {\n\
@@ -450,6 +465,18 @@ mod tests {
         assert_eq!(pairs[0][1], 3);
         assert_eq!(pairs[1][0], "y");
         assert_eq!(pairs[1][1], 2);
+    }
+
+    #[test]
+    fn data_json_spark_carries_sparkline() {
+        let spec = build(&parse("spark .s\nsource .s { in }").unwrap()).unwrap();
+        let st = state_with(&["1", "2", "3", "4"]);
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        assert_eq!(json[0]["kind"], "spark");
+        // Rising series → first tick lowest, last tick highest.
+        let spark = json[0]["spark"].as_str().unwrap();
+        assert_eq!(spark.chars().count(), 4);
+        assert!(spark.starts_with('▁') && spark.ends_with('█'));
     }
 
     #[test]

@@ -1241,3 +1241,16 @@ fn table_data_splits_cells_and_names_headers() {
     assert!(h2.is_empty());
     assert_eq!(table_ncols(&h2, &r2), 4);
 }
+
+#[test]
+fn sparkline_and_numeric_series() {
+    use arb::query::{numeric_series, sparkline};
+    // Non-numeric lines skipped; first token parsed.
+    let lines = vec!["10".to_string(), "20 x".to_string(), "nope".to_string(), "30".to_string()];
+    assert_eq!(numeric_series(&lines), vec![10.0, 20.0, 30.0]);
+    // Evenly spaced 0..7 maps to each of the 8 ticks in order.
+    assert_eq!(sparkline(&[0., 1., 2., 3., 4., 5., 6., 7.]), "▁▂▃▄▅▆▇█");
+    // Flat series → lowest tick; empty → empty string.
+    assert_eq!(sparkline(&[5.0, 5.0, 5.0]), "▁▁▁");
+    assert_eq!(sparkline(&[]), "");
+}
