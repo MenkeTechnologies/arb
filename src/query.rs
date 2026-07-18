@@ -82,6 +82,8 @@ pub enum QueryOp {
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
+    /// Same as `Csv` but tab-separated (TSV).
+    Tsv,
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -233,22 +235,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
-            QueryOp::Csv => {
-                if !cur.is_empty() {
-                    let header = split_csv(&cur[0]);
-                    let mut out = Vec::with_capacity(cur.len() - 1);
-                    for row in &cur[1..] {
-                        let vals = split_csv(row);
-                        let mut obj = serde_json::Map::new();
-                        for (i, name) in header.iter().enumerate() {
-                            let v = vals.get(i).cloned().unwrap_or_default();
-                            obj.insert(name.clone(), Value::String(v));
-                        }
-                        out.push(Value::Object(obj).to_string());
-                    }
-                    cur = out;
-                }
-            }
+            QueryOp::Csv => cur = to_json_records(&cur, ','),
+            QueryOp::Tsv => cur = to_json_records(&cur, '\t'),
             QueryOp::Sort { numeric, reverse } => {
                 if *numeric {
                     cur.sort_by(|a, b| {
@@ -485,8 +473,31 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
 
 /// Split a CSV line on commas, trimming each field. (Quoted fields containing
 /// commas are not yet handled.)
-fn split_csv(line: &str) -> Vec<String> {
-    line.split(',').map(|s| s.trim().to_string()).collect()
+/// Parse a header + data rows of a delimited stream into JSON object strings
+/// keyed by the header, so `field NAME` works over CSV/TSV.
+fn to_json_records(lines: &[String], delim: char) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let header = split_delim(&lines[0], delim);
+    lines[1..]
+        .iter()
+        .map(|row| {
+            let vals = split_delim(row, delim);
+            let mut obj = serde_json::Map::new();
+            for (i, name) in header.iter().enumerate() {
+                obj.insert(
+                    name.clone(),
+                    Value::String(vals.get(i).cloned().unwrap_or_default()),
+                );
+            }
+            Value::Object(obj).to_string()
+        })
+        .collect()
+}
+
+fn split_delim(line: &str, delim: char) -> Vec<String> {
+    line.split(delim).map(|s| s.trim().to_string()).collect()
 }
 
 /// Extract a `key=value` (logfmt) field from a line; strips surrounding quotes.

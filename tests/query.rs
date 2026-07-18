@@ -434,3 +434,13 @@ fn bins_numeric_histogram() {
         other => panic!("expected pairs, got {other:?}"),
     }
 }
+
+#[test]
+fn tsv_field_by_header() {
+    let ops = pipeline("bars .x\nsource .x { in.tsv; field status; tally }");
+    let data = lines(&["name\tstatus", "a\tok", "b\terr", "c\tok"]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Pairs(vec![("ok".into(), 2), ("err".into(), 1)])
+    );
+}

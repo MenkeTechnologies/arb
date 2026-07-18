@@ -329,6 +329,10 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                 saw_in = true;
                 ops.push(QueryOp::Csv);
             }
+            "in.tsv" => {
+                saw_in = true;
+                ops.push(QueryOp::Tsv);
+            }
             "sel" => {
                 let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
                 let mut css_parts = Vec::new();
