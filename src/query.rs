@@ -27,6 +27,9 @@ pub enum QueryOp {
     Reject(Regex),
     /// Replace each line with a selected field (whitespace column or JSON key path).
     Field(FieldSel),
+    /// Flatten JSON-array lines into one line per element (jq `[]`); non-array
+    /// lines pass through unchanged.
+    Each,
     /// Keep lines whose numeric value (`x` = line parsed as a number) satisfies
     /// the predicate — compiled to fusevm and evaluated per line.
     Where(Expr),
@@ -63,6 +66,18 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in cur.iter_mut() {
                     *l = extract_field(l, sel);
                 }
+            }
+            QueryOp::Each => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Array(arr)) => {
+                            out.extend(arr.iter().map(json_to_string));
+                        }
+                        _ => out.push(l.clone()),
+                    }
+                }
+                cur = out;
             }
             QueryOp::Where(e) => {
                 cur.retain(|l| {

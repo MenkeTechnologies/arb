@@ -60,6 +60,26 @@ fn field_then_tally_groups_sorted() {
 }
 
 #[test]
+fn each_flattens_json_array_jq_style() {
+    // jq `.items[].name`  ==  field items; each; field name
+    let ops = pipeline("tail .x\nsource .x { in.json; field items; each; field name }");
+    let data = lines(&[r#"{"items":[{"name":"a"},{"name":"b"},{"name":"c"}]}"#]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Lines(lines(&["a", "b", "c"]))
+    );
+}
+
+#[test]
+fn each_passes_non_array_through() {
+    let ops = pipeline("tail .x\nsource .x { in; each }");
+    assert_eq!(
+        eval(&ops, &lines(&["hello", "world"]), 1.0),
+        QueryResult::Lines(lines(&["hello", "world"]))
+    );
+}
+
+#[test]
 fn json_field_by_name_then_tally() {
     let ops = pipeline("bars .x\nsource .x { in.json; field level; tally }");
     let data = lines(&[

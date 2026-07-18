@@ -172,6 +172,7 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
             "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
+            "each" => ops.push(QueryOp::Each),
             "count" => ops.push(QueryOp::Count),
             "rate" => ops.push(QueryOp::Rate),
             "tally" => ops.push(QueryOp::Tally),
