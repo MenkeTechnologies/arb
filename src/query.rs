@@ -155,6 +155,10 @@ pub enum QueryOp {
     /// Group a numeric line's integer part with thousands separators
     /// (`1234567` -> `1,234,567`); non-numeric lines pass through.
     Commafy,
+    /// Humanize a byte count (1024-based): `1536` -> `1.5 KB`; non-numeric passes through.
+    Bytes,
+    /// Humanize a duration in seconds: `3661` -> `1h 1m`; non-numeric passes through.
+    Duration,
     /// Placeholder for `apply .name`: at render time it is replaced by the query
     /// pipeline typed into the `input .name` widget (the megafilter/map binding).
     /// Left in a pipeline unsubstituted it is a no-op.
@@ -715,6 +719,20 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Commafy => {
                 for l in cur.iter_mut() {
                     *l = commafy(l);
+                }
+            }
+            QueryOp::Bytes => {
+                for l in cur.iter_mut() {
+                    if let Ok(v) = l.trim().parse::<f64>() {
+                        *l = humanize_bytes(v);
+                    }
+                }
+            }
+            QueryOp::Duration => {
+                for l in cur.iter_mut() {
+                    if let Ok(v) = l.trim().parse::<f64>() {
+                        *l = humanize_duration(v);
+                    }
                 }
             }
             // Resolved to the input widget's pipeline before eval; a no-op if it
@@ -1363,6 +1381,52 @@ fn commafy(line: &str) -> String {
         Some(f) => format!("{sign}{grouped}.{f}"),
         None => format!("{sign}{grouped}"),
     }
+}
+
+/// Humanize a byte count (1024-based): `1536` -> `1.5 KB`, `1024` -> `1 KB`,
+/// `500` -> `500 B`. One decimal, trailing `.0` trimmed. Negatives keep the sign.
+fn humanize_bytes(v: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let sign = if v < 0.0 { "-" } else { "" };
+    let mut n = v.abs();
+    let mut u = 0;
+    while n >= 1024.0 && u < UNITS.len() - 1 {
+        n /= 1024.0;
+        u += 1;
+    }
+    // Bytes are whole; scaled values show one decimal (unless it rounds to .0).
+    if u == 0 {
+        format!("{sign}{} {}", n.round() as i64, UNITS[u])
+    } else {
+        let r = (n * 10.0).round() / 10.0;
+        if (r.fract()).abs() < f64::EPSILON {
+            format!("{sign}{} {}", r as i64, UNITS[u])
+        } else {
+            format!("{sign}{r:.1} {}", UNITS[u])
+        }
+    }
+}
+
+/// Humanize a duration in seconds as the two largest non-zero units: `3661` ->
+/// `1h 1m`, `45` -> `45s`, `90061` -> `1d 1h`, `0` -> `0s`. Negatives keep the sign.
+fn humanize_duration(v: f64) -> String {
+    let sign = if v < 0.0 { "-" } else { "" };
+    let total = v.abs().round() as i64;
+    if total == 0 {
+        return "0s".to_string();
+    }
+    let units = [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)];
+    let mut rem = total;
+    let mut parts = Vec::new();
+    for (label, secs) in units {
+        let q = rem / secs;
+        if q > 0 {
+            parts.push(format!("{q}{label}"));
+            rem %= secs;
+        }
+    }
+    parts.truncate(2); // two largest non-zero units
+    format!("{sign}{}", parts.join(" "))
 }
 
 /// Resolve a JSON field of `line` to a number for expression evaluation

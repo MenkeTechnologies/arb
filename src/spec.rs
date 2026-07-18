@@ -999,6 +999,8 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "basename" => ops.push(QueryOp::Basename),
             "dirname" => ops.push(QueryOp::Dirname),
             "commafy" => ops.push(QueryOp::Commafy),
+            "bytes" => ops.push(QueryOp::Bytes),
+            "duration" => ops.push(QueryOp::Duration),
             "flip" => {
                 ops.push(QueryOp::Flip);
             }

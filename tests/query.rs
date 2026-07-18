@@ -1303,3 +1303,20 @@ fn sma_and_ewma_smooth() {
     assert_eq!(f("sma 10", &[]), QueryResult::Lines(lines(&[])));
     assert_eq!(f("sma 10", &["2", "4"]), QueryResult::Lines(lines(&["2", "3"])));
 }
+
+#[test]
+fn bytes_and_duration_humanize() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    // 1024-based byte sizes, one decimal (trailing .0 trimmed).
+    assert_eq!(
+        f("bytes", &["500", "1024", "1536", "1048576", "1610612736"]),
+        QueryResult::Lines(lines(&["500 B", "1 KB", "1.5 KB", "1 MB", "1.5 GB"]))
+    );
+    // Durations as the two largest non-zero units.
+    assert_eq!(
+        f("duration", &["45", "90", "3661", "90061", "0"]),
+        QueryResult::Lines(lines(&["45s", "1m 30s", "1h 1m", "1d 1h", "0s"]))
+    );
+    // Non-numeric passes through unchanged.
+    assert_eq!(f("bytes", &["n/a"]), QueryResult::Lines(lines(&["n/a"])));
+}

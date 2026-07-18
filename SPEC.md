@@ -120,6 +120,8 @@ clamp LO HI     clamp each numeric line into [LO,HI]
 abs             absolute value of each numeric line
 round           round each numeric line to the nearest integer
 commafy         thousands-group each numeric line (1234567 -> 1,234,567)
+bytes           humanize a byte count, 1024-based (1536 -> 1.5 KB)
+duration        humanize seconds as the two largest units (3661 -> 1h 1m)
 
 delta           consecutive differences of the numeric series (n -> n-1) — a counter's rate-of-change
 cumsum          running (cumulative) total of the numeric series
