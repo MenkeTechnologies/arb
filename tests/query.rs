@@ -382,3 +382,42 @@ fn empty_pipeline_passes_lines_through() {
         QueryResult::Lines(lines(&["a", "b"]))
     );
 }
+
+#[test]
+fn v20_filters() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    assert_eq!(f("contains err", &["err a", "ok", "c err"]), QueryResult::Lines(lines(&["err a", "c err"])));
+    assert_eq!(f("starts GET", &["GET /a", "POST /b", "GET /c"]), QueryResult::Lines(lines(&["GET /a", "GET /c"])));
+    assert_eq!(f("ends .json", &["a.json", "b.txt"]), QueryResult::Lines(lines(&["a.json"])));
+    assert_eq!(f("nonempty", &["a", "", "  ", "b"]), QueryResult::Lines(lines(&["a", "b"])));
+    assert_eq!(f("numeric", &["1", "foo", "2.5"]), QueryResult::Lines(lines(&["1", "2.5"])));
+    assert_eq!(f("sample 2", &["a", "b", "c", "d"]), QueryResult::Lines(lines(&["b", "d"])));
+    assert_eq!(f("slice 2 3", &["a", "b", "c", "d"]), QueryResult::Lines(lines(&["b", "c"])));
+}
+
+#[test]
+fn v20_transforms() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    assert_eq!(f("len", &["a", "abc"]), QueryResult::Lines(lines(&["1", "3"])));
+    assert_eq!(f("wc", &["a b c", "one"]), QueryResult::Lines(lines(&["3", "1"])));
+    assert_eq!(f("abs", &["-3", "2", "foo"]), QueryResult::Lines(lines(&["3", "2", "foo"])));
+    assert_eq!(f("round", &["1.4", "2.5"]), QueryResult::Lines(lines(&["1", "3"])));
+    assert_eq!(f("prepend >>", &["a"]), QueryResult::Lines(lines(&[">>a"])));
+    assert_eq!(f("append !", &["a"]), QueryResult::Lines(lines(&["a!"])));
+    assert_eq!(f("cut , 2", &["a,b,c"]), QueryResult::Lines(lines(&["b"])));
+}
+
+#[test]
+fn v20_reduces() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let d = &["1", "2", "3", "4"];
+    assert_eq!(f("median", d), QueryResult::Scalar(2.5));
+    assert_eq!(f("range", d), QueryResult::Scalar(3.0));
+    assert_eq!(f("product", d), QueryResult::Scalar(24.0));
+    assert_eq!(f("distinct", &["a", "a", "b"]), QueryResult::Scalar(2.0));
+    assert_eq!(f("p95", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]), QueryResult::Scalar(10.0));
+    match f("stddev", d) {
+        QueryResult::Scalar(v) => assert!((v - 1.118_033_988_749_895).abs() < 1e-9),
+        _ => panic!("stddev not scalar"),
+    }
+}

@@ -85,6 +85,46 @@ pub enum QueryOp {
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
+    /// keep lines containing a literal substring.
+    Contains(String),
+    /// keep lines starting with a literal prefix.
+    Starts(String),
+    /// keep lines ending with a literal suffix.
+    Ends(String),
+    /// drop empty / whitespace-only lines.
+    Nonempty,
+    /// keep only lines that parse as a number.
+    Numeric,
+    /// replace each line with its character count.
+    Len,
+    /// replace each line with its word count.
+    Wc,
+    /// absolute value of each numeric line.
+    Abs,
+    /// round each numeric line to the nearest integer.
+    Round,
+    /// prefix every line with a literal string.
+    Prepend(String),
+    /// suffix every line with a literal string.
+    Append(String),
+    /// split each line by DELIM, keep the Nth (1-based) field.
+    Cut(String, usize),
+    /// median of numeric lines.
+    Median,
+    /// population standard deviation of numeric lines.
+    Stddev,
+    /// 95th percentile (nearest-rank) of numeric lines.
+    P95,
+    /// max minus min of numeric lines.
+    Range,
+    /// product of numeric lines.
+    Product,
+    /// count of distinct lines.
+    Distinct,
+    /// keep every Nth line (1-based).
+    Sample(usize),
+    /// keep lines from index A to B inclusive (1-based).
+    Slice(usize, usize),
 }
 
 /// The output of evaluating a pipeline: lines, a scalar, or grouped counts.
@@ -280,6 +320,118 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         .collect(),
                     Err(_) => Vec::new(),
                 };
+            }
+            QueryOp::Contains(s) => cur.retain(|l| l.contains(s.as_str())),
+            QueryOp::Starts(p) => cur.retain(|l| l.starts_with(p.as_str())),
+            QueryOp::Ends(s) => cur.retain(|l| l.ends_with(s.as_str())),
+            QueryOp::Nonempty => cur.retain(|l| !l.trim().is_empty()),
+            QueryOp::Numeric => cur.retain(|l| l.trim().parse::<f64>().is_ok()),
+            QueryOp::Len => {
+                for l in cur.iter_mut() {
+                    *l = l.chars().count().to_string();
+                }
+            }
+            QueryOp::Wc => {
+                for l in cur.iter_mut() {
+                    *l = l.split_whitespace().count().to_string();
+                }
+            }
+            QueryOp::Abs => {
+                for l in cur.iter_mut() {
+                    if let Ok(v) = l.trim().parse::<f64>() {
+                        *l = fmt_num(v.abs());
+                    }
+                }
+            }
+            QueryOp::Round => {
+                for l in cur.iter_mut() {
+                    if let Ok(v) = l.trim().parse::<f64>() {
+                        *l = fmt_num(v.round());
+                    }
+                }
+            }
+            QueryOp::Prepend(pre) => {
+                for l in cur.iter_mut() {
+                    *l = format!("{pre}{l}");
+                }
+            }
+            QueryOp::Append(suf) => {
+                for l in cur.iter_mut() {
+                    l.push_str(suf);
+                }
+            }
+            QueryOp::Cut(delim, n) => {
+                for l in cur.iter_mut() {
+                    *l = l
+                        .split(delim.as_str())
+                        .nth(n.saturating_sub(1))
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            QueryOp::Median => {
+                let mut ns = nums(&cur);
+                ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let m = if ns.is_empty() {
+                    0.0
+                } else if ns.len() % 2 == 1 {
+                    ns[ns.len() / 2]
+                } else {
+                    (ns[ns.len() / 2 - 1] + ns[ns.len() / 2]) / 2.0
+                };
+                return QueryResult::Scalar(m);
+            }
+            QueryOp::Stddev => {
+                let ns = nums(&cur);
+                let sd = if ns.is_empty() {
+                    0.0
+                } else {
+                    let mean = ns.iter().sum::<f64>() / ns.len() as f64;
+                    let var =
+                        ns.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / ns.len() as f64;
+                    var.sqrt()
+                };
+                return QueryResult::Scalar(sd);
+            }
+            QueryOp::P95 => {
+                let mut ns = nums(&cur);
+                ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let v = if ns.is_empty() {
+                    0.0
+                } else {
+                    let rank = ((0.95 * ns.len() as f64).ceil() as usize).clamp(1, ns.len());
+                    ns[rank - 1]
+                };
+                return QueryResult::Scalar(v);
+            }
+            QueryOp::Range => {
+                let ns = nums(&cur);
+                let r = if ns.is_empty() {
+                    0.0
+                } else {
+                    ns.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                        - ns.iter().cloned().fold(f64::INFINITY, f64::min)
+                };
+                return QueryResult::Scalar(r);
+            }
+            QueryOp::Product => return QueryResult::Scalar(nums(&cur).iter().product()),
+            QueryOp::Distinct => {
+                let set: std::collections::HashSet<&String> = cur.iter().collect();
+                return QueryResult::Scalar(set.len() as f64);
+            }
+            QueryOp::Sample(n) => {
+                if *n >= 1 {
+                    let mut i = 0usize;
+                    cur.retain(|_| {
+                        i += 1;
+                        i % *n == 0
+                    });
+                }
+            }
+            QueryOp::Slice(a, b) => {
+                let lo = a.saturating_sub(1).min(cur.len());
+                let hi = (*b).min(cur.len());
+                cur = if lo < hi { cur[lo..hi].to_vec() } else { Vec::new() };
             }
         }
     }

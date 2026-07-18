@@ -425,6 +425,49 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     .join(" ");
                 ops.push(QueryOp::Map(crate::expr::parse(&src)?));
             }
+            "contains" => ops.push(QueryOp::Contains(str_arg(c))),
+            "starts" => ops.push(QueryOp::Starts(str_arg(c))),
+            "ends" => ops.push(QueryOp::Ends(str_arg(c))),
+            "nonempty" => ops.push(QueryOp::Nonempty),
+            "numeric" => ops.push(QueryOp::Numeric),
+            "len" => ops.push(QueryOp::Len),
+            "wc" => ops.push(QueryOp::Wc),
+            "abs" => ops.push(QueryOp::Abs),
+            "round" => ops.push(QueryOp::Round),
+            "prepend" => ops.push(QueryOp::Prepend(str_arg(c))),
+            "append" => ops.push(QueryOp::Append(str_arg(c))),
+            "cut" => {
+                let delim = str_arg(c);
+                let n = c
+                    .args
+                    .get(1)
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                ops.push(QueryOp::Cut(delim, n));
+            }
+            "median" => ops.push(QueryOp::Median),
+            "stddev" => ops.push(QueryOp::Stddev),
+            "p95" => ops.push(QueryOp::P95),
+            "range" => ops.push(QueryOp::Range),
+            "product" => ops.push(QueryOp::Product),
+            "distinct" => ops.push(QueryOp::Distinct),
+            "sample" => ops.push(QueryOp::Sample(count_arg(c, "sample")?)),
+            "slice" => {
+                let a = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(1);
+                let b = c
+                    .args
+                    .get(1)
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(usize::MAX);
+                ops.push(QueryOp::Slice(a, b));
+            }
             other => return Err(format!("source: unknown verb `{other}`")),
         }
     }
@@ -449,6 +492,15 @@ fn regex_arg(c: &Command) -> Result<Regex, String> {
 }
 
 /// Parse a required count argument for `take`/`drop`.
+/// The first arg as a string (empty if absent) — for verbs taking a literal.
+fn str_arg(c: &Command) -> String {
+    c.args
+        .first()
+        .and_then(Arg::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
 fn count_arg(c: &Command, verb: &str) -> Result<usize, String> {
     c.args
         .first()
