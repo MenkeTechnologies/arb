@@ -16,7 +16,8 @@ use ratatui::crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, Paragraph};
+use ratatui::style::{Modifier, Style};
+use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::query::{eval, QueryResult};
@@ -46,6 +47,15 @@ pub fn events_available() -> bool {
 pub struct Controls {
     pub filter: String,
     pub quit: bool,
+    /// fzf select mode: cursor offset from the newest (bottom) filtered line.
+    pub cursor: usize,
+    /// Enter pressed in fzf mode — the run loop resolves `selected` and exits.
+    pub submit: bool,
+    /// The chosen line (fzf mode), set by the run loop on submit; printed to
+    /// stdout by `main`. `None` = aborted with no selection.
+    pub selected: Option<String>,
+    /// Whether the key handler interprets nav/Enter as fzf select controls.
+    pub fzf: bool,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -77,24 +87,42 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
             while let Ok(1) = tty.read(&mut buf) {
                 let b = buf[0];
                 let mut c = controls.lock().unwrap();
+                let fzf = c.fzf;
                 match b {
                     0x03 => {
                         c.quit = true;
                         break;
                     }
+                    // fzf select mode: Enter submits; Ctrl-N/J move down (toward
+                    // newer), Ctrl-P/K move up (toward older).
+                    0x0d if fzf => {
+                        c.submit = true;
+                        break;
+                    }
+                    0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_sub(1),
+                    0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_add(1),
                     0x1b => {
-                        // Esc: clear the filter; quit if it is already empty.
-                        if c.filter.is_empty() {
+                        // Esc: fzf mode aborts; otherwise clear the filter (or quit
+                        // when it is already empty).
+                        if fzf || c.filter.is_empty() {
                             c.quit = true;
                             break;
                         }
                         c.filter.clear();
+                        c.cursor = 0;
                     }
                     0x08 | 0x7f => {
                         c.filter.pop();
+                        c.cursor = 0;
                     }
-                    0x15 => c.filter.clear(),
-                    0x20..=0x7e => c.filter.push(b as char),
+                    0x15 => {
+                        c.filter.clear();
+                        c.cursor = 0;
+                    }
+                    0x20..=0x7e => {
+                        c.filter.push(b as char);
+                        c.cursor = 0;
+                    }
                     _ => {}
                 }
             }
@@ -113,6 +141,7 @@ pub fn run(
     state: Arc<Mutex<StreamState>>,
     controls: Arc<Mutex<Controls>>,
     down: Option<(Arc<Mutex<StreamState>>, String)>,
+    fzf: bool,
 ) -> io::Result<()> {
     let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     enable_raw_mode()?;
@@ -122,18 +151,43 @@ pub fn run(
     let mut terminal = Terminal::new(CrosstermBackend::new(tty))?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
 
+    controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
     // flowing regardless of keypresses).
     let outcome = loop {
-        let (filter, quit) = {
+        let (filter, quit, submit, cursor) = {
             let c = controls.lock().unwrap();
-            (c.filter.clone(), c.quit)
+            (c.filter.clone(), c.quit, c.submit, c.cursor)
         };
         if quit {
             break Ok(());
+        }
+        if fzf {
+            // fzf select mode: a full-screen filtered list with a cursor; Enter
+            // resolves the highlighted line into `selected` and exits.
+            let st = state.lock().unwrap();
+            let matched: Vec<String> = st
+                .lines
+                .iter()
+                .filter(|l| filter_matches(l, &filter))
+                .cloned()
+                .collect();
+            drop(st);
+            // cursor counts up from the newest (bottom) line.
+            let sel = matched.len().saturating_sub(1).saturating_sub(cursor);
+            if submit {
+                controls.lock().unwrap().selected = matched.get(sel).cloned();
+                break Ok(());
+            }
+            let draw = terminal.draw(|f| render_fzf(f, &matched, &filter, sel));
+            if let Err(e) = draw {
+                break Err(e);
+            }
+            thread::sleep(Duration::from_millis(60));
+            continue;
         }
         // Snapshot the downstream pane's recent output (tail) before drawing, so
         // the render closure doesn't hold a second lock.
@@ -217,6 +271,29 @@ fn render(
 /// One rect per widget. Auto vertical stack unless any widget has a grid cell,
 /// in which case a rows×cols grid is built and each widget placed in its cell
 /// (widgets sharing a cell overlap; last-drawn wins). Spans arrive later.
+/// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
+/// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
+/// selection visible. Cursor 0 is the newest (bottom) line.
+fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize) {
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(f.area());
+    let prompt = format!("> {filter}\u{258f}   {} match(es)  ·  Enter select · Ctrl-C abort · Ctrl-J/K move", matched.len());
+    f.render_widget(Paragraph::new(prompt), chunks[0]);
+
+    let inner_w = chunks[1].width as usize;
+    let items: Vec<ListItem> = matched
+        .iter()
+        .map(|l| ListItem::new(clip(l, inner_w)))
+        .collect();
+    let mut state = ListState::default();
+    if !matched.is_empty() {
+        state.select(Some(sel.min(matched.len() - 1)));
+    }
+    let list = List::new(items)
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, chunks[1], &mut state);
+}
+
 /// Render the captured downstream output (`arb -- CMD`) as a tailed list pane —
 /// the child's stdout+stderr, hooked to a temp file and shown here so it never
 /// touches the terminal.

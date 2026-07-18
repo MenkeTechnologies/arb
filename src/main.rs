@@ -113,6 +113,11 @@ struct Cli {
     #[arg(long = "json",
         help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines")]
     json: bool,
+    /// fzf select mode: interactively filter the stream and pick one line;
+    /// the chosen line is printed to stdout on Enter (`vim $(ls | arb --fzf)`).
+    #[arg(long = "fzf",
+        help = "\x1b[32m//\x1b[0m fzf mode: filter + select one line, printed to stdout on Enter")]
+    fzf: bool,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
@@ -197,24 +202,35 @@ fn main() -> io::Result<()> {
 
         if needs_stdin {
             // Tee the live filtered stream to stdout (only when piped onward, so
-            // arb never blocks or corrupts the terminal). The filter narrows it in
-            // real time — the megafilter.
-            spawn_reader(state.clone(), !io::stdout().is_terminal(), controls.clone());
+            // arb never blocks or corrupts the terminal). fzf mode never tees — it
+            // emits the chosen line on Enter, not the stream. The filter narrows
+            // the passthrough in real time — the megafilter.
+            let tee = !cli.fzf && !io::stdout().is_terminal();
+            spawn_reader(state.clone(), tee, controls.clone());
         }
 
-        // Optional `arb -- CMD`: a re-run preview. CMD is re-executed over the
-        // CURRENT filtered buffer whenever the filter or the stream changes; its
-        // output (stdout+stderr) is captured and shown in a pane — always in sync
-        // with the filter, never accumulating stale pre-filter results, and never
-        // printing to the terminal.
-        let down_pane = if cli.down.is_empty() {
+        // Optional `arb -- CMD`: a re-run preview (disabled in fzf mode). CMD is
+        // re-executed over the CURRENT filtered buffer whenever the filter or the
+        // stream changes; its output (stdout+stderr) is captured and shown in a
+        // pane — always in sync with the filter, never accumulating stale
+        // pre-filter results, and never printing to the terminal.
+        let down_pane = if cli.fzf || cli.down.is_empty() {
             None
         } else {
             let dstate = Arc::new(Mutex::new(StreamState::new()));
             spawn_preview(cli.down.clone(), state.clone(), controls.clone(), dstate.clone());
             Some((dstate, cli.down.join(" ")))
         };
-        tui::run(&spec, state, controls, down_pane)
+        let outcome = tui::run(&spec, state, controls.clone(), down_pane, cli.fzf);
+        if cli.fzf {
+            // Emit the selected line (Enter) to stdout; abort (Esc/Ctrl-C) exits
+            // 130 with no output, like fzf.
+            match controls.lock().unwrap().selected.take() {
+                Some(line) => println!("{line}"),
+                None => std::process::exit(130),
+            }
+        }
+        outcome
     } else if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
