@@ -38,15 +38,15 @@ pub fn render_html(spec: &Spec) -> String {
 /// Emit one `<section>` panel for a single widget.
 fn render_panel(out: &mut String, w: &Widget) {
     out.push_str("<section class=\"panel\">\n");
-    let _ = write!(
+    let _ = writeln!(
         out,
-        "<header class=\"phead\"><span class=\"ppath\">{}</span><span class=\"pkind\">{}</span></header>\n",
+        "<header class=\"phead\"><span class=\"ppath\">{}</span><span class=\"pkind\">{}</span></header>",
         escape(&w.path),
         escape(w.kind.label()),
     );
-    let _ = write!(
+    let _ = writeln!(
         out,
-        "<div class=\"pbody\">{}</div>\n",
+        "<div class=\"pbody\">{}</div>",
         escape(&body_text(w)),
     );
     let badge = if w.source.is_some() {

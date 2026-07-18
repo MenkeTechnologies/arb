@@ -607,6 +607,9 @@ pub fn run(
     outcome
 }
 
+// Each parameter is a distinct render input (stream, filter, panes, form state);
+// bundling them into a struct would obscure the call site more than it helps.
+#[allow(clippy::too_many_arguments)]
 fn render(
     f: &mut Frame,
     spec: &Spec,
@@ -817,6 +820,8 @@ pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
     }
 }
 
+// Distinct render inputs (matches, filter, cursor, marks, panes, prompt/header).
+#[allow(clippy::too_many_arguments)]
 fn render_fzf(
     f: &mut Frame,
     matched: &[(String, String)],

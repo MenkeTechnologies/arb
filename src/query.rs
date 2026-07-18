@@ -766,7 +766,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Unhex => {
                 for l in cur.iter_mut() {
                     let chars: Vec<char> = l.chars().collect();
-                    if chars.is_empty() || chars.len() % 2 != 0 {
+                    if chars.is_empty() || !chars.len().is_multiple_of(2) {
                         continue;
                     }
                     let mut bytes = Vec::with_capacity(chars.len() / 2);
@@ -1074,7 +1074,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     let mut i = 0usize;
                     cur.retain(|_| {
                         i += 1;
-                        i % *n == 0
+                        i.is_multiple_of(*n)
                     });
                 }
             }

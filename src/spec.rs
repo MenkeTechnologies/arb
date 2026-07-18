@@ -280,7 +280,7 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .first()
                 .and_then(Arg::as_str)
                 .ok_or("bind: missing key (e.g. C-u)")?;
-            let key = parse_key(&keyspec)
+            let key = parse_key(keyspec)
                 .ok_or_else(|| format!("bind: `{keyspec}` is not a control key (use C-<letter>)"))?;
             let verb = c
                 .args
