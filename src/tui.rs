@@ -978,6 +978,15 @@ pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
         .collect()
 }
 
+/// A widget's row cap from `-limit N` (alias `-lines N`), if any — how many rows
+/// a `list`/`tail` shows at most. Shared with the web dashboard so both agree.
+pub fn widget_limit(w: &Widget) -> Option<usize> {
+    w.opts
+        .get("limit")
+        .or_else(|| w.opts.get("lines"))
+        .and_then(|s| s.parse::<usize>().ok())
+}
+
 /// Parse a `#rrggbb` hex string (from [`crate::spec::color_hex`]) into a ratatui
 /// RGB color; falls back to cyan on any malformed input.
 fn hex_color(hex: &str) -> Color {
@@ -1047,8 +1056,11 @@ fn render_widget(
                 }
                 None => lines.to_vec(),
             };
+            // `-limit N` (alias `-lines N`) caps the rows shown to the last N,
+            // even when more would fit; unset fills the pane.
             let inner_h = area.height.saturating_sub(2) as usize;
-            let skip = owned.len().saturating_sub(inner_h);
+            let cap = widget_limit(w).map_or(inner_h, |n| inner_h.min(n));
+            let skip = owned.len().saturating_sub(cap);
             let items: Vec<ListItem> = owned
                 .iter()
                 .skip(skip)

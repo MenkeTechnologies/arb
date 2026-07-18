@@ -417,7 +417,8 @@ series), arranged by `grid` — `grid .w -row R -col C` places a widget, and
 `-label "…"` to set a human header (instead of the dot-path) and `-color NAME`
 (`green`/`red`/`yellow`/`orange`/`magenta`/`blue`/`white`/`gray`, default `cyan`)
 to tint its border and accent — both apply in the TUI and the web dashboard, so
-panels read cleanly and can be status-coded (green ok, red errors).
+panels read cleanly and can be status-coded (green ok, red errors). `list`/`tail`
+take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 
 ---
 

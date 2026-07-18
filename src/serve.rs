@@ -297,9 +297,11 @@ fn widget_text(w: &Widget, raw: &[String], _elapsed: f64, result: Option<QueryRe
     };
     match result {
         QueryResult::Lines(ls) => {
-            // Cap to the last 200 lines so a huge stream doesn't bloat each poll.
+            // `-limit N` caps the rows shown; otherwise the last 200 so a huge
+            // stream doesn't bloat each poll.
+            let cap = crate::tui::widget_limit(w).map_or(200, |n| n.min(200));
             let n = ls.len();
-            ls[n.saturating_sub(200)..].join("\n")
+            ls[n.saturating_sub(cap)..].join("\n")
         }
         QueryResult::Scalar(v) => format!("{v:.2}"),
         QueryResult::Pairs(ps) => ps
@@ -535,6 +537,15 @@ mod tests {
         assert_eq!(json[0]["kind"], "table");
         assert_eq!(json[0]["headers"], serde_json::json!(["a", "b"]));
         assert_eq!(json[0]["rows"], serde_json::json!([["1", "2"], ["3", "4"]]));
+    }
+
+    #[test]
+    fn list_limit_caps_rows() {
+        let spec = build(&parse("list .l -limit 3\nsource .l { in }").unwrap()).unwrap();
+        let st = state_with(&["1", "2", "3", "4", "5"]);
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        // Only the last 3 lines are shown.
+        assert_eq!(json[0]["text"], "3\n4\n5");
     }
 
     #[test]
