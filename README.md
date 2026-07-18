@@ -65,7 +65,7 @@ prints the parsed spec and each source's evaluated result instead of a TUI.
 | **Tcl/Tk-flavored, not Tcl** | Commands take args and verbatim `{ }` blocks; widget paths are dot-hierarchical (`.a.b.c`). No `$`, `[cmd]`, or `expr{}` substitution. |
 | **One query engine** | A single vocabulary (a `jq`/`xpath`/`css`/`yq` superset) is designed to work uniformly over JSON, XML, HTML, YAML, TOML, and CSV. |
 | **Megafilter/map** | Interactive controls render *and* feed `out`, so a control's path used as a value is its current state — arb filters and maps the downstream output live. |
-| **fusevm-targeted** | Designed to lower the spec to fusevm bytecode and run on the shared Cranelift JIT; the M1/M2a tree is still a direct interpreter, with the lowering a later milestone. |
+| **fusevm-targeted** | Designed to lower the spec to fusevm bytecode and run on the shared Cranelift JIT; the M1/M2 tree is still a direct interpreter, with the lowering a later milestone. |
 
 ## Command line
 
@@ -84,16 +84,15 @@ Early. The committed tree covers:
   header, ring buffer, `q`/Esc/Ctrl-C quit.
 - **M1** — the Tcl-flavored reader, the declarative widget/`source` interpreter
   with `.x <- in` binds, and multi-widget render of `text`/`tail`/`list`.
-- **M2a** — the source query pipeline (`in`, `match`/`grep`, `reject`/`grepv`,
-  `field N`, `count`, `rate`) with per-widget derived data and the `gauge`
-  widget.
-- **M2b** — `tally` aggregation (a `Pairs` result type) rendering into the
-  `bars` and `histo` widgets.
+- **M2** *(expanding)* — the source query pipeline: `in`, `match`/`grep`,
+  `reject`/`grepv`, `field N`/`field NAME`, `count`, `rate`, `tally` over line
+  and JSON streams (`in.json`, nested key paths), with per-widget derived data
+  rendering into `gauge`/`bars`/`histo`.
 
 The rest of the language — the expression layer, fusevm lowering, the full query
-superset, layout, interactive pipe-shaping controls, Expect-style stream
-reactions, the web target, actors, and a package manager for sharing dashboards
-— is specified in [`SPEC.md`](SPEC.md) and lands across later milestones.
+superset, interactive pipe-shaping controls, Expect-style stream reactions, the
+web target, actors, and a package manager for sharing dashboards — is specified
+in [`SPEC.md`](SPEC.md) and lands across later milestones.
 Nothing is faked: unrecognized widget verbs are ignored so specs stay
 forward-compatible, and unbuilt features are absent, not stubbed.
 

@@ -54,7 +54,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/arb" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">arb v0.0.1 · pipe → dynamic TUI/web · original language targeting fusevm + Cranelift JIT · jq/xpath/css/yq superset · MIT · M0–M2b: live-tail + spec interpreter + query pipeline + aggregation</p>
+          <p class="docs-build-line">arb v0.0.1 · pipe → dynamic TUI/web · original language targeting fusevm + Cranelift JIT · jq/xpath/css/yq superset · MIT · M0–M2: live-tail + spec interpreter + query pipeline (expanding)</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -79,7 +79,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">Pipeline</div><div class="stat-label">fusevm language host</div></div>
-        <div class="stat-card"><div class="stat-val">M2b</div><div class="stat-label">interp + query + aggr</div></div>
+        <div class="stat-card"><div class="stat-val">M2</div><div class="stat-label">interp + query (expanding)</div></div>
         <div class="stat-card"><div class="stat-val">v0.0.1</div><div class="stat-label">version</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -87,7 +87,7 @@
       <section class="tutorial-section">
         <h2>Summary</h2>
         <p>A pipeline dumps text at you; arb turns it into an interface. Drop <code>arb</code> into a pipe and a small declarative spec — Tcl/Tk-flavored, but not Tcl — describes widgets, layout, a uniform query over any format, and interactive controls. Those controls feed back into the passthrough, so arb can sit mid-pipe and <em>shape</em> what the downstream consumer receives, not just display it. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> alongside <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>, reusing that shared bytecode VM and JIT rather than shipping its own.</p>
-        <p>arb is an <strong>original language in stryke's class — not a port</strong>, and deliberately lean (rubyrs-scale, not stryke-scale). It is early. <strong>M0</strong> ships the zero-config live-tail — <code>find / | arb</code> renders the stream in a full-screen ratatui TUI with a live count and rate, degrading to a headless summary with no controlling terminal on stdout. <strong>M1</strong> adds the Tcl-flavored reader and the declarative widget/<code>source</code> interpreter with multi-widget render; <strong>M2a</strong> adds the source query pipeline (<code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>, <code>count</code>, <code>rate</code>) with per-widget derived data and the <code>gauge</code> widget; <strong>M2b</strong> adds <code>tally</code> aggregation (a <code>Pairs</code> result type) and the <code>bars</code>/<code>histo</code> widgets. The expression layer, fusevm lowering, the full query surface, the web target, actors, and the package manager arrive across the later milestones specified in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>. Nothing is faked — unrecognized widget verbs are ignored for forward compatibility, and unbuilt features are absent, not stubbed.</p>
+        <p>arb is an <strong>original language in stryke's class — not a port</strong>, and deliberately lean (rubyrs-scale, not stryke-scale). It is early. <strong>M0</strong> ships the zero-config live-tail — <code>find / | arb</code> renders the stream in a full-screen ratatui TUI with a live count and rate, degrading to a headless summary with no controlling terminal on stdout. <strong>M1</strong> adds the Tcl-flavored reader and the declarative widget/<code>source</code> interpreter with multi-widget render; <strong>M2</strong> (in progress) builds out the source query pipeline — <code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>/<code>field NAME</code>, <code>count</code>, <code>rate</code>, <code>tally</code> over line and JSON streams (<code>in.json</code>, nested key paths) — with per-widget derived data rendering into <code>gauge</code>/<code>bars</code>/<code>histo</code>. The expression layer, fusevm lowering, the full query surface, the web target, actors, and the package manager arrive across the later milestones specified in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>. Nothing is faked — unrecognized widget verbs are ignored for forward compatibility, and unbuilt features are absent, not stubbed.</p>
       </section>
 
       <hr class="section-rule">
@@ -107,7 +107,7 @@
 
       <section class="tutorial-section">
         <h2>Target architecture on fusevm</h2>
-        <p>arb is <em>designed</em> as a fusevm frontend: the spec is meant to lower to <code>fusevm::Chunk</code> bytecode and run on the shared VM + three-tier Cranelift JIT, while ratatui / zgui / query / actor behaviour is served by an extension-op host over a <code>Value::Obj</code> heap. The M1/M2a tree is still a <strong>direct interpreter</strong> — the reader builds a <code>Spec</code> that the ratatui backend renders and the query pipeline evaluates over the live stream; the fusevm lowering is a later milestone. The target execution path is:</p>
+        <p>arb is <em>designed</em> as a fusevm frontend: the spec is meant to lower to <code>fusevm::Chunk</code> bytecode and run on the shared VM + three-tier Cranelift JIT, while ratatui / zgui / query / actor behaviour is served by an extension-op host over a <code>Value::Obj</code> heap. The M1/M2 tree is still a <strong>direct interpreter</strong> — the reader builds a <code>Spec</code> that the ratatui backend renders and the query pipeline evaluates over the live stream; the fusevm lowering is a later milestone. The target execution path is:</p>
 <pre>arb spec  →  lexer  →  parser → AST  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
                                               │
                                    host: ratatui / zgui / query / actors
@@ -124,15 +124,14 @@
 
       <section class="tutorial-section">
         <h2>Milestones</h2>
-        <p>arb lands in stages. M0–M2b are in the tree; everything past them is specified in SPEC.md and not yet built.</p>
+        <p>arb lands in stages. M0–M2 are in the tree (M2 still expanding); everything past them is specified in SPEC.md and not yet built.</p>
         <table class="file-table">
           <thead><tr><th>Milestone</th><th>State</th><th>Scope</th></tr></thead>
           <tbody>
             <tr><td>M0 · walking skeleton</td><td>Implemented</td><td>Zero-config live-tail TUI + headless summary; count/rate header, ring buffer, <code>q</code>/Esc/Ctrl-C (<code>src/main.rs</code>).</td></tr>
             <tr><td>M1 · spec interpreter + widgets</td><td>Implemented</td><td>Tcl-flavored reader, declarative widget/<code>source</code> interp, <code>.x &lt;- in</code> binds, multi-widget render (<code>src/lexer.rs</code>, <code>src/parser.rs</code>, <code>src/ast.rs</code>, <code>src/spec.rs</code>, <code>src/tui.rs</code>).</td></tr>
-            <tr><td>M2a · source query pipeline</td><td>Implemented</td><td><code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>, <code>count</code>, <code>rate</code>; per-widget derived data; <code>gauge</code> (<code>src/query.rs</code>).</td></tr>
-            <tr><td>M2b · aggregation + bars/histo</td><td>Implemented</td><td><code>tally</code> aggregation (<code>Pairs</code> result type) rendering into the <code>bars</code> and <code>histo</code> widgets.</td></tr>
-            <tr><td>M2c · presets / richer query</td><td>Planned</td><td>Modules, imports, preset dashboards; JSON/CSV field extraction, <code>where(pred)</code>, sort/group/uniq.</td></tr>
+            <tr><td>M2 · query pipeline + widgets <em>(expanding)</em></td><td>Implemented</td><td><code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>/<code>field NAME</code>, <code>count</code>, <code>rate</code>, <code>tally</code> over line and JSON streams (<code>in.json</code>, nested key paths); per-widget derived data into <code>gauge</code>/<code>bars</code>/<code>histo</code> (<code>src/query.rs</code>).</td></tr>
+            <tr><td>M2+ · presets / richer query</td><td>Planned</td><td>Modules, imports, preset dashboards; CSV/XML/HTML/YAML/TOML extraction, <code>where(pred)</code>, sort / group / uniq.</td></tr>
             <tr><td>M3 · controls + <code>out</code></td><td>Planned</td><td>Interactive controls that megafilter/map the passthrough.</td></tr>
             <tr><td>M4 · Expect + events</td><td>Planned</td><td>Stream reactions (<code>expect</code>) and Tk-style <code>bind</code> events.</td></tr>
             <tr><td>M5 · web target</td><td>Planned</td><td>Served zgui page + WebSocket live update (<code>-t web</code>).</td></tr>
@@ -156,7 +155,7 @@
             <tr><td>src/parser.rs</td><td>present</td><td>Widget commands + block grammar (original).</td></tr>
             <tr><td>src/ast.rs</td><td>present</td><td>Command syntax tree.</td></tr>
             <tr><td>src/spec.rs</td><td>present</td><td>Command tree → <code>Spec</code> (widgets, <code>source</code> pipelines, binds).</td></tr>
-            <tr><td>src/query.rs</td><td>present</td><td>Source query pipeline (M2a verbs; jq/xpath/css/yq surface grows here).</td></tr>
+            <tr><td>src/query.rs</td><td>present</td><td>Source query pipeline (M2 verbs; jq/xpath/css/yq surface grows here).</td></tr>
             <tr><td>src/stream.rs</td><td>present</td><td>Live stream state feeding the widgets.</td></tr>
             <tr><td>src/tui.rs</td><td>present</td><td>ratatui backend.</td></tr>
             <tr><td>src/compiler.rs</td><td>planned</td><td>AST → <code>fusevm::Chunk</code> (original lowering).</td></tr>
@@ -175,7 +174,7 @@
 
       <section class="tutorial-section">
         <h2>Dependency posture</h2>
-        <p>arb is a standalone crate (MIT). The current manifest is deliberately minimal — <code>ratatui</code> 0.29 (with its <code>crossterm</code> backend), <code>clap</code> 4.5, and <code>regex</code> 1 for the M2a match/reject verbs. Later milestones add <code>fusevm{jit,jit-disk-cache,aot}</code>, <code>rkyv</code>/<code>bincode</code>/<code>memmap2</code> for the cache, the format parsers (<code>serde_json</code> / <code>quick-xml</code> / <code>serde_yaml</code> / <code>toml</code> / <code>csv</code> + html), and feature-gated async http + ws for the web target. Release builds use <code>lto = true</code> and <code>strip = true</code>.</p>
+        <p>arb is a standalone crate (MIT). The current manifest is deliberately minimal — <code>ratatui</code> 0.29 (with its <code>crossterm</code> backend), <code>clap</code> 4.5, and <code>regex</code> 1 for the match/reject verbs. Later milestones add <code>fusevm{jit,jit-disk-cache,aot}</code>, <code>rkyv</code>/<code>bincode</code>/<code>memmap2</code> for the cache, the format parsers (<code>serde_json</code> / <code>quick-xml</code> / <code>serde_yaml</code> / <code>toml</code> / <code>csv</code> + html), and feature-gated async http + ws for the web target. Release builds use <code>lto = true</code> and <code>strip = true</code>.</p>
       </section>
 
       <hr class="section-rule">
