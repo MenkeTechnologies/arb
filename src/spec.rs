@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use regex::Regex;
 
 use crate::ast::{Arg, Command};
-use crate::query::QueryOp;
+use crate::query::{FieldSel, QueryOp};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WidgetKind {
@@ -156,18 +156,10 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
     let mut saw_in = false;
     for c in cmds {
         match c.name.as_str() {
-            "in" => saw_in = true,
+            "in" | "in.json" => saw_in = true,
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
-            "field" => {
-                let n = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .ok_or("field: expected a 1-based column number (M2a: numeric fields)")?;
-                ops.push(QueryOp::Field(n));
-            }
+            "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
             "count" => ops.push(QueryOp::Count),
             "rate" => ops.push(QueryOp::Rate),
             "tally" => ops.push(QueryOp::Tally),
@@ -192,6 +184,21 @@ fn regex_arg(c: &Command) -> Result<Regex, String> {
         .and_then(|s| s.strip_suffix('/'))
         .unwrap_or(raw);
     Regex::new(pat).map_err(|e| format!("{}: bad regex: {e}", c.name))
+}
+
+/// A single numeric arg selects a whitespace column; anything else is a JSON
+/// key path (`field a b c` -> a.b.c).
+fn field_sel(args: &[Arg]) -> Result<FieldSel, String> {
+    let words: Vec<&str> = args.iter().filter_map(Arg::as_str).collect();
+    if words.is_empty() {
+        return Err("field: expected a column number or key path".into());
+    }
+    if words.len() == 1 {
+        if let Ok(n) = words[0].parse::<usize>() {
+            return Ok(FieldSel::Col(n));
+        }
+    }
+    Ok(FieldSel::Key(words.iter().map(|s| s.to_string()).collect()))
 }
 
 fn set_source(spec: &mut Spec, path: &str, src: Source) -> Result<(), String> {

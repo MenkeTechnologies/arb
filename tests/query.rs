@@ -60,6 +60,38 @@ fn field_then_tally_groups_sorted() {
 }
 
 #[test]
+fn json_field_by_name_then_tally() {
+    let ops = pipeline("bars .x\nsource .x { in.json; field level; tally }");
+    let data = lines(&[
+        r#"{"level":"INFO","msg":"a"}"#,
+        r#"{"level":"ERROR","msg":"b"}"#,
+        r#"{"level":"INFO","msg":"c"}"#,
+    ]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Pairs(vec![("INFO".into(), 2), ("ERROR".into(), 1)])
+    );
+}
+
+#[test]
+fn json_nested_key_path() {
+    let ops = pipeline("text .x\nsource .x { in.json; field a b }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"a":{"b":42}}"#]), 1.0),
+        QueryResult::Lines(lines(&["42"]))
+    );
+}
+
+#[test]
+fn json_missing_key_is_empty() {
+    let ops = pipeline("text .x\nsource .x { in.json; field nope }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"a":1}"#]), 1.0),
+        QueryResult::Lines(lines(&[""]))
+    );
+}
+
+#[test]
 fn empty_pipeline_passes_lines_through() {
     let ops = pipeline("tail .x\nsource .x { in }");
     assert_eq!(
