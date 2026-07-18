@@ -76,7 +76,11 @@ displays it. Highlights:
 ## [0x01] INSTALL
 
 ```sh
-# From source
+# Via Homebrew tap (bumped by each release; formula is `arb`)
+brew tap MenkeTechnologies/menketech
+brew install arb
+
+# Or from source
 git clone https://github.com/MenkeTechnologies/arb
 cd arb
 cargo build
