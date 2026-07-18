@@ -30,6 +30,9 @@ pub enum QueryOp {
     /// Keep lines whose numeric value (`x` = line parsed as a number) satisfies
     /// the predicate — compiled to fusevm and evaluated per line.
     Where(Expr),
+    /// Replace each line with the value of an expression (field-aware; `x` =
+    /// line-as-number), computed on the fusevm VM.
+    Map(Expr),
     /// Reduce to the current line count.
     Count,
     /// Reduce to lines-per-second over the elapsed window.
@@ -67,6 +70,16 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     let resolve = |name: &str| field_num(l, name);
                     crate::expr::eval_pred_ctx(e, x, &resolve).unwrap_or(false)
                 });
+            }
+            QueryOp::Map(e) => {
+                for l in cur.iter_mut() {
+                    let v = {
+                        let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        let resolve = |name: &str| field_num(l, name);
+                        crate::expr::eval_ctx(e, x, &resolve).unwrap_or(f64::NAN)
+                    };
+                    *l = fmt_num(v);
+                }
             }
             QueryOp::Count => return QueryResult::Scalar(cur.len() as f64),
             QueryOp::Rate => {
@@ -127,6 +140,15 @@ fn walk(mut cur: Value, path: &[String]) -> Option<Value> {
         };
     }
     Some(cur)
+}
+
+/// Format a computed number: integers without a decimal point, else default.
+fn fmt_num(v: f64) -> String {
+    if v.is_finite() && v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
 }
 
 /// Resolve a JSON field of `line` to a number for expression evaluation

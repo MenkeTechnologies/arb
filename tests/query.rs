@@ -92,6 +92,25 @@ fn json_missing_key_is_empty() {
 }
 
 #[test]
+fn map_transforms_each_line_via_fusevm() {
+    let ops = pipeline("tail .x\nsource .x { in; field 2; map x / 1024 }");
+    assert_eq!(
+        eval(&ops, &lines(&["a 2048", "b 1024"]), 1.0),
+        QueryResult::Lines(lines(&["2", "1"]))
+    );
+}
+
+#[test]
+fn map_json_field_via_fusevm() {
+    let ops = pipeline("tail .x\nsource .x { in.json; map bytes / 1024 }");
+    let data = lines(&[r#"{"bytes":2048}"#, r#"{"bytes":512}"#]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Lines(lines(&["2", "0.5"]))
+    );
+}
+
+#[test]
 fn where_by_json_field_via_fusevm() {
     let ops = pipeline("tail .x\nsource .x { in.json; where amount > 100 }");
     let data = lines(&[r#"{"amount":50}"#, r#"{"amount":150}"#, r#"{"amount":200}"#]);

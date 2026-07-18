@@ -193,6 +193,15 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     .join(" ");
                 ops.push(QueryOp::Where(crate::expr::parse(&src)?));
             }
+            "map" => {
+                let src = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ops.push(QueryOp::Map(crate::expr::parse(&src)?));
+            }
             other => return Err(format!("source: unknown verb `{other}`")),
         }
     }
