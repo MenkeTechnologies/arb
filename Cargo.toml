@@ -3,7 +3,7 @@
 # stays `arb`.
 [package]
 name = "arblang"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "MIT"
 description = "Visualize and modify Unix pipelines: pipe a stream in, arb spawns a dynamic TUI."
