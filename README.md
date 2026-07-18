@@ -135,6 +135,28 @@ substring); `Bksp`/`Ctrl-U` edit, `Esc` clears, `Ctrl-C` quits. When piped
 onward, the filter also narrows what the downstream consumer receives — the
 megafilter reshapes the pipe as you type.
 
+### Interactive map (megafilter/map)
+
+The filter narrows; an **`out { … apply .x }`** pipeline fed by an `input` widget
+**maps** — you edit a transform in the TUI and the downstream pipe updates live,
+so arb is a scriptable, interactive stage in the middle of a pipeline:
+
+```sh
+tail -f access.log | arb -e 'input .x -placeholder "transform, e.g. field 7"
+                             tail .t
+                             source .t { in }
+                             out { in; apply .x }' | downstream
+#  type `field 7` → downstream receives column 7 of every line, live
+#  type `grep /404/` → downstream receives only 404s; clear it → full stream again
+```
+
+The `out` map runs per line as the stream flows (never buffered — arb doesn't
+block the pipe like `vipe`), re-resolving only when you edit the field. An empty
+field is identity (the pipe passes through untouched until you type). A filtering
+transform (`grep`/`reject`) drops lines downstream; a reducer (`count`) can't map
+a single line and falls back to passthrough. The TUI stays up on `/dev/tty` while
+stdout carries the mapped data.
+
 ### fzf mode — `arb --fzf`
 
 A fuzzy select mode: filter a stream and pick line(s), printed to stdout on

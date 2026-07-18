@@ -263,11 +263,19 @@ fn main() -> io::Result<()> {
 
     // Interactive TUI whenever a controlling terminal is reachable (a `/dev/tty`
     // we can open — see `tui::events_available`); the TUI renders THERE, not to
-    // stdout, so it runs even when stdout is piped onward. Exception: an explicit
-    // `out { … }` reshape with a downstream consumer takes the data path below so
-    // the consumer gets the transformed stream. With no controlling tty (CI, a
-    // detached exec) it also falls through, instead of crashing on the reader.
-    let downstream_reshape = spec.out.is_some() && !io::stdout().is_terminal();
+    // stdout, so it runs even when stdout is piped onward. Exception: a STATIC
+    // `out { … }` reshape (no live control) with a downstream consumer takes the
+    // headless data path below so the consumer gets the transformed stream. But an
+    // INTERACTIVE out — `input` widgets feeding `out { … apply .x }` — keeps the
+    // TUI up so typing reshapes the piped stream live (the megafilter/map). With
+    // no controlling tty (CI) it falls through, instead of crashing on the reader.
+    let interactive_out = spec.widgets.iter().any(|w| w.kind == spec::WidgetKind::Input)
+        && spec
+            .out
+            .as_ref()
+            .is_some_and(|ops| ops.iter().any(|op| matches!(op, QueryOp::Apply(_))));
+    let downstream_reshape =
+        spec.out.is_some() && !io::stdout().is_terminal() && !interactive_out;
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
@@ -285,8 +293,11 @@ fn main() -> io::Result<()> {
                 // Tee the live filtered stream to stdout (only when piped onward,
                 // so arb never blocks or corrupts the terminal). fzf mode never
                 // tees. The filter narrows the passthrough live — the megafilter.
+                // An `out { … }` pipeline additionally MAPS each line as it flows,
+                // resolving `apply .name` against live `input` values — so typing
+                // in a control reshapes the downstream pipe in real time.
                 let tee = !fzf_mode && !io::stdout().is_terminal();
-                spawn_reader(state.clone(), tee, controls.clone());
+                spawn_reader(state.clone(), tee, controls.clone(), spec.out.clone());
             }
             None
         };
@@ -585,7 +596,12 @@ fn spawn_producer(
     Ok(err_state)
 }
 
-fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
+fn spawn_reader(
+    state: Arc<Mutex<StreamState>>,
+    tee: bool,
+    controls: Arc<Mutex<tui::Controls>>,
+    out_ops: Option<Vec<QueryOp>>,
+) {
     thread::spawn(move || {
         // Only hold the stdout lock when actually teeing. Otherwise (e.g. --fzf,
         // which emits its selection from `main` after the TUI exits) this thread
@@ -593,20 +609,53 @@ fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<t
         // `println!` — the process would never terminate after selection.
         let mut out = if tee { Some(io::stdout().lock()) } else { None };
         let mut downstream_open = tee;
+        // Megafilter/map cache: re-resolve the `out` pipeline only when the live
+        // `input` values change (resolving parses the input text — cheap, but not
+        // worth doing per line on a fast stream). `resolved` maps each line; it is
+        // only used per-line when line-streamable (a reducer like `count` can't
+        // map a single line, so we fall back to passthrough for it).
+        let map = out_ops.is_some();
+        let mut last_inputs: Option<Vec<(String, String)>> = None;
+        let mut resolved: Vec<QueryOp> = Vec::new();
+        let mut resolved_ok = false;
         for line in io::stdin().lock().lines() {
             let l = match line {
                 Ok(l) => l,
                 Err(_) => break,
             };
             if let Some(o) = out.as_mut() {
-                // Megafilter: only lines matching the live filter flow to stdout,
-                // so what the user types reshapes the downstream pipe in real time.
-                let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
-                if pass
-                    && downstream_open
-                    && writeln!(o, "{l}").and_then(|()| o.flush()).is_err()
-                {
-                    downstream_open = false;
+                // One lock: snapshot the live filter and input values together.
+                let (filter, inputs) = {
+                    let c = controls.lock().unwrap();
+                    (c.filter.clone(), c.inputs.clone())
+                };
+                // Megafilter: only lines matching the live filter flow downstream.
+                if tui::filter_matches(&l, &filter) && downstream_open {
+                    if map {
+                        if last_inputs.as_ref() != Some(&inputs) {
+                            let imap: std::collections::HashMap<String, String> =
+                                inputs.iter().cloned().collect();
+                            resolved =
+                                spec::resolve_pipeline(out_ops.as_deref().unwrap_or(&[]), &imap);
+                            resolved_ok = query::is_line_streamable(&resolved);
+                            last_inputs = Some(inputs);
+                        }
+                        // Map the line through the resolved pipeline (identity when
+                        // it resolved to nothing); non-streamable → raw passthrough.
+                        let outs = if resolved_ok {
+                            tui::project_line(&resolved, &l)
+                        } else {
+                            vec![l.clone()]
+                        };
+                        for ol in outs {
+                            if writeln!(o, "{ol}").and_then(|()| o.flush()).is_err() {
+                                downstream_open = false;
+                                break;
+                            }
+                        }
+                    } else if writeln!(o, "{l}").and_then(|()| o.flush()).is_err() {
+                        downstream_open = false;
+                    }
                 }
             }
             state.lock().unwrap().push(l);

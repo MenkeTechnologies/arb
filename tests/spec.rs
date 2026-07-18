@@ -195,6 +195,33 @@ fn select_projection_maps_display_while_keeping_original() {
 }
 
 #[test]
+fn interactive_out_maps_stream_with_live_input() {
+    use std::collections::HashMap;
+    // The megafilter/map: `out { in; apply .x }` resolved against a live input,
+    // then applied per line (exactly what the tee reader does downstream).
+    let s = build(&parse("input .x\ntail .t\nsource .t { in }\nout { in; apply .x }").unwrap())
+        .unwrap();
+    let out = s.out.as_ref().expect("out pipeline");
+
+    // Input `.x = "upper"` → each piped line is uppercased downstream.
+    let mut inputs = HashMap::new();
+    inputs.insert("x".to_string(), "upper".to_string());
+    let resolved = arb::spec::resolve_pipeline(out, &inputs);
+    assert!(arb::query::is_line_streamable(&resolved));
+    assert_eq!(arb::tui::project_line(&resolved, "bob"), vec!["BOB"]);
+
+    // Empty input → identity passthrough (the pipe is unchanged until you type).
+    let resolved0 = arb::spec::resolve_pipeline(out, &HashMap::new());
+    assert_eq!(arb::tui::project_line(&resolved0, "bob"), vec!["bob"]);
+
+    // A filtering transform drops lines from the downstream pipe live.
+    inputs.insert("x".to_string(), "grep /o/".to_string());
+    let resolved_g = arb::spec::resolve_pipeline(out, &inputs);
+    assert_eq!(arb::tui::project_line(&resolved_g, "bob"), vec!["bob"]);
+    assert!(arb::tui::project_line(&resolved_g, "alice").is_empty());
+}
+
+#[test]
 fn search_binding_sets_widget_search_key() {
     // fzf `--nth`: `search .f { in; field 1 }` derives the fuzzy key while the row
     // shows/emits the full display. The search pipeline is stored on the widget
