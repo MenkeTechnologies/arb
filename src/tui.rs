@@ -21,6 +21,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use rayon::prelude::*;
+
 use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
@@ -320,31 +322,56 @@ pub fn run(
             {
                 let st = state.lock().unwrap();
                 total = st.total;
-                if filter != fzf_filter {
-                    // Filter changed — restart matching from scratch.
-                    fzf_hits.clear();
-                    fzf_matched.clear();
-                    fzf_processed = 0;
-                    fzf_filter = filter.clone();
-                }
+                let n = st.lines.len();
                 let empty = filter.is_empty();
-                for i in fzf_processed..st.lines.len() {
+                if filter != fzf_filter {
+                    // fzf's query-extension trick: typing another char can only
+                    // narrow the current matches (fuzzy match is monotonic), so
+                    // re-filter the existing hit set instead of rescanning the
+                    // whole (million-line) buffer. Only a non-prefix change
+                    // (backspace, new query) does a full — parallel — rescan.
+                    let extends = !empty && !fzf_filter.is_empty() && filter.starts_with(&fzf_filter);
+                    if empty {
+                        fzf_hits.clear();
+                        fzf_matched.clear();
+                        fzf_processed = 0;
+                    } else if extends {
+                        let old = std::mem::take(&mut fzf_hits);
+                        fzf_hits = old
+                            .into_iter()
+                            .filter_map(|(_, l)| fuzzy_score(&l, &filter).map(|s| (s, l)))
+                            .collect();
+                        // keep fzf_processed — new stream lines scored below
+                    } else {
+                        // Full rescan across cores (rayon) — first char / backspace.
+                        fzf_hits = st
+                            .lines
+                            .par_iter()
+                            .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
+                            .collect();
+                        fzf_processed = n;
+                    }
+                    fzf_filter = filter.clone();
+                    fzf_last_sort = Instant::now() - Duration::from_secs(1);
+                }
+                // Incorporate new stream lines since the last frame.
+                for i in fzf_processed..n {
                     let line = &st.lines[i];
                     if empty {
-                        fzf_matched.push(line.clone()); // stream order, no scoring
+                        fzf_matched.push(line.clone());
                     } else if let Some(sc) = fuzzy_score(line, &filter) {
                         fzf_hits.push((sc, line.clone()));
                     }
                 }
-                fzf_processed = st.lines.len();
+                fzf_processed = n;
             }
-            // Non-empty filter: re-sort accumulated hits into the display list on a
-            // short debounce (cheap — only matching lines, not the whole buffer).
+            // Non-empty filter: re-sort the (narrowed) hit set into the display
+            // list on a short debounce — cheap once the query has narrowed it.
             if !filter.is_empty() {
                 let now = Instant::now();
-                if now.duration_since(fzf_last_sort) >= Duration::from_millis(150) {
+                if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
-                    h.sort_by(|a, b| b.0.cmp(&a.0));
+                    h.par_sort_by(|a, b| b.0.cmp(&a.0));
                     fzf_matched = h.into_iter().map(|(_, l)| l).collect();
                     fzf_last_sort = now;
                 }
