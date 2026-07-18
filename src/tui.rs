@@ -15,7 +15,7 @@ use ratatui::crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
+use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::query::{eval, QueryResult};
@@ -102,6 +102,10 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
             let s = match &result {
                 Some(QueryResult::Scalar(v)) => format!("{v:.2}"),
                 Some(QueryResult::Lines(ls)) => ls.last().cloned().unwrap_or_default(),
+                Some(QueryResult::Pairs(p)) => p
+                    .first()
+                    .map(|(k, v)| format!("{k} ({v})"))
+                    .unwrap_or_default(),
                 None => st.lines.back().cloned().unwrap_or_default(),
             };
             f.render_widget(Paragraph::new(s).block(block), area);
@@ -110,6 +114,9 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
             let owned: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),
                 Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
+                Some(QueryResult::Pairs(p)) => {
+                    p.iter().map(|(k, v)| format!("{k}  {v}")).collect()
+                }
                 None => st.lines.iter().cloned().collect(),
             };
             let inner_h = area.height.saturating_sub(2) as usize;
@@ -138,8 +145,30 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
                 .label(format!("{val:.0}/{max:.0}"));
             f.render_widget(g, area);
         }
+        WidgetKind::Bars | WidgetKind::Histo => {
+            let pairs: Vec<(String, u64)> = match &result {
+                Some(QueryResult::Pairs(p)) => p.clone(),
+                _ => Vec::new(),
+            };
+            let top = w
+                .opts
+                .get("top")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
+            let shown: Vec<(&str, u64)> =
+                pairs.iter().take(top).map(|(k, v)| (k.as_str(), *v)).collect();
+            let n = shown.len().max(1);
+            let inner_w = area.width.saturating_sub(2) as usize;
+            let bw = ((inner_w / n).saturating_sub(1)).clamp(1, 12) as u16;
+            let chart = BarChart::default()
+                .block(block)
+                .bar_width(bw)
+                .bar_gap(1)
+                .data(&shown[..]);
+            f.render_widget(chart, area);
+        }
         _ => {
-            let msg = format!("{} — not yet rendered (M2a)", w.kind.label());
+            let msg = format!("{} — not yet rendered (M2b)", w.kind.label());
             f.render_widget(Paragraph::new(msg).block(block), area);
         }
     }

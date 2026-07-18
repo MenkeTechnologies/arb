@@ -51,6 +51,15 @@ fn rate_uses_elapsed() {
 }
 
 #[test]
+fn field_then_tally_groups_sorted() {
+    let ops = pipeline("bars .x\nsource .x { in; field 1; tally }");
+    assert_eq!(
+        eval(&ops, &lines(&["a x", "a y", "b z", "c w", "a q"]), 1.0),
+        QueryResult::Pairs(vec![("a".into(), 3), ("b".into(), 1), ("c".into(), 1)])
+    );
+}
+
+#[test]
 fn empty_pipeline_passes_lines_through() {
     let ops = pipeline("tail .x\nsource .x { in }");
     assert_eq!(

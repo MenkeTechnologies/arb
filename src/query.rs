@@ -5,6 +5,8 @@
 //! `field N` (1-based whitespace column), `count`, `rate`. JSON/CSV field
 //! extraction, `where(pred)`, and aggregation to tables land with later verbs.
 
+use std::collections::BTreeMap;
+
 use regex::Regex;
 
 #[derive(Debug, Clone)]
@@ -19,13 +21,16 @@ pub enum QueryOp {
     Count,
     /// Reduce to lines-per-second over the elapsed window.
     Rate,
+    /// Group identical values and count them, sorted by count desc then key asc.
+    Tally,
 }
 
-/// The output of evaluating a pipeline: either a list of lines or a scalar.
+/// The output of evaluating a pipeline: lines, a scalar, or grouped counts.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryResult {
     Lines(Vec<String>),
     Scalar(f64),
+    Pairs(Vec<(String, u64)>),
 }
 
 /// Evaluate `ops` against `lines`. `elapsed_secs` feeds `rate`.
@@ -44,6 +49,15 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Count => return QueryResult::Scalar(cur.len() as f64),
             QueryOp::Rate => {
                 return QueryResult::Scalar(cur.len() as f64 / elapsed_secs.max(0.001));
+            }
+            QueryOp::Tally => {
+                let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+                for l in &cur {
+                    *counts.entry(l.clone()).or_insert(0) += 1;
+                }
+                let mut pairs: Vec<(String, u64)> = counts.into_iter().collect();
+                pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                return QueryResult::Pairs(pairs);
             }
         }
     }

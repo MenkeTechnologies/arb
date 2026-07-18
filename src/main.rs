@@ -112,6 +112,7 @@ fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
                 let r = match query::eval(&s.pipeline, &raw, elapsed) {
                     QueryResult::Scalar(v) => format!("= {v}"),
                     QueryResult::Lines(ls) => format!("-> {} line(s)", ls.len()),
+                    QueryResult::Pairs(p) => format!("-> {} group(s)", p.len()),
                 };
                 (format!("stdin[{} op]", s.pipeline.len()), r)
             }
