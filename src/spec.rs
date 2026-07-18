@@ -1100,6 +1100,13 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "round" => ops.push(QueryOp::Round),
             "delta" => ops.push(QueryOp::Delta),
             "cumsum" => ops.push(QueryOp::Cumsum),
+            "sma" => ops.push(QueryOp::Sma(count_arg(c, "sma")?)),
+            "ewma" => {
+                let a = str_arg(c)
+                    .parse::<f64>()
+                    .map_err(|_| "ewma: expected a smoothing factor 0–1 (e.g. 0.3)".to_string())?;
+                ops.push(QueryOp::Ewma(a));
+            }
             "prepend" => ops.push(QueryOp::Prepend(str_arg(c))),
             "append" => ops.push(QueryOp::Append(str_arg(c))),
             "cut" => {

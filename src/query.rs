@@ -238,6 +238,12 @@ pub enum QueryOp {
     Delta,
     /// running (cumulative) total of the numeric series.
     Cumsum,
+    /// simple moving average over a trailing window of N (length-preserving; the
+    /// first points average a shorter, growing window). Smooths a noisy series.
+    Sma(usize),
+    /// exponentially-weighted moving average, smoothing factor `alpha` in (0,1] —
+    /// higher alpha tracks faster, lower is smoother. `s0 = x0`.
+    Ewma(f64),
     /// prefix every line with a literal string.
     Prepend(String),
     /// suffix every line with a literal string.
@@ -939,6 +945,30 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     .map(|&v| {
                         acc += v;
                         fmt_num(acc)
+                    })
+                    .collect();
+            }
+            QueryOp::Sma(n) => {
+                let ns = nums(&cur);
+                let w = (*n).max(1);
+                cur = (0..ns.len())
+                    .map(|i| {
+                        let lo = i + 1 - (i + 1).min(w);
+                        let win = &ns[lo..=i];
+                        fmt_num(win.iter().sum::<f64>() / win.len() as f64)
+                    })
+                    .collect();
+            }
+            QueryOp::Ewma(alpha) => {
+                let a = alpha.clamp(0.0, 1.0);
+                let ns = nums(&cur);
+                let mut s = 0.0;
+                cur = ns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| {
+                        s = if i == 0 { v } else { a * v + (1.0 - a) * s };
+                        fmt_num(s)
                     })
                     .collect();
             }

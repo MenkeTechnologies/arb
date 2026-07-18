@@ -1285,3 +1285,21 @@ fn delta_and_cumsum() {
     let net = eval(&pipeline("gauge .x\nsource .x { in; delta; sum }"), &lines(&["10", "15", "15", "40"]), 1.0);
     assert_eq!(net, QueryResult::Scalar(30.0));
 }
+
+#[test]
+fn sma_and_ewma_smooth() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    // SMA is length-preserving; the first points average a shorter window.
+    assert_eq!(
+        f("sma 3", &["1", "2", "3", "4", "5", "6"]),
+        QueryResult::Lines(lines(&["1", "1.5", "2", "3", "4", "5"]))
+    );
+    // EWMA: s0=x0, then alpha*x + (1-alpha)*prev.
+    assert_eq!(
+        f("ewma 0.5", &["0", "10", "10", "10"]),
+        QueryResult::Lines(lines(&["0", "5", "7.5", "8.75"]))
+    );
+    // Empty input → empty; window >= len averages everything seen so far.
+    assert_eq!(f("sma 10", &[]), QueryResult::Lines(lines(&[])));
+    assert_eq!(f("sma 10", &["2", "4"]), QueryResult::Lines(lines(&["2", "3"])));
+}
