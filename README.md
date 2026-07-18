@@ -59,6 +59,10 @@ displays it. Highlights:
 - **Megafilter/map** — interactive controls render *and* feed `out`, so a
   control's path used as a value is its current state — arb filters and maps the
   downstream output live.
+- **fzf superset + orchestrator** — `arb --fzf` is a fuzzy select mode (rank,
+  smart-case, multi-select, preview); `arb 'PROD | _ | CONS'` runs a whole
+  pipeline with arb as the `_` stage, hooking each command's fds so producer
+  **stderr lands in a pane** instead of corrupting the TUI.
 - **Runs on fusevm** — the compute core (expressions and the `calc` pipeline op)
   lowers to a `fusevm::Chunk` and executes on the fusevm VM + three-tier Cranelift
   JIT. Declarative widget/layout construction needs no VM; more of the language
@@ -120,9 +124,52 @@ tail -f access.log | arb -e 'out { in; match /5\d\d/; field 7 }' | stryke
 
 Mid-pipe, arb is either a **tap/peek** (no `out` — the stream passes through
 unchanged while the spec visualizes it) or a **filter/map** (an `out { … }` block
-reshapes the passthrough). With no controlling terminal on stdout it forwards the
-stream (tap) or emits the `out` result (filter); with no stdin-reading spec it
-prints the parsed spec summary.
+reshapes the passthrough). The TUI renders to `/dev/tty` (like fzf), so stdout
+stays a clean data channel; keys are read straight from `/dev/tty` (like vipe),
+so `find / | arb` works even though stdin carries the pipe.
+
+### Interactive filter (megafilter)
+
+In the TUI, **type to filter** the whole dashboard live (case-insensitive
+substring); `Bksp`/`Ctrl-U` edit, `Esc` clears, `Ctrl-C` quits. When piped
+onward, the filter also narrows what the downstream consumer receives — the
+megafilter reshapes the pipe as you type.
+
+### fzf mode — `arb --fzf`
+
+A fuzzy select mode: filter a stream and pick line(s), printed to stdout on
+Enter. A superset of fzf's core (fuzzy match + ranking + smart-case, multi-select,
+a preview pane), not a re-skin.
+
+```sh
+vim "$(git ls-files | arb --fzf)"          # single select
+ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
+```
+
+- **Fuzzy match** — pattern chars match in order (subsequence); results ranked
+  best-first (contiguous runs + word-boundary starts win). **Smart-case**:
+  lowercase query is case-insensitive, any uppercase makes it case-sensitive.
+- **Navigate** — `↑`/`↓`, `Ctrl-J`/`Ctrl-N` down, `Ctrl-K`/`Ctrl-P` up.
+- **Multi-select** — `Tab` marks lines (green `+`); Enter emits all marked.
+- Matched chars highlight yellow; keeps the entire stream (no line drop), so
+  marks persist and a huge `find /` stays fully selectable.
+
+### Pipeline orchestrator — `arb '<PROD> | _ | <CONS>'`
+
+arb runs a whole pipeline with `_` marking its own interactive stage, so it owns
+every stage's file descriptors. The producer's **stderr goes to a pane** instead
+of corrupting the TUI (the reason plain `find / | fzf` gets scribbled over by
+permission errors):
+
+```sh
+arb --fzf 'sudo find / | _ | perl -pe "s|Application|APP|"'
+#          └ producer ┘   │   └──────── consumer ────────┘
+#          stdout→list    │   selection piped through it on Enter
+#          stderr→⚠ pane  arb's interactive stage
+```
+
+Each stage is shelled out (`sh -c`, so globs/quotes work); arb wires the
+fds between them. (`--run 'PIPELINE'` is the explicit-flag form.)
 
 ---
 
@@ -192,9 +239,13 @@ by `grid`.
 
 | Invocation | Effect |
 | --- | --- |
-| `cmd \| arb` | Zero-config: a full-screen live tail of stdin. |
+| `cmd \| arb` | Zero-config: a full-screen live tail of stdin (type to filter). |
 | `cmd \| arb FILE.arb` | Run a dashboard spec file. |
 | `cmd \| arb -e SRC` | Run an inline spec. |
+| `cmd \| arb --fzf` | fzf select mode: fuzzy-filter + pick line(s) to stdout. |
+| `cmd \| arb -- CMD…` | Preview pane: re-run CMD over the filtered output. |
+| `arb '<PROD> \| _ \| <CONS>'` | Orchestrate a pipeline; `_` is arb's stage, producer stderr → pane. |
+| `arb --run 'PIPELINE'` | Same, explicit flag form. |
 | `--version` / `--help` | Version / usage. |
 
 ---

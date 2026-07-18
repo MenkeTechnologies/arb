@@ -325,7 +325,8 @@ pub fn run(
             if let Err(e) = draw {
                 break Err(e);
             }
-            thread::sleep(Duration::from_millis(60));
+            // Snappy input response; frames are cheap now (windowed rendering).
+            thread::sleep(Duration::from_millis(20));
             continue;
         }
         // Snapshot the downstream pane's recent output (tail) before drawing, so
@@ -543,13 +544,26 @@ fn render_fzf(
     f.render_widget(Paragraph::new(prompt), chunks[0]);
 
     let inner_w = chunks[1].width as usize;
-    let items: Vec<ListItem> = matched
+    // Only build ListItems for the VISIBLE window around the cursor — not the
+    // whole (possibly million-line) match list. This is what keeps arb as fast as
+    // fzf: fuzzy-highlighting and allocation happen for ~a screenful, not all rows.
+    let list_h = chunks[1].height as usize;
+    let n = matched.len();
+    let sel = sel.min(n.saturating_sub(1));
+    let start = if list_h > 0 && sel >= list_h {
+        sel + 1 - list_h
+    } else {
+        0
+    };
+    let end = (start + list_h.max(1)).min(n);
+    let mark_set: std::collections::HashSet<&str> = marks.iter().map(String::as_str).collect();
+    let items: Vec<ListItem> = matched[start..end]
         .iter()
-        .map(|l| ListItem::new(fzf_line(l, filter, inner_w, marks.iter().any(|m| m == l))))
+        .map(|l| ListItem::new(fzf_line(l, filter, inner_w, mark_set.contains(l.as_str()))))
         .collect();
     let mut state = ListState::default();
-    if !matched.is_empty() {
-        state.select(Some(sel.min(matched.len() - 1)));
+    if n > 0 {
+        state.select(Some(sel - start));
     }
     // Cyan pointer + a subtle highlight bar on the cursor line, fzf-style.
     let list = List::new(items)
