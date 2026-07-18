@@ -75,6 +75,8 @@ pub struct Widget {
     pub kind: WidgetKind,
     pub opts: BTreeMap<String, String>,
     pub source: Option<Source>,
+    /// Grid cell `(row, col)` set by a `grid` command; `None` = auto-stacked.
+    pub grid: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +105,7 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
                 kind,
                 opts: parse_opts(&c.args[1..]),
                 source: None,
+                grid: None,
             });
         } else if c.name == "source" {
             let path = c
@@ -116,6 +119,15 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
             };
             let pipeline = pipeline_from_body(body)?;
             set_source(&mut spec, path, Source { pipeline })?;
+        } else if c.name == "grid" {
+            let path = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("grid: missing path")?;
+            let o = parse_opts(&c.args[1..]);
+            let cell = |k| o.get(k).and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(0);
+            set_grid(&mut spec, path, (cell("row"), cell("col")))?;
         } else if c.name.starts_with('.') {
             // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
             if c.args.first().and_then(Arg::as_str) == Some("<-")
@@ -209,4 +221,14 @@ fn set_source(spec: &mut Spec, path: &str, src: Source) -> Result<(), String> {
         }
     }
     Err(format!("source: no widget named `{path}`"))
+}
+
+fn set_grid(spec: &mut Spec, path: &str, cell: (usize, usize)) -> Result<(), String> {
+    for w in &mut spec.widgets {
+        if w.path == path {
+            w.grid = Some(cell);
+            return Ok(());
+        }
+    }
+    Err(format!("grid: no widget named `{path}`"))
 }

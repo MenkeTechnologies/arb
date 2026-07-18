@@ -14,7 +14,7 @@ use ratatui::crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
@@ -65,27 +65,46 @@ pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
 
 fn render(f: &mut Frame, spec: &Spec, st: &StreamState) {
     let area = f.area();
-    let n = spec.widgets.len().max(1) as u32;
-    let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-
     if spec.widgets.is_empty() {
         let msg = Paragraph::new("arb: spec has no widgets")
             .block(Block::default().borders(Borders::ALL).title(" arb "));
-        f.render_widget(msg, chunks[0]);
+        f.render_widget(msg, area);
         return;
     }
 
+    let rects = compute_rects(area, spec);
     // One materialization of the ring per frame, shared by every widget's eval.
     let raw: Vec<String> = st.lines.iter().cloned().collect();
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
         let result = w.source.as_ref().map(|s| eval(&s.pipeline, &raw, elapsed));
-        render_widget(f, chunks[i], w, st, result);
+        render_widget(f, rects[i], w, st, result);
     }
+}
+
+/// One rect per widget. Auto vertical stack unless any widget has a grid cell,
+/// in which case a rows×cols grid is built and each widget placed in its cell
+/// (widgets sharing a cell overlap; last-drawn wins). Spans arrive later.
+fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
+    let ws = &spec.widgets;
+    let grid_mode = ws.iter().any(|w| w.grid.is_some());
+    if !grid_mode {
+        let n = ws.len().max(1) as u32;
+        let cons: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
+        return Layout::vertical(cons).split(area).to_vec();
+    }
+    let pos: Vec<(usize, usize)> = ws.iter().map(|w| w.grid.unwrap_or((0, 0))).collect();
+    let rows = pos.iter().map(|(r, _)| *r).max().unwrap_or(0) + 1;
+    let cols = pos.iter().map(|(_, c)| *c).max().unwrap_or(0) + 1;
+    let row_cons: Vec<Constraint> = (0..rows).map(|_| Constraint::Ratio(1, rows as u32)).collect();
+    let row_chunks = Layout::vertical(row_cons).split(area);
+    pos.iter()
+        .map(|(r, c)| {
+            let col_cons: Vec<Constraint> =
+                (0..cols).map(|_| Constraint::Ratio(1, cols as u32)).collect();
+            Layout::horizontal(col_cons).split(row_chunks[*r])[*c]
+        })
+        .collect()
 }
 
 fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result: Option<QueryResult>) {

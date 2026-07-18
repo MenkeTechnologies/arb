@@ -69,6 +69,22 @@ fn source_for_missing_widget_errors() {
 }
 
 #[test]
+fn grid_command_places_widgets() {
+    let s = build(
+        &parse("gauge .a\ngauge .b\ntail .c\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ngrid .c -row 1 -col 0").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.widgets[0].grid, Some((0, 0)));
+    assert_eq!(s.widgets[1].grid, Some((0, 1)));
+    assert_eq!(s.widgets[2].grid, Some((1, 0)));
+}
+
+#[test]
+fn grid_for_missing_widget_errors() {
+    assert!(build(&parse("grid .nope -row 0 -col 0").unwrap()).is_err());
+}
+
+#[test]
 fn unknown_verb_ignored() {
     let s = build(&parse("frobnicate .x\ntext .a").unwrap()).unwrap();
     assert_eq!(s.widgets.len(), 1);

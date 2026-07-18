@@ -119,7 +119,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/arb" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line" id="arbBuildLine">arb v0.0.1 · pipe → dynamic TUI/web · original language on fusevm + Cranelift JIT · jq/xpath/css/yq superset · Tcl/Tk-flavored DSL · MIT · M0 zero-config live-tail (walking skeleton)</p>
+          <p class="docs-build-line" id="arbBuildLine">arb v0.0.1 · pipe → dynamic TUI/web · original language targeting fusevm + Cranelift JIT · jq/xpath/css/yq superset · Tcl/Tk-flavored DSL · MIT · M0–M2b: live-tail + spec interpreter + query + aggregation</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -141,7 +141,7 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ARB REFERENCE</h2>
-      <p class="tutorial-subtitle">Pipe a Unix stream into <code>arb</code> and it spawns a dynamic TUI (ratatui today, a served <code>zgui</code> web page later) built from a declarative, Tcl/Tk-flavored spec. arb is a <code>jq</code>/<code>xpath</code>/<code>css</code>/<code>yq</code> superset, an interactive megafilter/map over the live passthrough, and an original language targeting the <code>fusevm</code> bytecode VM + three-tier Cranelift JIT — the same engine behind <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>. <strong>Early — Milestone 0 (walking skeleton) ships zero-config live-tail.</strong></p>
+      <p class="tutorial-subtitle">Pipe a Unix stream into <code>arb</code> and it spawns a dynamic TUI (ratatui today, a served <code>zgui</code> web page later) built from a declarative, Tcl/Tk-flavored spec. arb is a <code>jq</code>/<code>xpath</code>/<code>css</code>/<code>yq</code> superset, an interactive megafilter/map over the live passthrough, and an original language that targets the <code>fusevm</code> bytecode VM + three-tier Cranelift JIT — the same engine behind <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>. <strong>Early — Milestones 0–2b ship the zero-config live-tail, the Tcl-flavored spec interpreter with multi-widget render, the source query pipeline, and <code>tally</code> aggregation into bars/histo widgets.</strong></p>
 
       <section class="tutorial-section">
         <h2>What it is</h2>
@@ -155,14 +155,19 @@
       </section>
 
       <section class="tutorial-section">
-        <h2>Try it (M0)</h2>
-        <p>Milestone 0 is the zero-config tail: pipe any stream in and watch it in a full-screen TUI with a live line count and rate. With no controlling terminal on stdout (piped onward / redirected / CI) arb degrades to a headless summary instead of a TUI.</p>
+        <h2>Try it</h2>
+        <p>With no spec, arb synthesizes a full-screen <code>tail</code> of stdin — the zero-config path from M0. With a spec (a <code>.arb</code> file or an <code>-e</code> one-liner) the M1/M2a interpreter reads the declarative subset — widgets, <code>source</code> query pipelines, and <code>.x &lt;- in</code> binds — and renders it. With no controlling terminal on stdout (piped onward / redirected / CI) arb prints the parsed spec and each source's evaluated result instead of a TUI.</p>
 <pre>cargo install --path .
 
-find / | arb                  # live tail with count + rate; q / Esc / Ctrl-C quits
-seq 1 100000 | arb            # any stream
-producer | arb | consumer     # no tty on stdout -> headless summary</pre>
-        <p>The spec language, fusevm lowering, query engine, web target, actors, and the package manager arrive across later milestones. Nothing in M0 fakes them — a spec file or <code>-e</code> one-liner prints <code>spec interpretation lands in M1</code> and falls back to the tail.</p>
+# zero-config: a live tail with count + rate; q / Esc / Ctrl-C quits
+find / | arb
+
+# a spec: a gauge fed by the live line count of the stream
+seq 1 100000 | arb -e 'gauge .g -max 100000; source .g { in; count }'
+
+# a filtered list: keep 5xx lines, drop health checks
+tail -f access.log | arb -e 'list .l; source .l { in; match /5\d\d/; reject /health/ }'</pre>
+        <p>The verbs live today are <code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>, <code>count</code>, <code>rate</code>, and <code>tally</code>, rendering into <code>text</code>/<code>tail</code>/<code>list</code>/<code>gauge</code>/<code>bars</code>/<code>histo</code> widgets. The expression layer, fusevm lowering, the full jq/xpath/css/yq query surface, the web target, actors, and the package manager arrive across later milestones. Nothing is faked — unrecognized widget verbs are ignored so specs stay forward-compatible, and unbuilt features are absent, not stubbed.</p>
       </section>
 
       <section class="tutorial-section">
@@ -206,8 +211,10 @@ out {
           <thead><tr><th>Milestone</th><th>State</th><th>Scope</th></tr></thead>
           <tbody>
             <tr><td>M0 — Walking skeleton</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Zero-config live-tail TUI (ratatui) + headless summary; count/rate header; ring buffer; <code>q</code>/Esc/Ctrl-C quit (<code>src/main.rs</code>).</td></tr>
-            <tr><td>M1 — Core widgets + query basics</td><td><span class="status-pill status-planned">Planned</span></td><td>lex → parse → lower to fusevm; core widgets, auto-layout, <code>source</code> + query basics.</td></tr>
-            <tr><td>M2 — Presets / imports / stdlib</td><td><span class="status-pill status-planned">Planned</span></td><td>Modules + preset dashboards (logs / http / json / table / top / metrics).</td></tr>
+            <tr><td>M1 — Spec interpreter + widgets</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Tcl-flavored reader (<code>src/lexer.rs</code>, <code>src/parser.rs</code>, <code>src/ast.rs</code>); declarative widget/<code>source</code> interp + <code>.x &lt;- in</code> binds; multi-widget render of <code>text</code>/<code>tail</code>/<code>list</code> (<code>src/spec.rs</code>, <code>src/tui.rs</code>).</td></tr>
+            <tr><td>M2a — Source query pipeline</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>in</code>, <code>match</code>/<code>grep</code>, <code>reject</code>/<code>grepv</code>, <code>field N</code>, <code>count</code>, <code>rate</code>; per-widget derived data; <code>gauge</code> widget (<code>src/query.rs</code>).</td></tr>
+            <tr><td>M2b — Aggregation + bars/histo</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>tally</code> aggregation (<code>Pairs</code> result type) rendering into the <code>bars</code> and <code>histo</code> widgets.</td></tr>
+            <tr><td>M2c — Presets / imports / richer query</td><td><span class="status-pill status-planned">Planned</span></td><td>Modules + preset dashboards; JSON/CSV field extraction, <code>where(pred)</code>, sort/group/uniq.</td></tr>
             <tr><td>M3 — Interactive controls + <code>out</code></td><td><span class="status-pill status-planned">Planned</span></td><td>Filter / facet / slider controls that megafilter/map the passthrough.</td></tr>
             <tr><td>M4 — Expect + events</td><td><span class="status-pill status-planned">Planned</span></td><td>Stream reactions (<code>expect</code>) and Tk-style <code>bind</code> events.</td></tr>
             <tr><td>M5 — Web target</td><td><span class="status-pill status-planned">Planned</span></td><td>Served <code>zgui</code> page + WebSocket live update (<code>-t web</code>).</td></tr>
@@ -220,20 +227,22 @@ out {
 
       <section class="tutorial-section">
         <h2>Architecture (target)</h2>
-        <p>arb is designed as a fusevm frontend: the spec lowers to <code>fusevm::Chunk</code> bytecode and runs on the shared VM + Cranelift JIT, with ratatui / zgui / query / actor behaviour served by an extension-op host. In M0 the tree is only the stdin → ratatui tail spine (deps: <code>ratatui</code> + <code>clap</code>); fusevm and the language modules below arrive from M1 onward.</p>
-<pre>src/lexer.rs     Tcl-flavored reader           (original)
-src/parser.rs    widget cmds + expr grammar     (original)
-src/ast.rs
-src/compiler.rs  AST -> fusevm::Chunk           (original lowering)
-src/host.rs      extension ops: ratatui/zgui/query/actors
-src/query.rs     jq/xpath/css/yq engine
-src/tui.rs       ratatui backend
-src/web.rs       zgui codegen + WS server       (feature: web)
-src/actor.rs     Akka-style runtime             (feature: actors)
-src/module.rs    import / resolution
-src/pkg.rs       package manager (arb.toml)
-src/cache.rs     rkyv bytecode cache ~/.arb/
-src/lsp.rs src/dap.rs   stdio JSON-RPC</pre>
+        <p>arb is <em>designed</em> as a fusevm frontend: the spec is meant to lower to <code>fusevm::Chunk</code> bytecode and run on the shared VM + Cranelift JIT, with ratatui / zgui / query / actor behaviour served by an extension-op host. Today the M1/M2a tree is a <strong>direct interpreter</strong> — the Tcl-flavored reader (<code>src/lexer.rs</code>, <code>src/parser.rs</code>, <code>src/ast.rs</code>) builds a <code>Spec</code> (<code>src/spec.rs</code>) that <code>src/tui.rs</code> renders, with <code>source</code> bodies evaluated by the query pipeline (<code>src/query.rs</code>) over the live stream (<code>src/stream.rs</code>). Current deps are <code>ratatui</code>, <code>clap</code>, and <code>regex</code>; the fusevm lowering and the modules marked <em>(planned)</em> below arrive in later milestones.</p>
+<pre>src/lexer.rs     Tcl-flavored reader            (present)
+src/parser.rs    widget cmds + expr grammar     (present)
+src/ast.rs       syntax tree                    (present)
+src/spec.rs      command tree -> Spec interp    (present)
+src/query.rs     source query pipeline          (present)
+src/stream.rs    live stream state              (present)
+src/tui.rs       ratatui backend                (present)
+src/compiler.rs  AST -> fusevm::Chunk           (planned lowering)
+src/host.rs      extension ops: ratatui/zgui/query/actors  (planned)
+src/web.rs       zgui codegen + WS server       (planned, feature: web)
+src/actor.rs     Akka-style runtime             (planned, feature: actors)
+src/module.rs    import / resolution            (planned)
+src/pkg.rs       package manager (arb.toml)     (planned)
+src/cache.rs     rkyv bytecode cache ~/.arb/    (planned)
+src/lsp.rs src/dap.rs   stdio JSON-RPC          (planned)</pre>
         <p>Transfers from siblings are <strong>mechanics only</strong> — fusevm embedding, the rkyv cache, the LSP/DAP stdio shape, the package-manager ABI. The language design (lexer / parser / AST / compiler / semantics) is arb-original.</p>
       </section>
 
