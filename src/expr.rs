@@ -46,6 +46,9 @@ pub enum Expr {
     InList(Box<Expr>, Vec<Expr>),
     /// Range membership: `left in lo..hi` — truthy iff `lo <= left <= hi`.
     InRange(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Ternary `cond ? then : else` — only the taken branch is evaluated (real
+    /// fusevm branching), so a guarded `x != 0 ? 100/x : 0` never divides by 0.
+    Cond(Box<Expr>, Box<Expr>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
 }
 
@@ -56,7 +59,7 @@ pub fn parse(src: &str) -> Result<Expr, String> {
         c: src.chars().collect(),
         i: 0,
     };
-    let e = p.or_expr()?;
+    let e = p.ternary()?;
     if p.peek().is_some() {
         return Err(format!("calc: unexpected `{}`", p.c[p.i]));
     }
@@ -147,6 +150,19 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
             b.emit(Op::NumLe, 0);
             b.emit(Op::Mul, 0);
         }
+        Expr::Cond(c, t, e2) => {
+            // Real branching: `JumpIfFalse` pops the condition and skips to the
+            // else branch when falsy, so only the taken branch runs.
+            emit(c, x, resolve, b);
+            let jf = b.emit(Op::JumpIfFalse(0), 0);
+            emit(t, x, resolve, b);
+            let jend = b.emit(Op::Jump(0), 0);
+            let else_pos = b.current_pos();
+            b.patch_jump(jf, else_pos);
+            emit(e2, x, resolve, b);
+            let end_pos = b.current_pos();
+            b.patch_jump(jend, end_pos);
+        }
         // `and`/`or` operate on truthiness: normalize each side to 0/1 first,
         // then `and` = product (1 iff both 1), `or` = sum (>=1 iff either 1).
         Expr::Bin(BinOp::And, a, c) => {
@@ -204,7 +220,23 @@ impl Parser {
         self.c.get(self.i).copied()
     }
 
-    /// Lowest precedence: `a or b`.
+    /// Lowest precedence: `cond ? then : else` (right-associative).
+    fn ternary(&mut self) -> Result<Expr, String> {
+        let cond = self.or_expr()?;
+        if self.peek() == Some('?') {
+            self.i += 1;
+            let then = self.ternary()?;
+            if self.peek() != Some(':') {
+                return Err("calc: expected `:` in `?:`".into());
+            }
+            self.i += 1;
+            let els = self.ternary()?;
+            return Ok(Expr::Cond(Box::new(cond), Box::new(then), Box::new(els)));
+        }
+        Ok(cond)
+    }
+
+    /// `a or b`.
     fn or_expr(&mut self) -> Result<Expr, String> {
         let mut left = self.and_expr()?;
         while self.match_kw("or") {

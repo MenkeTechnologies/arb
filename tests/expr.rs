@@ -113,3 +113,19 @@ fn in_range_membership_on_fusevm() {
     // composes with and
     assert!(eval_pred(&parse("x in 500..599 and x != 500").unwrap(), 502.0).unwrap());
 }
+
+#[test]
+fn ternary_on_fusevm_branches() {
+    // abs
+    assert_eq!(eval(&parse("x > 0 ? x : 0 - x").unwrap(), 5.0).unwrap(), 5.0);
+    assert_eq!(eval(&parse("x > 0 ? x : 0 - x").unwrap(), -3.0).unwrap(), 3.0);
+    // Guarded division: the untaken 100/x branch must NOT run when x == 0
+    // (arithmetic-select would give 0*inf = NaN; real branching gives 0).
+    assert_eq!(eval(&parse("x != 0 ? 100 / x : 0").unwrap(), 0.0).unwrap(), 0.0);
+    assert_eq!(eval(&parse("x != 0 ? 100 / x : 0").unwrap(), 4.0).unwrap(), 25.0);
+    // Nested, right-associative: sign(x)
+    let sign = parse("x > 0 ? 1 : x < 0 ? 0 - 1 : 0").unwrap();
+    assert_eq!(eval(&sign, 7.0).unwrap(), 1.0);
+    assert_eq!(eval(&sign, -4.0).unwrap(), -1.0);
+    assert_eq!(eval(&sign, 0.0).unwrap(), 0.0);
+}
