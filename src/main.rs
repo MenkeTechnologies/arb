@@ -47,6 +47,9 @@ struct Cli {
     /// (`arb -p logs --html > dash.html`).
     #[arg(long = "html")]
     html: bool,
+    /// Validate the spec (parse + build) and exit 0/1 without reading stdin.
+    #[arg(long = "check")]
+    check: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -88,6 +91,19 @@ fn main() -> io::Result<()> {
 
     if cli.html {
         print!("{}", arb::web::render_html(&spec));
+        return Ok(());
+    }
+
+    if cli.check {
+        println!(
+            "arb: ok \u{2014} {} widget(s){}",
+            spec.widgets.len(),
+            if spec.out.is_some() {
+                ", out pipeline"
+            } else {
+                ""
+            }
+        );
         return Ok(());
     }
 
