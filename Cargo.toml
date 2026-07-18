@@ -9,6 +9,10 @@ readme = "README.md"
 keywords = ["tui", "pipeline", "unix", "dashboard", "stream"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "arb"
+path = "src/lib.rs"
+
 [[bin]]
 name = "arb"
 path = "src/main.rs"
