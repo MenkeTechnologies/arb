@@ -1,0 +1,6 @@
+# stdlib preset: logs — level breakdown + live tail for a JSON log stream.
+#   kubectl logs -f deploy/api | arb -p logs
+bars .levels
+tail .log
+source .levels { in.json; field level; tally }
+source .log    { in }

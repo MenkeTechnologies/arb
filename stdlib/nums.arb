@@ -1,0 +1,8 @@
+# stdlib preset: nums — quick stats for a numeric stream.
+#   seq 1 100 | arb -p nums
+gauge .avg -max 100
+gauge .max -max 100
+tail  .stream
+source .avg    { in; avg }
+source .max    { in; max }
+source .stream { in }

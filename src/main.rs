@@ -30,6 +30,9 @@ struct Cli {
     /// Inline spec, e.g. `-e 'gauge .g -max 100; source .g { in; count }'`.
     #[arg(short = 'e', long = "eval")]
     eval: Option<String>,
+    /// Run a preset / stdlib module by name, e.g. `-p logs` (== `import logs`).
+    #[arg(short = 'p', long = "preset")]
+    preset: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -65,7 +68,9 @@ fn main() -> io::Result<()> {
 }
 
 fn load_spec(cli: &Cli) -> Result<Spec, String> {
-    let src = if let Some(e) = &cli.eval {
+    let src = if let Some(p) = &cli.preset {
+        format!("import {p}")
+    } else if let Some(e) = &cli.eval {
         e.clone()
     } else if let Some(path) = &cli.spec {
         std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?

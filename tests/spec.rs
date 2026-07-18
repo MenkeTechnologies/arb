@@ -85,6 +85,25 @@ fn grid_for_missing_widget_errors() {
 }
 
 #[test]
+fn import_stdlib_preset_instantiates_widgets() {
+    let s = build(&parse("import nums").unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".avg"));
+    assert!(s.widgets.iter().any(|w| w.path == ".max"));
+}
+
+#[test]
+fn import_unknown_module_errors() {
+    assert!(build(&parse("import nope").unwrap()).is_err());
+}
+
+#[test]
+fn import_then_extend_with_own_widget() {
+    let s = build(&parse("import nums\ngauge .mine -max 5").unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".mine"));
+    assert!(s.widgets.len() >= 4);
+}
+
+#[test]
 fn unknown_verb_ignored() {
     let s = build(&parse("frobnicate .x\ntext .a").unwrap()).unwrap();
     assert_eq!(s.widgets.len(), 1);

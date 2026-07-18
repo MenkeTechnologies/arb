@@ -87,8 +87,27 @@ pub struct Spec {
 /// Build a `Spec` from a parsed command tree.
 pub fn build(cmds: &[Command]) -> Result<Spec, String> {
     let mut spec = Spec::default();
+    build_into(&mut spec, cmds, 0)?;
+    Ok(spec)
+}
+
+/// Process `cmds` into `spec`. `import NAME` resolves and inlines a module
+/// (stdlib preset or user file); `depth` guards against import cycles.
+fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), String> {
+    if depth > 16 {
+        return Err("import: module nesting too deep (cycle?)".into());
+    }
     for c in cmds {
-        if let Some(kind) = WidgetKind::from(&c.name) {
+        if c.name == "import" {
+            let name = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("import: missing module name")?;
+            let src = resolve_module(name)?;
+            let sub = crate::parser::parse(&src)?;
+            build_into(spec, &sub, depth + 1)?;
+        } else if let Some(kind) = WidgetKind::from(&c.name) {
             let path = c
                 .args
                 .first()
@@ -118,7 +137,7 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
                 _ => return Err("source: expected `{ body }`".into()),
             };
             let pipeline = pipeline_from_body(body)?;
-            set_source(&mut spec, path, Source { pipeline })?;
+            set_source(spec, path, Source { pipeline })?;
         } else if c.name == "grid" {
             let path = c
                 .args
@@ -127,19 +146,41 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
                 .ok_or("grid: missing path")?;
             let o = parse_opts(&c.args[1..]);
             let cell = |k| o.get(k).and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(0);
-            set_grid(&mut spec, path, (cell("row"), cell("col")))?;
+            set_grid(spec, path, (cell("row"), cell("col")))?;
         } else if c.name.starts_with('.') {
             // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
             if c.args.first().and_then(Arg::as_str) == Some("<-")
                 && c.args.get(1).and_then(Arg::as_str) == Some("in")
             {
                 let path = c.name.clone();
-                set_source(&mut spec, &path, Source { pipeline: vec![] })?;
+                set_source(spec, &path, Source { pipeline: vec![] })?;
             }
         }
         // Unknown verbs are ignored.
     }
-    Ok(spec)
+    Ok(())
+}
+
+/// Resolve a module name to its source: a local `NAME.arb`, then
+/// `~/.arb/lib/NAME.arb`, then a bundled stdlib preset.
+fn resolve_module(name: &str) -> Result<String, String> {
+    let local = format!("{name}.arb");
+    if let Ok(s) = std::fs::read_to_string(&local) {
+        return Ok(s);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let p = std::path::Path::new(&home)
+            .join(".arb/lib")
+            .join(format!("{name}.arb"));
+        if let Ok(s) = std::fs::read_to_string(p) {
+            return Ok(s);
+        }
+    }
+    match name {
+        "nums" => Ok(include_str!("../stdlib/nums.arb").to_string()),
+        "logs" => Ok(include_str!("../stdlib/logs.arb").to_string()),
+        _ => Err(format!("import: module `{name}` not found")),
+    }
 }
 
 /// Collect `-flag value` pairs into an options map.
