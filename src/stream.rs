@@ -13,11 +13,18 @@ pub struct StreamState {
 
 impl StreamState {
     pub fn new() -> Self {
+        Self::with_cap(5000)
+    }
+
+    /// A stream buffer with a custom retention cap. `usize::MAX` = keep every
+    /// line (fzf select mode, where dropping lines would lose marks and shift the
+    /// cursor as the stream grows).
+    pub fn with_cap(cap: usize) -> Self {
         Self {
             lines: VecDeque::new(),
             total: 0,
             start: Instant::now(),
-            cap: 5000,
+            cap,
         }
     }
 

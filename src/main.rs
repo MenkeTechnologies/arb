@@ -188,7 +188,13 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    let state = Arc::new(Mutex::new(StreamState::new()));
+    // fzf select mode keeps every line (no ring drop), so marks persist and the
+    // cursor stays put as the stream grows; the dashboard uses the bounded ring.
+    let state = Arc::new(Mutex::new(if cli.fzf {
+        StreamState::with_cap(usize::MAX)
+    } else {
+        StreamState::new()
+    }));
 
     // Interactive TUI whenever a controlling terminal is reachable (a `/dev/tty`
     // we can open — see `tui::events_available`); the TUI renders THERE, not to

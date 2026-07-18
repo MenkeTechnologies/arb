@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
@@ -222,6 +222,13 @@ pub fn run(
     controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
 
+    // fzf-mode cache: re-scoring the whole (potentially huge) buffer every frame
+    // would be too slow, so we recompute the ranked match list only when the
+    // filter changes or a short debounce elapses, and reuse it otherwise.
+    let mut fzf_matched: Vec<String> = Vec::new();
+    let mut fzf_last_filter = String::from("\u{0}"); // sentinel: forces first compute
+    let mut fzf_last = Instant::now() - Duration::from_secs(1);
+
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
     // flowing regardless of keypresses).
@@ -235,17 +242,28 @@ pub fn run(
         }
         if fzf {
             // fzf select mode: fuzzy-match + rank the stream, best first; a cursor
-            // (from the top) highlights one line, Enter resolves it and exits.
-            let st = state.lock().unwrap();
-            let mut scored: Vec<(i32, String)> = st
-                .lines
-                .iter()
-                .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
-                .collect();
-            drop(st);
-            // Stable sort by score desc — ties keep stream order.
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
-            let matched: Vec<String> = scored.into_iter().map(|(_, l)| l).collect();
+            // highlights one line, Enter resolves it and exits.
+            let now = Instant::now();
+            if filter != fzf_last_filter || now.duration_since(fzf_last) >= Duration::from_millis(200)
+            {
+                let st = state.lock().unwrap();
+                fzf_matched = if filter.is_empty() {
+                    st.lines.iter().cloned().collect()
+                } else {
+                    let mut scored: Vec<(i32, String)> = st
+                        .lines
+                        .iter()
+                        .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
+                        .collect();
+                    // Stable sort by score desc — ties keep stream order.
+                    scored.sort_by(|a, b| b.0.cmp(&a.0));
+                    scored.into_iter().map(|(_, l)| l).collect()
+                };
+                fzf_last_filter = filter.clone();
+                fzf_last = now;
+            }
+            let matched = &fzf_matched;
+            let total = state.lock().unwrap().total;
             let sel = cursor.min(matched.len().saturating_sub(1));
 
             let mut c = controls.lock().unwrap();
@@ -273,7 +291,7 @@ pub fn run(
             }
             let marks = c.marks.clone();
             drop(c);
-            let draw = terminal.draw(|f| render_fzf(f, &matched, &filter, sel, &marks));
+            let draw = terminal.draw(|f| render_fzf(f, matched, &filter, sel, &marks, total));
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -365,15 +383,16 @@ fn render(
 /// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
 /// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
 /// selection visible. Cursor 0 is the newest (bottom) line.
-fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize, marks: &[String]) {
+fn render_fzf(f: &mut Frame, matched: &[String], filter: &str, sel: usize, marks: &[String], total: u64) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(f.area());
     let marked = if marks.is_empty() {
         String::new()
     } else {
-        format!(" · {} marked", marks.len())
+        format!(" ({})", marks.len())
     };
+    // fzf-style counter: matched/total (marked).
     let prompt = format!(
-        "> {filter}\u{258f}   {}{marked}  ·  Enter · Tab mark · Ctrl-J/K · Ctrl-C",
+        "> {filter}\u{258f}   {}/{total}{marked}  ·  Enter · Tab · \u{2191}\u{2193}/Ctrl-JK · Ctrl-C",
         matched.len()
     );
     f.render_widget(Paragraph::new(prompt), chunks[0]);
