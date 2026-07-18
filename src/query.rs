@@ -66,10 +66,19 @@ pub enum QueryOp {
     Upper,
     Lower,
     Trim,
+    /// Regex replace-all per line (`replace /RE/ TO`; TO may use `$1` captures).
+    Replace(Regex, String),
+    /// Collapse all lines into one, joined by a separator.
+    Join(String),
+    /// Keep only the Nth line (1-based).
+    Nth(usize),
     /// Parse the accumulated stream as one HTML document and emit, per element
     /// matching the CSS selector, its text (or a named attribute if `attr` is
     /// set; elements lacking that attribute are dropped).
-    Sel { css: String, attr: Option<String> },
+    Sel {
+        css: String,
+        attr: Option<String>,
+    },
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -243,6 +252,21 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in cur.iter_mut() {
                     *l = l.trim().to_string();
                 }
+            }
+            QueryOp::Replace(re, to) => {
+                for l in cur.iter_mut() {
+                    *l = re.replace_all(l, to.as_str()).into_owned();
+                }
+            }
+            QueryOp::Join(sep) => {
+                cur = vec![cur.join(sep)];
+            }
+            QueryOp::Nth(n) => {
+                cur = cur
+                    .get(n.saturating_sub(1))
+                    .cloned()
+                    .map(|l| vec![l])
+                    .unwrap_or_default();
             }
             QueryOp::Sel { css, attr } => {
                 let doc = Html::parse_document(&cur.join("\n"));

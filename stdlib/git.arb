@@ -1,0 +1,7 @@
+# git — recent commit activity from git log
+#   git log --oneline | arb -p git
+gauge .commits -max 100
+source .commits { in | count }
+
+tail .log
+source .log { in }

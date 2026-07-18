@@ -154,7 +154,11 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .and_then(Arg::as_str)
                 .ok_or("grid: missing path")?;
             let o = parse_opts(&c.args[1..]);
-            let cell = |k| o.get(k).and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(0);
+            let cell = |k| {
+                o.get(k)
+                    .and_then(|s: &String| s.parse::<usize>().ok())
+                    .unwrap_or(0)
+            };
             set_grid(spec, path, (cell("row"), cell("col")))?;
         } else if c.name.starts_with('.') {
             // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
@@ -191,7 +195,10 @@ fn resolve_module(name: &str) -> Result<String, String> {
 }
 
 /// Names of the bundled stdlib presets.
-pub const STDLIB_NAMES: &[&str] = &["nums", "logs", "http", "json", "table", "top"];
+pub const STDLIB_NAMES: &[&str] = &[
+    "nums", "logs", "http", "json", "table", "top", "docker", "k8s", "nginx", "git", "systemd",
+    "redis",
+];
 
 fn bundled_module(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -201,6 +208,12 @@ fn bundled_module(name: &str) -> Option<&'static str> {
         "json" => include_str!("../stdlib/json.arb"),
         "table" => include_str!("../stdlib/table.arb"),
         "top" => include_str!("../stdlib/top.arb"),
+        "docker" => include_str!("../stdlib/docker.arb"),
+        "k8s" => include_str!("../stdlib/k8s.arb"),
+        "nginx" => include_str!("../stdlib/nginx.arb"),
+        "git" => include_str!("../stdlib/git.arb"),
+        "systemd" => include_str!("../stdlib/systemd.arb"),
+        "redis" => include_str!("../stdlib/redis.arb"),
         _ => return None,
     })
 }
@@ -210,7 +223,12 @@ fn bundled_module(name: &str) -> Option<&'static str> {
 pub fn list_presets() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = STDLIB_NAMES
         .iter()
-        .map(|n| (n.to_string(), first_comment(bundled_module(n).unwrap_or(""))))
+        .map(|n| {
+            (
+                n.to_string(),
+                first_comment(bundled_module(n).unwrap_or("")),
+            )
+        })
         .collect();
     if let Some(home) = std::env::var_os("HOME") {
         let dir = std::path::Path::new(&home).join(".arb/lib");
@@ -314,6 +332,26 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "upper" => ops.push(QueryOp::Upper),
             "lower" => ops.push(QueryOp::Lower),
             "trim" => ops.push(QueryOp::Trim),
+            "replace" => {
+                let re = regex_arg(c)?;
+                let to = c
+                    .args
+                    .get(1)
+                    .and_then(Arg::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                ops.push(QueryOp::Replace(re, to));
+            }
+            "join" => {
+                let sep = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .unwrap_or(" ")
+                    .to_string();
+                ops.push(QueryOp::Join(sep));
+            }
+            "nth" => ops.push(QueryOp::Nth(count_arg(c, "nth")?)),
             "take" => ops.push(QueryOp::Take(count_arg(c, "take")?)),
             "drop" => ops.push(QueryOp::Drop(count_arg(c, "drop")?)),
             "calc" => {

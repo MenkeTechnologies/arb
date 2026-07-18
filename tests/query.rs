@@ -92,6 +92,34 @@ fn sel_class_then_tally() {
 }
 
 #[test]
+fn replace_join_nth() {
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; replace /o/ 0 }"),
+            &lines(&["foo", "bob"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["f00", "b0b"]))
+    );
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; join , }"),
+            &lines(&["a", "b", "c"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["a,b,c"]))
+    );
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; nth 2 }"),
+            &lines(&["a", "b", "c"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["b"]))
+    );
+}
+
+#[test]
 fn string_transforms_upper_lower_trim() {
     assert_eq!(
         eval(

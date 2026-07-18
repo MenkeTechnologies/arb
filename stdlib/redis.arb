@@ -1,0 +1,7 @@
+# redis — command frequency from redis-cli MONITOR
+#   redis-cli MONITOR | arb -p redis
+bars .commands
+source .commands { in | field 4 | upper | tally }
+
+tail .stream
+source .stream { in }
