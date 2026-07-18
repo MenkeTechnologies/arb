@@ -1111,8 +1111,17 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                 ops.push(QueryOp::Cut(delim, n));
             }
             "median" => ops.push(QueryOp::Median),
+            "percentile" => {
+                let p = str_arg(c)
+                    .parse::<f64>()
+                    .map_err(|_| "percentile: expected a number 0–100 (e.g. 99)".to_string())?;
+                ops.push(QueryOp::Percentile(p));
+            }
+            "p50" => ops.push(QueryOp::Percentile(50.0)),
+            "p90" => ops.push(QueryOp::Percentile(90.0)),
+            "p95" => ops.push(QueryOp::Percentile(95.0)),
+            "p99" => ops.push(QueryOp::Percentile(99.0)),
             "stddev" => ops.push(QueryOp::Stddev),
-            "p95" => ops.push(QueryOp::P95),
             "range" => ops.push(QueryOp::Range),
             "product" => ops.push(QueryOp::Product),
             "distinct" => ops.push(QueryOp::Distinct),

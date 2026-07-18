@@ -394,7 +394,8 @@ families:
 - **Order / dedup** — `sort`, `sort_by F`, `uniq`, `unique_by F`, `dedup`, `rev`,
   `first`/`last`/`take`/`drop`/`tailn`/`nth`/`slice`, `sample`.
 - **Aggregate / reduce** — `count`, `rate`, `tally`, `count_by F`, `sum`, `min`/
-  `max`, `min_by F`/`max_by F`, `avg`, `median`, `stddev`, `p95`, `product`,
+  `max`, `min_by F`/`max_by F`, `avg`, `median`, `stddev`, `percentile N`
+  (nearest-rank; `p50`/`p90`/`p95`/`p99` sugar — for latency tails), `product`,
   `add`, `range`, `bins`.
 
 The expression layer — `where PRED` (filter), `map EXPR` (per-line transform),

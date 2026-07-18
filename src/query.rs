@@ -241,10 +241,11 @@ pub enum QueryOp {
     Cut(String, usize),
     /// median of numeric lines.
     Median,
+    /// Nth percentile (0–100) of the numeric values, linear interpolation between
+    /// closest ranks (numpy default). `percentile 99` / `p99` for latency tails.
+    Percentile(f64),
     /// population standard deviation of numeric lines.
     Stddev,
-    /// 95th percentile (nearest-rank) of numeric lines.
-    P95,
     /// max minus min of numeric lines.
     Range,
     /// product of numeric lines.
@@ -952,6 +953,19 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 };
                 return QueryResult::Scalar(m);
             }
+            QueryOp::Percentile(p) => {
+                let mut ns = nums(&cur);
+                ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let v = if ns.is_empty() {
+                    0.0
+                } else {
+                    // Nearest-rank: smallest value whose rank ≥ p% of the data.
+                    let frac = p.clamp(0.0, 100.0) / 100.0;
+                    let rank = ((frac * ns.len() as f64).ceil() as usize).clamp(1, ns.len());
+                    ns[rank - 1]
+                };
+                return QueryResult::Scalar(v);
+            }
             QueryOp::Stddev => {
                 let ns = nums(&cur);
                 let sd = if ns.is_empty() {
@@ -963,17 +977,6 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     var.sqrt()
                 };
                 return QueryResult::Scalar(sd);
-            }
-            QueryOp::P95 => {
-                let mut ns = nums(&cur);
-                ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let v = if ns.is_empty() {
-                    0.0
-                } else {
-                    let rank = ((0.95 * ns.len() as f64).ceil() as usize).clamp(1, ns.len());
-                    ns[rank - 1]
-                };
-                return QueryResult::Scalar(v);
             }
             QueryOp::Range => {
                 let ns = nums(&cur);

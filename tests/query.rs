@@ -1254,3 +1254,19 @@ fn sparkline_and_numeric_series() {
     assert_eq!(sparkline(&[5.0, 5.0, 5.0]), "▁▁▁");
     assert_eq!(sparkline(&[]), "");
 }
+
+#[test]
+fn percentile_nearest_rank_and_sugar() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let ten = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+    // Nearest-rank: ceil(frac * n), 1-indexed.
+    assert_eq!(f("percentile 90", ten), QueryResult::Scalar(9.0));
+    assert_eq!(f("percentile 100", ten), QueryResult::Scalar(10.0));
+    assert_eq!(f("percentile 0", ten), QueryResult::Scalar(1.0));
+    // Sugar aliases agree with the explicit form; p95 keeps its prior value.
+    assert_eq!(f("p50", ten), f("percentile 50", ten));
+    assert_eq!(f("p99", ten), QueryResult::Scalar(10.0));
+    assert_eq!(f("p95", ten), QueryResult::Scalar(10.0));
+    // Empty input → 0.
+    assert_eq!(f("percentile 99", &[]), QueryResult::Scalar(0.0));
+}
