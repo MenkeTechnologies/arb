@@ -1,0 +1,8 @@
+# puma — HTTP status/throughput dashboard from Puma's common-log request output
+#   puma 2>&1 | arb -p puma
+bars .status
+source .status { in; match /" [1-5][0-9][0-9] /; field 9; tally }
+gauge .requests -max 1000
+source .requests { in; match /" [1-5][0-9][0-9] /; count }
+tail .paths
+source .paths { in; match /" [1-5][0-9][0-9] /; field 7 }

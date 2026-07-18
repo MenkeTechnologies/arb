@@ -87,6 +87,40 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 toks.push(Tok::Block(inner));
                 at_cmd_start = false;
             }
+            '/' => {
+                // A regex literal `/.../` — reads to the closing unescaped `/`,
+                // spanning quotes and spaces (unlike a bare word), so patterns
+                // like `/" (4|5)\d\d /` lex as a single token. `\/` is an escaped
+                // slash inside the pattern, not the terminator. If no closing `/`
+                // appears before the line ends, it falls back to a bare word.
+                let start = i;
+                let mut j = i + 1;
+                let mut closed = false;
+                while j < n {
+                    match cs[j] {
+                        '\\' if j + 1 < n => j += 2,
+                        '/' => {
+                            j += 1;
+                            closed = true;
+                            break;
+                        }
+                        '\n' => break,
+                        _ => j += 1,
+                    }
+                }
+                if closed {
+                    let w: String = cs[start..j].iter().collect();
+                    toks.push(Tok::Word(w));
+                    i = j;
+                } else {
+                    while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {
+                        i += 1;
+                    }
+                    let w: String = cs[start..i].iter().collect();
+                    toks.push(Tok::Word(w));
+                }
+                at_cmd_start = false;
+            }
             _ => {
                 let start = i;
                 while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {

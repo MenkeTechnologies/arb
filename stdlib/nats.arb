@@ -1,0 +1,8 @@
+# nats — subject traffic dashboard from a live nats subscription
+#   nats sub ">" | arb -p nats
+bars .subjects
+source .subjects { in; match /Received on/; extract /"([^"]+)"/; tally }
+gauge .messages -max 1000
+source .messages { in; match /Received on/; count }
+tail .payloads
+source .payloads { in; reject /Received on/; nonempty }

@@ -1,0 +1,10 @@
+# lighttpd — HTTP status + client dashboard from combined access logs
+#   tail -f access.log | arb -p lighttpd
+bars .status
+source .status { in; field 9; numeric; tally }
+gauge .hits -max 100000
+source .hits { in; nonempty; count }
+bars .clients
+source .clients { in; field 1; tally }
+tail .requests
+source .requests { in; extract /"[A-Z]+ [^"]*"/ }

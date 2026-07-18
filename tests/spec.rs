@@ -141,3 +141,12 @@ fn unknown_verb_ignored() {
     assert_eq!(s.widgets.len(), 1);
     assert_eq!(s.widgets[0].path, ".a");
 }
+
+#[test]
+fn regex_literal_spans_quotes_and_spaces() {
+    // A `/.../` regex containing quotes and spaces must lex as one token (was
+    // "unterminated string" before the lexer learned regex literals).
+    let src = "tail .t\nsource .t { in; match /\" (4|5)[0-9][0-9] / }";
+    let spec = build(&parse(src).unwrap()).expect("quote/space regex should build");
+    assert_eq!(spec.widgets.len(), 1);
+}

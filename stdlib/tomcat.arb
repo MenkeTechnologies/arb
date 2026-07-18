@@ -1,0 +1,8 @@
+# tomcat — HTTP status/request dashboard from Tomcat access logs
+#   tail -f logs/localhost_access_log.txt | arb -p tomcat
+bars .status
+source .status { in; field 9; tally }
+gauge .hits -max 1000
+source .hits { in; nonempty; count }
+tail .errors
+source .errors { in; match /" (4|5)[0-9][0-9] / }
