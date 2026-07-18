@@ -452,3 +452,37 @@ fn streamable_detection() {
     assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; sort; count }")));
     assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; tally }")));
 }
+
+#[test]
+fn pick_projects_json_objects() {
+    let ops = pipeline("tail .x\nsource .x { in.json; pick name age }");
+    let lines = vec![
+        r#"{"name":"a","age":30,"city":"nyc"}"#.to_string(),
+        r#"{"name":"b","age":25,"city":"sf"}"#.to_string(),
+    ];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"name":"a","age":30}"#, r#"{"name":"b","age":25}"#]);
+        }
+        other => panic!("expected Lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn pick_drops_missing_keys_and_passes_non_objects() {
+    let ops = pipeline("tail .x\nsource .x { in.json; pick id nope }");
+    let lines = vec![r#"{"id":7}"#.to_string(), "not json".to_string()];
+    match arb::query::eval(&ops, &lines, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"id":7}"#, "not json"]);
+        }
+        other => panic!("expected Lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn pick_is_streamable() {
+    assert!(arb::query::is_line_streamable(&pipeline(
+        "tail .x\nsource .x { in.json; pick a b }"
+    )));
+}

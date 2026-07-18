@@ -139,12 +139,13 @@ A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
 | --- | --- |
 | `.users[].name` | `field users; each; field name` |
 | `.items[] \| select(.price>10)` | `field items; each; where(price>10)` |
+| `{name, age}` (projection) | `pick name age` |
 | `//a/@href` | `find a; attr href` |
 | `div.card h2` | `sel {div.card h2}` |
 
 The verbs live today are `in`, `match`/`grep`, `reject`/`grepv`, `field N`/`field
 NAME`, `count`, `rate`, and `tally` — over line and JSON streams (`in.json`,
-nested key paths) — plus a fusevm-computed expression layer: `where PRED`
+nested key paths), `pick K…` (jq object projection) — plus a fusevm-computed expression layer: `where PRED`
 (filter), `map EXPR` (per-line transform), and `calc EXPR` (reduce), all lowered
 to a `fusevm::Chunk` and run on the VM, with field-aware references
 (`where ms > 1000`, `map bytes / 1024`). They render into

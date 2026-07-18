@@ -366,6 +366,18 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "avg" => ops.push(QueryOp::Avg),
             "keys" => ops.push(QueryOp::Keys),
             "vals" => ops.push(QueryOp::Vals),
+            "pick" => {
+                let keys: Vec<String> = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .map(str::to_string)
+                    .collect();
+                if keys.is_empty() {
+                    return Err("pick: expected one or more key names".into());
+                }
+                ops.push(QueryOp::Pick(keys));
+            }
             "sort" => {
                 let flags: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
                 ops.push(QueryOp::Sort {

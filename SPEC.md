@@ -96,7 +96,7 @@ find TAG          recursive descent (xpath //)
 attr NAME         attribute (xpath @, css)
 sel { CSS }       CSS selector (html)
 where(PRED)       filter (jq select)
-pick { a b c }    project
+pick a b c        project object to keys (jq {a,b,c}); keeps listed order
 keys  vals        jq keys/values
 map(FN)           transform each
 count sum min max avg tally    aggregates

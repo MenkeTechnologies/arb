@@ -51,6 +51,10 @@ pub enum QueryOp {
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
     Vals,
+    /// Project a JSON object down to the named keys (jq `{a,b,c}` /
+    /// `pick(.a,.b,.c)`), preserving the listed order. Non-object lines pass
+    /// through unchanged; missing keys are dropped.
+    Pick(Vec<String>),
     /// Line-list transforms. `Sort` supports numeric (`-n`) and reverse (`-r`).
     Sort {
         numeric: bool,
@@ -234,6 +238,21 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::Pick(keys) => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
+                        // Build in pick order — serde_json::Map is a BTreeMap and
+                        // would re-sort the keys, losing the requested order.
+                        let parts: Vec<String> = keys
+                            .iter()
+                            .filter_map(|k| {
+                                m.get(k).map(|v| format!("{}:{}", Value::String(k.clone()), v))
+                            })
+                            .collect();
+                        *l = format!("{{{}}}", parts.join(","));
+                    }
+                }
             }
             QueryOp::Csv => cur = to_json_records(&cur, ','),
             QueryOp::Tsv => cur = to_json_records(&cur, '\t'),
@@ -465,6 +484,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Each
                 | QueryOp::Keys
                 | QueryOp::Vals
+                | QueryOp::Pick(_)
                 | QueryOp::Where(_)
                 | QueryOp::Map(_)
                 | QueryOp::Contains(_)
