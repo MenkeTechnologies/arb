@@ -182,6 +182,19 @@ The projection is per-line: `field`, `upper`, `grep`, `extract`, … map a line 
 its display row(s); a filtering verb drops non-matches from the list. Cross-line
 verbs (`sort`, `count`) can't project and fall back to identity.
 
+**Search a key, show the whole line (`--nth`).** A `search .name { … }` binding
+derives the fuzzy-match key per line while the row still shows and emits the full
+`source` display — so you keep every column in view but type against just one:
+
+```sh
+ps aux | arb -e 'select .p
+                 source .p { in }              # show the whole ps row
+                 search .p { in; field 11 }'   # but fuzzy-match only the command
+```
+
+`search` is pipeline-general (match a lowercased key, an extracted field, a regex
+capture), not just a column index. Omit it and the search key is the display.
+
 ### Pipeline orchestrator — `arb '<PROD> | _ | <CONS>'`
 
 arb runs a whole pipeline with `_` marking its own interactive stage, so it owns

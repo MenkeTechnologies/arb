@@ -152,6 +152,7 @@ mod tests {
             kind,
             opts: map,
             source: None,
+            search: None,
             grid: None,
         }
     }

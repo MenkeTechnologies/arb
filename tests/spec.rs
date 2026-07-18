@@ -195,6 +195,29 @@ fn select_projection_maps_display_while_keeping_original() {
 }
 
 #[test]
+fn search_binding_sets_widget_search_key() {
+    // fzf `--nth`: `search .f { in; field 1 }` derives the fuzzy key while the row
+    // shows/emits the full display. The search pipeline is stored on the widget
+    // and applies per line via project_line.
+    let s = build(&parse("select .f\nsource .f { in }\nsearch .f { in; field 1 }").unwrap())
+        .unwrap();
+    let w = &s.widgets[0];
+    assert!(w.source.is_some());
+    let key = w.search.as_ref().expect("search pipeline stored");
+    assert_eq!(arb::tui::project_line(key, "alice 42"), vec!["alice"]);
+    // Display projection is identity here → shows the whole line.
+    assert_eq!(
+        arb::tui::project_line(&w.source.as_ref().unwrap().pipeline, "alice 42"),
+        vec!["alice 42"]
+    );
+}
+
+#[test]
+fn search_binding_unknown_widget_errors() {
+    assert!(build(&parse("select .f\nsearch .g { in; field 1 }").unwrap()).is_err());
+}
+
+#[test]
 fn select_widget_parses_with_opts() {
     // fzf-as-a-spec: a `select` widget with prompt/header opts.
     let s = build(&parse("select .files -prompt \"pick> \" -header files\nsource .files { in }").unwrap())

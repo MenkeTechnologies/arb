@@ -309,25 +309,32 @@ pub fn run(
     // line is what's EMITTED on Enter. Only per-line-streamable pipelines project
     // (a projection must map line→line(s); cross-line ops like sort/count can't).
     // The synthesized `select .sel { in }` is identity → display == original.
-    let proj: Vec<QueryOp> = spec
-        .widgets
-        .iter()
-        .find(|w| w.kind == WidgetKind::Select)
+    let select_widget = spec.widgets.iter().find(|w| w.kind == WidgetKind::Select);
+    let proj: Vec<QueryOp> = select_widget
         .and_then(|w| w.source.as_ref())
         .map(|s| s.pipeline.clone())
+        .filter(|p| is_line_streamable(p))
+        .unwrap_or_default();
+    // Optional search-key pipeline (`search .name { … }`, fzf `--nth`): the fuzzy
+    // match runs against this key (derived per raw line) while the row still shows
+    // and emits the display. Empty = search the display (default). Non-streamable
+    // falls back to searching the display too.
+    let search_proj: Vec<QueryOp> = select_widget
+        .and_then(|w| w.search.clone())
         .filter(|p| is_line_streamable(p))
         .unwrap_or_default();
 
     // fzf-mode incremental match state. Each candidate is scored ONCE as it
     // arrives (indices are stable — the fzf buffer never drops), not the whole
-    // buffer every frame. Candidates are `(display, original)`: the display drives
-    // fuzzy match/render, the original is emitted. Empty filter appends in stream
-    // order; a real filter accumulates scored hits, re-sorted on a short debounce.
-    let mut fzf_cands: Vec<(String, String)> = Vec::new(); // projected candidates
+    // buffer every frame. Candidates are `(display, search_key, original)`: the
+    // key drives fuzzy match, the display renders, the original is emitted. Empty
+    // filter appends in stream order; a real filter accumulates scored hits,
+    // re-sorted on a short debounce.
+    let mut fzf_cands: Vec<(String, String, String)> = Vec::new(); // (display, key, original)
     let mut fzf_raw_done = 0usize; // raw stream lines already projected
     let mut fzf_filter = String::from("\u{0}"); // sentinel: forces initial reset
     let mut fzf_processed = 0usize; // candidates already scored
-    let mut fzf_hits: Vec<(i32, String, String)> = Vec::new(); // (score, display, original)
+    let mut fzf_hits: Vec<(i32, String, String, String)> = Vec::new(); // (score, display, key, original)
     let mut fzf_matched: Vec<(String, String)> = Vec::new(); // display list (display, original)
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
     // fzf prompt/header (set once by `main` before this call).
@@ -374,11 +381,19 @@ pub fn run(
                 // Project any new raw lines into candidates (once each, indices
                 // stable). Identity projection is a plain clone; a real projection
                 // may map one raw line to zero (filtered) or several display rows,
-                // each carrying that raw line as its emit-original.
+                // each carrying that raw line as its emit-original. The search key
+                // is derived per raw line (shared across its display rows); with no
+                // `search` pipeline it defaults to the display so match == what you see.
                 for i in fzf_raw_done..st.lines.len() {
                     let raw = &st.lines[i];
+                    let key = if search_proj.is_empty() {
+                        None
+                    } else {
+                        Some(project_line(&search_proj, raw).join(" "))
+                    };
                     for disp in project_line(&proj, raw) {
-                        fzf_cands.push((disp, raw.clone()));
+                        let k = key.clone().unwrap_or_else(|| disp.clone());
+                        fzf_cands.push((disp, k, raw.clone()));
                     }
                 }
                 fzf_raw_done = st.lines.len();
@@ -399,15 +414,16 @@ pub fn run(
                         let old = std::mem::take(&mut fzf_hits);
                         fzf_hits = old
                             .into_iter()
-                            .filter_map(|(_, d, o)| fuzzy_score(&d, &filter).map(|s| (s, d, o)))
+                            .filter_map(|(_, d, k, o)| fuzzy_score(&k, &filter).map(|s| (s, d, k, o)))
                             .collect();
                         // keep fzf_processed — new candidates scored below
                     } else {
                         // Full rescan across cores (rayon) — first char / backspace.
+                        // Match on the search key `k`, carry the display `d`.
                         fzf_hits = fzf_cands
                             .par_iter()
-                            .filter_map(|(d, o)| {
-                                fuzzy_score(d, &filter).map(|s| (s, d.clone(), o.clone()))
+                            .filter_map(|(d, k, o)| {
+                                fuzzy_score(k, &filter).map(|s| (s, d.clone(), k.clone(), o.clone()))
                             })
                             .collect();
                         fzf_processed = n;
@@ -416,11 +432,11 @@ pub fn run(
                     fzf_last_sort = Instant::now() - Duration::from_secs(1);
                 }
                 // Incorporate new candidates since the last frame.
-                for (d, o) in fzf_cands.iter().take(n).skip(fzf_processed) {
+                for (d, k, o) in fzf_cands.iter().take(n).skip(fzf_processed) {
                     if empty {
                         fzf_matched.push((d.clone(), o.clone()));
-                    } else if let Some(sc) = fuzzy_score(d, &filter) {
-                        fzf_hits.push((sc, d.clone(), o.clone()));
+                    } else if let Some(sc) = fuzzy_score(k, &filter) {
+                        fzf_hits.push((sc, d.clone(), k.clone(), o.clone()));
                     }
                 }
                 fzf_processed = n;
@@ -432,7 +448,7 @@ pub fn run(
                 if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
                     h.par_sort_by(|a, b| b.0.cmp(&a.0));
-                    fzf_matched = h.into_iter().map(|(_, d, o)| (d, o)).collect();
+                    fzf_matched = h.into_iter().map(|(_, d, _k, o)| (d, o)).collect();
                     fzf_last_sort = now;
                 }
             }

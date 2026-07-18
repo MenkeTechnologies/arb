@@ -87,6 +87,11 @@ pub struct Widget {
     pub kind: WidgetKind,
     pub opts: BTreeMap<String, String>,
     pub source: Option<Source>,
+    /// Optional search-key pipeline (`search .name { … }`), for a `select`
+    /// widget: the fuzzy match runs against this derived key while the row still
+    /// shows/emits the `source` display. fzf `--nth`, but pipeline-general (search
+    /// a column, a lowercased key, an extracted field). `None` = search display.
+    pub search: Option<Vec<QueryOp>>,
     /// Grid cell `(row, col)` set by a `grid` command; `None` = auto-stacked.
     pub grid: Option<(usize, usize)>,
 }
@@ -167,6 +172,7 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 kind,
                 opts: parse_opts(&c.args[1..]),
                 source: None,
+                search: None,
                 grid: None,
             });
         } else if c.name == "source" {
@@ -181,6 +187,20 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             };
             let pipeline = pipeline_from_body(body)?;
             set_source(spec, path, Source { pipeline })?;
+        } else if c.name == "search" {
+            // `search .name { in; … }` — a select widget's fuzzy-match key
+            // pipeline (fzf --nth). The row still shows/emits its `source`.
+            let path = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("search: missing path")?;
+            let body = match c.args.get(1) {
+                Some(Arg::Block(b)) => b,
+                _ => return Err("search: expected `{ body }`".into()),
+            };
+            let pipeline = pipeline_from_body(body)?;
+            set_search(spec, path, pipeline)?;
         } else if c.name == "out" {
             let body = match c.args.first() {
                 Some(Arg::Block(b)) => b,
@@ -1026,6 +1046,16 @@ fn set_source(spec: &mut Spec, path: &str, src: Source) -> Result<(), String> {
         }
     }
     Err(format!("source: no widget named `{path}`"))
+}
+
+fn set_search(spec: &mut Spec, path: &str, pipeline: Vec<QueryOp>) -> Result<(), String> {
+    for w in &mut spec.widgets {
+        if w.path == path {
+            w.search = Some(pipeline);
+            return Ok(());
+        }
+    }
+    Err(format!("search: no widget named `{path}`"))
 }
 
 fn set_grid(spec: &mut Spec, path: &str, cell: (usize, usize)) -> Result<(), String> {
