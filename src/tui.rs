@@ -22,7 +22,24 @@ use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
 
-/// Run the TUI until the user quits (`q`/Esc/Ctrl-C).
+/// Whether an interactive TUI can run: key events need a controlling terminal.
+/// When stdin carries the data pipe (`find / | arb`), crossterm reads key events
+/// from `/dev/tty` — exactly how `vipe` reads the keyboard mid-pipeline — so we
+/// probe that it opens. If it can't (no controlling tty: CI, a detached exec, a
+/// terminal without `/dev/tty`), the caller falls back to a non-interactive path
+/// instead of entering raw mode and crashing with "failed to initialize input
+/// reader". stdin itself stays the data stream and is never consumed for events.
+pub fn events_available() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .is_ok()
+}
+
+/// Run the TUI until the user quits (`q`/Esc/Ctrl-C). Any I/O error inside the
+/// loop breaks out so the terminal is always restored (raw mode off, alternate
+/// screen left, cursor shown) before the error is returned — never left wedged.
 pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -41,11 +58,12 @@ pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
                 break Err(e);
             }
         }
-        // crossterm reads /dev/tty on Unix, so key events arrive even though
-        // stdin is carrying the data pipe.
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
+        // Key events come from `/dev/tty` (see `events_available`), so they
+        // arrive even though stdin is carrying the data pipe. Errors break the
+        // loop rather than `?`-propagating, so the restore code below still runs.
+        match event::poll(Duration::from_millis(50)) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     let quit = matches!(k.code, KeyCode::Char('q') | KeyCode::Esc)
                         || (k.code == KeyCode::Char('c')
                             && k.modifiers.contains(KeyModifiers::CONTROL));
@@ -53,7 +71,11 @@ pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
                         break Ok(());
                     }
                 }
-            }
+                Ok(_) => {}
+                Err(e) => break Err(e),
+            },
+            Ok(false) => {}
+            Err(e) => break Err(e),
         }
     };
 

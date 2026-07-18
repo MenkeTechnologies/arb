@@ -176,7 +176,12 @@ fn main() -> io::Result<()> {
 
     let state = Arc::new(Mutex::new(StreamState::new()));
 
-    if io::stdout().is_terminal() {
+    // Interactive TUI only when stdout is a terminal AND key events are
+    // reachable (a `/dev/tty` we can open — see `tui::events_available`). With a
+    // terminal stdout but no controlling tty (CI, a detached exec), fall through
+    // to the non-interactive paths below instead of entering raw mode and
+    // crashing on the event reader.
+    if io::stdout().is_terminal() && tui::events_available() {
         if needs_stdin {
             spawn_reader(state.clone());
         }
