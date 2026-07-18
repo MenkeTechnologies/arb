@@ -168,6 +168,20 @@ A `select` widget anywhere in a spec puts the TUI in select mode, so fzf is just
 one shape the DSL can build — the same DSL that builds dashboards and the
 `input`/`apply` transform editor above.
 
+**Projected candidates (`--with-nth`/`--nth`).** The select widget's `source`
+pipeline transforms what's *shown and searched*, while Enter still emits the
+*original* line — so you pick from a clean view and get the raw record:
+
+```sh
+ps aux | arb -e 'select .p { in; field 11 }'   # search/show the command column,
+                                                # Enter emits the whole ps row
+git log --oneline | arb -e 'select .c { in; grep /fix/ }'  # candidates pre-filtered
+```
+
+The projection is per-line: `field`, `upper`, `grep`, `extract`, … map a line to
+its display row(s); a filtering verb drops non-matches from the list. Cross-line
+verbs (`sort`, `count`) can't project and fall back to identity.
+
 ### Pipeline orchestrator — `arb '<PROD> | _ | <CONS>'`
 
 arb runs a whole pipeline with `_` marking its own interactive stage, so it owns

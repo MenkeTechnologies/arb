@@ -176,6 +176,25 @@ fn apply_resolves_input_pipeline() {
 }
 
 #[test]
+fn select_projection_maps_display_while_keeping_original() {
+    // `--with-nth`: the select source projects the display; project_line applies
+    // it per raw line. `field 2` -> the 2nd field; `grep` -> drops non-matches.
+    let s = build(&parse("select .f\nsource .f { in; field 2 }").unwrap()).unwrap();
+    let proj = &s.widgets[0].source.as_ref().unwrap().pipeline;
+    assert_eq!(arb::tui::project_line(proj, "alice 42 x"), vec!["42"]);
+
+    // A filtering projection yields zero display rows for a non-match (the raw
+    // line drops out of the candidate list) and one for a match.
+    let g = build(&parse("select .f\nsource .f { in; grep /err/ }").unwrap()).unwrap();
+    let gp = &g.widgets[0].source.as_ref().unwrap().pipeline;
+    assert!(arb::tui::project_line(gp, "all ok").is_empty());
+    assert_eq!(arb::tui::project_line(gp, "an err here"), vec!["an err here"]);
+
+    // Empty pipeline = identity.
+    assert_eq!(arb::tui::project_line(&[], "raw line"), vec!["raw line"]);
+}
+
+#[test]
 fn select_widget_parses_with_opts() {
     // fzf-as-a-spec: a `select` widget with prompt/header opts.
     let s = build(&parse("select .files -prompt \"pick> \" -header files\nsource .files { in }").unwrap())

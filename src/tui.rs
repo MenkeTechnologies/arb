@@ -24,7 +24,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use rayon::prelude::*;
 
-use crate::query::{eval, QueryResult};
+use crate::query::{eval, is_line_streamable, QueryOp, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
 
@@ -304,14 +304,31 @@ pub fn run(
     controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
 
-    // fzf-mode incremental match state. Each stream line is scored ONCE as it
+    // Select-mode projection (`--with-nth`): the select widget's `source` pipeline
+    // transforms each raw line into what's SHOWN and SEARCHED, while the original
+    // line is what's EMITTED on Enter. Only per-line-streamable pipelines project
+    // (a projection must map line→line(s); cross-line ops like sort/count can't).
+    // The synthesized `select .sel { in }` is identity → display == original.
+    let proj: Vec<QueryOp> = spec
+        .widgets
+        .iter()
+        .find(|w| w.kind == WidgetKind::Select)
+        .and_then(|w| w.source.as_ref())
+        .map(|s| s.pipeline.clone())
+        .filter(|p| is_line_streamable(p))
+        .unwrap_or_default();
+
+    // fzf-mode incremental match state. Each candidate is scored ONCE as it
     // arrives (indices are stable — the fzf buffer never drops), not the whole
-    // buffer every frame. Empty filter appends in stream order; a real filter
-    // accumulates scored hits, re-sorted into the display list on a short debounce.
+    // buffer every frame. Candidates are `(display, original)`: the display drives
+    // fuzzy match/render, the original is emitted. Empty filter appends in stream
+    // order; a real filter accumulates scored hits, re-sorted on a short debounce.
+    let mut fzf_cands: Vec<(String, String)> = Vec::new(); // projected candidates
+    let mut fzf_raw_done = 0usize; // raw stream lines already projected
     let mut fzf_filter = String::from("\u{0}"); // sentinel: forces initial reset
-    let mut fzf_processed = 0usize; // stream lines already scored
-    let mut fzf_hits: Vec<(i32, String)> = Vec::new(); // matching lines (non-empty filter)
-    let mut fzf_matched: Vec<String> = Vec::new(); // display list
+    let mut fzf_processed = 0usize; // candidates already scored
+    let mut fzf_hits: Vec<(i32, String, String)> = Vec::new(); // (score, display, original)
+    let mut fzf_matched: Vec<(String, String)> = Vec::new(); // display list (display, original)
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
     // fzf prompt/header (set once by `main` before this call).
     let (fzf_prompt, fzf_header) = {
@@ -354,7 +371,18 @@ pub fn run(
             {
                 let st = state.lock().unwrap();
                 total = st.total;
-                let n = st.lines.len();
+                // Project any new raw lines into candidates (once each, indices
+                // stable). Identity projection is a plain clone; a real projection
+                // may map one raw line to zero (filtered) or several display rows,
+                // each carrying that raw line as its emit-original.
+                for i in fzf_raw_done..st.lines.len() {
+                    let raw = &st.lines[i];
+                    for disp in project_line(&proj, raw) {
+                        fzf_cands.push((disp, raw.clone()));
+                    }
+                }
+                fzf_raw_done = st.lines.len();
+                let n = fzf_cands.len();
                 let empty = filter.is_empty();
                 if filter != fzf_filter {
                     // fzf's query-extension trick: typing another char can only
@@ -371,28 +399,28 @@ pub fn run(
                         let old = std::mem::take(&mut fzf_hits);
                         fzf_hits = old
                             .into_iter()
-                            .filter_map(|(_, l)| fuzzy_score(&l, &filter).map(|s| (s, l)))
+                            .filter_map(|(_, d, o)| fuzzy_score(&d, &filter).map(|s| (s, d, o)))
                             .collect();
-                        // keep fzf_processed — new stream lines scored below
+                        // keep fzf_processed — new candidates scored below
                     } else {
                         // Full rescan across cores (rayon) — first char / backspace.
-                        fzf_hits = st
-                            .lines
+                        fzf_hits = fzf_cands
                             .par_iter()
-                            .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
+                            .filter_map(|(d, o)| {
+                                fuzzy_score(d, &filter).map(|s| (s, d.clone(), o.clone()))
+                            })
                             .collect();
                         fzf_processed = n;
                     }
                     fzf_filter = filter.clone();
                     fzf_last_sort = Instant::now() - Duration::from_secs(1);
                 }
-                // Incorporate new stream lines since the last frame.
-                for i in fzf_processed..n {
-                    let line = &st.lines[i];
+                // Incorporate new candidates since the last frame.
+                for (d, o) in fzf_cands.iter().take(n).skip(fzf_processed) {
                     if empty {
-                        fzf_matched.push(line.clone());
-                    } else if let Some(sc) = fuzzy_score(line, &filter) {
-                        fzf_hits.push((sc, line.clone()));
+                        fzf_matched.push((d.clone(), o.clone()));
+                    } else if let Some(sc) = fuzzy_score(d, &filter) {
+                        fzf_hits.push((sc, d.clone(), o.clone()));
                     }
                 }
                 fzf_processed = n;
@@ -404,7 +432,7 @@ pub fn run(
                 if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
                     h.par_sort_by(|a, b| b.0.cmp(&a.0));
-                    fzf_matched = h.into_iter().map(|(_, l)| l).collect();
+                    fzf_matched = h.into_iter().map(|(_, d, o)| (d, o)).collect();
                     fzf_last_sort = now;
                 }
             }
@@ -412,25 +440,26 @@ pub fn run(
             let sel = cursor.min(matched.len().saturating_sub(1));
 
             let mut c = controls.lock().unwrap();
-            // Publish the cursor line so a `--preview` thread can act on it.
-            c.current = matched.get(sel).cloned().unwrap_or_default();
+            // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
+            // what would be emitted, not the projected display.
+            c.current = matched.get(sel).map(|(_, o)| o.clone()).unwrap_or_default();
             if c.toggle {
-                // Tab: toggle the cursor line in the mark set, then advance.
+                // Tab: toggle the cursor line's original in the mark set, advance.
                 c.toggle = false;
-                if let Some(line) = matched.get(sel) {
-                    match c.marks.iter().position(|m| m == line) {
+                if let Some((_, orig)) = matched.get(sel) {
+                    match c.marks.iter().position(|m| m == orig) {
                         Some(pos) => {
                             c.marks.remove(pos);
                         }
-                        None => c.marks.push(line.clone()),
+                        None => c.marks.push(orig.clone()),
                     }
                 }
                 c.cursor = c.cursor.saturating_add(1);
             }
             if submit {
-                // Emit the marks if any (multi-select), else the cursor line.
+                // Emit the marks if any (multi-select), else the cursor original.
                 c.result = if c.marks.is_empty() {
-                    matched.get(sel).cloned().into_iter().collect()
+                    matched.get(sel).map(|(_, o)| o.clone()).into_iter().collect()
                 } else {
                     c.marks.clone()
                 };
@@ -691,9 +720,26 @@ fn render_err_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Apply a per-line select projection to one raw line, yielding its display
+/// row(s). Empty pipeline = identity. A filtering projection (`grep`/`reject`)
+/// can yield zero rows (the line drops out of the candidate list); a transform
+/// (`field`/`upper`) yields one. The caller pairs each row with the raw line as
+/// its emit-original, so the display is searchable while Enter emits the source.
+pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
+    if proj.is_empty() {
+        return vec![raw.to_string()];
+    }
+    let one = [raw.to_string()];
+    match eval(proj, &one, 0.0) {
+        QueryResult::Lines(ls) => ls,
+        QueryResult::Scalar(v) => vec![format!("{v}")],
+        QueryResult::Pairs(p) => p.into_iter().map(|(k, v)| format!("{k}\t{v}")).collect(),
+    }
+}
+
 fn render_fzf(
     f: &mut Frame,
-    matched: &[String],
+    matched: &[(String, String)],
     filter: &str,
     sel: usize,
     marks: &[String],
@@ -776,7 +822,10 @@ fn render_fzf(
     let mark_set: std::collections::HashSet<&str> = marks.iter().map(String::as_str).collect();
     let items: Vec<ListItem> = matched[start..end]
         .iter()
-        .map(|l| ListItem::new(fzf_line(l, filter, inner_w, mark_set.contains(l.as_str()))))
+        // Show the projected display; a row is marked when its ORIGINAL is marked.
+        .map(|(disp, orig)| {
+            ListItem::new(fzf_line(disp, filter, inner_w, mark_set.contains(orig.as_str())))
+        })
         .collect();
     let mut state = ListState::default();
     if n > 0 {
