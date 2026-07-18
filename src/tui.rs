@@ -66,6 +66,49 @@ pub fn filter_matches(line: &str, filter: &str) -> bool {
     filter.is_empty() || line.to_lowercase().contains(&filter.to_lowercase())
 }
 
+/// Fuzzy match (fzf-style, smart-case): the pattern chars must appear in `line`
+/// in order but not necessarily contiguously. Returns `None` if not a match, else
+/// a score where higher is better — contiguous runs and word-boundary starts are
+/// rewarded, gaps penalized. An empty pattern matches everything with score 0.
+pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
+    if pat.is_empty() {
+        return Some(0);
+    }
+    // Smart case: a pattern with any uppercase is case-sensitive, else insensitive.
+    let cased = pat.chars().any(|c| c.is_uppercase());
+    let norm = |c: char| if cased { c } else { c.to_ascii_lowercase() };
+    let l: Vec<char> = line.chars().collect();
+    let p: Vec<char> = pat.chars().collect();
+    let mut score = 0i32;
+    let mut li = 0usize;
+    let mut prev: Option<usize> = None;
+    for &pc in &p {
+        let target = norm(pc);
+        let idx = loop {
+            if li >= l.len() {
+                return None;
+            }
+            if norm(l[li]) == target {
+                break li;
+            }
+            li += 1;
+        };
+        if let Some(pi) = prev {
+            if idx == pi + 1 {
+                score += 15; // consecutive
+            } else {
+                score -= (idx - pi - 1).min(10) as i32; // gap penalty (bounded)
+            }
+        }
+        if idx == 0 || !l[idx - 1].is_alphanumeric() {
+            score += 10; // word-boundary / start bonus
+        }
+        prev = Some(idx);
+        li = idx + 1;
+    }
+    Some(score)
+}
+
 /// Truncate a line to `width` characters so it never overflows its box. (Wide
 /// upstream `stderr` — e.g. `find /` permission errors — must be redirected by
 /// the user; arb can only clip what flows through its own stream.)
@@ -166,18 +209,19 @@ pub fn run(
             break Ok(());
         }
         if fzf {
-            // fzf select mode: a full-screen filtered list with a cursor; Enter
-            // resolves the highlighted line into `selected` and exits.
+            // fzf select mode: fuzzy-match + rank the stream, best first; a cursor
+            // (from the top) highlights one line, Enter resolves it and exits.
             let st = state.lock().unwrap();
-            let matched: Vec<String> = st
+            let mut scored: Vec<(i32, String)> = st
                 .lines
                 .iter()
-                .filter(|l| filter_matches(l, &filter))
-                .cloned()
+                .filter_map(|l| fuzzy_score(l, &filter).map(|s| (s, l.clone())))
                 .collect();
             drop(st);
-            // cursor counts up from the newest (bottom) line.
-            let sel = matched.len().saturating_sub(1).saturating_sub(cursor);
+            // Stable sort by score desc — ties keep stream order.
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            let matched: Vec<String> = scored.into_iter().map(|(_, l)| l).collect();
+            let sel = cursor.min(matched.len().saturating_sub(1));
             if submit {
                 controls.lock().unwrap().selected = matched.get(sel).cloned();
                 break Ok(());

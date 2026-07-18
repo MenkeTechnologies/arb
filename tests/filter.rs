@@ -21,3 +21,39 @@ fn filter_narrows_a_line_set() {
     let kept: Vec<&str> = lines.iter().copied().filter(|l| filter_matches(l, "/api")).collect();
     assert_eq!(kept, vec!["GET /api 200", "POST /api 500"]);
 }
+
+#[test]
+fn fuzzy_matches_subsequence_not_just_substring() {
+    use arb::tui::fuzzy_score;
+    // out-of-order-but-in-sequence chars match (substring would fail)
+    assert!(fuzzy_score("src/main.rs", "smain").is_some());
+    assert!(fuzzy_score("alphabetic", "abc").is_some());
+    // not a subsequence
+    assert!(fuzzy_score("hello", "xyz").is_none());
+    assert!(fuzzy_score("abc", "cba").is_none());
+    // empty pattern matches all
+    assert_eq!(fuzzy_score("anything", ""), Some(0));
+}
+
+#[test]
+fn fuzzy_ranks_contiguous_and_boundary_higher() {
+    use arb::tui::fuzzy_score;
+    // contiguous "main" scores higher than scattered m..a..i..n
+    let contig = fuzzy_score("main.rs", "main").unwrap();
+    let scattered = fuzzy_score("m_a_i_n", "main").unwrap();
+    assert!(contig > scattered, "contig {contig} should beat scattered {scattered}");
+    // word-boundary start beats mid-word
+    let boundary = fuzzy_score("the config file", "config").unwrap();
+    let midword = fuzzy_score("reconfigure", "config").unwrap();
+    assert!(boundary > midword, "boundary {boundary} should beat midword {midword}");
+}
+
+#[test]
+fn fuzzy_smart_case() {
+    use arb::tui::fuzzy_score;
+    // lowercase pattern is case-insensitive
+    assert!(fuzzy_score("README", "read").is_some());
+    // uppercase in pattern forces case-sensitivity
+    assert!(fuzzy_score("README", "READ").is_some());
+    assert!(fuzzy_score("readme", "READ").is_none());
+}
