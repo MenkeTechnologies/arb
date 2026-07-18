@@ -33,10 +33,21 @@ struct Cli {
     /// Run a preset / stdlib module by name, e.g. `-p logs` (== `import logs`).
     #[arg(short = 'p', long = "preset")]
     preset: Option<String>,
+    /// List available presets (bundled stdlib + `~/.arb/lib`) and exit.
+    #[arg(short = 'l', long = "list")]
+    list: bool,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+
+    if cli.list {
+        let mut out = io::stdout().lock();
+        for (name, desc) in spec::list_presets() {
+            writeln!(out, "{name:<10} {desc}")?;
+        }
+        return Ok(());
+    }
 
     let spec = match load_spec(&cli) {
         Ok(s) => s,

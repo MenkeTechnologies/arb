@@ -1,0 +1,6 @@
+# top — process stats (feed `ps aux`): total %CPU gauge + live process list.
+#   ps aux | arb -p top
+gauge .cpu -max 100
+tail  .procs
+source .cpu   { in; field 3; sum }
+source .procs { in }

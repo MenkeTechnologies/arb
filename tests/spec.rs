@@ -92,6 +92,24 @@ fn import_stdlib_preset_instantiates_widgets() {
 }
 
 #[test]
+fn all_stdlib_presets_build() {
+    for name in arb::spec::STDLIB_NAMES {
+        assert!(
+            build(&parse(&format!("import {name}")).unwrap()).is_ok(),
+            "preset `{name}` failed to build"
+        );
+    }
+}
+
+#[test]
+fn list_presets_includes_stdlib() {
+    let names: Vec<String> = arb::spec::list_presets().into_iter().map(|(n, _)| n).collect();
+    for want in ["nums", "logs", "http", "json", "table", "top"] {
+        assert!(names.contains(&want.to_string()), "missing preset {want}");
+    }
+}
+
+#[test]
 fn import_unknown_module_errors() {
     assert!(build(&parse("import nope").unwrap()).is_err());
 }

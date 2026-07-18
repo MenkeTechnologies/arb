@@ -1,0 +1,6 @@
+# json — shape of a JSON-lines stream: key frequency + live tail.
+#   cat events.json | arb -p json
+bars .keys
+tail .raw
+source .keys { in.json; keys; tally }
+source .raw  { in }

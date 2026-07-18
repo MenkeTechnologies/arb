@@ -1,0 +1,8 @@
+# http — access-log dashboard: status codes, top paths, live tail (JSON logs).
+#   tail -f access.json | arb -p http
+bars .status
+bars .paths
+tail .log
+source .status { in.json; field status; tally }
+source .paths  { in.json; field path; tally }
+source .log    { in }

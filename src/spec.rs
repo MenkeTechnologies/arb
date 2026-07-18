@@ -176,11 +176,55 @@ fn resolve_module(name: &str) -> Result<String, String> {
             return Ok(s);
         }
     }
-    match name {
-        "nums" => Ok(include_str!("../stdlib/nums.arb").to_string()),
-        "logs" => Ok(include_str!("../stdlib/logs.arb").to_string()),
-        _ => Err(format!("import: module `{name}` not found")),
+    bundled_module(name)
+        .map(str::to_string)
+        .ok_or_else(|| format!("import: module `{name}` not found"))
+}
+
+/// Names of the bundled stdlib presets.
+pub const STDLIB_NAMES: &[&str] = &["nums", "logs", "http", "json", "table", "top"];
+
+fn bundled_module(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "nums" => include_str!("../stdlib/nums.arb"),
+        "logs" => include_str!("../stdlib/logs.arb"),
+        "http" => include_str!("../stdlib/http.arb"),
+        "json" => include_str!("../stdlib/json.arb"),
+        "table" => include_str!("../stdlib/table.arb"),
+        "top" => include_str!("../stdlib/top.arb"),
+        _ => return None,
+    })
+}
+
+/// List available presets as `(name, description)` — bundled stdlib plus any
+/// user modules in `~/.arb/lib`. The description is the preset's first `#` line.
+pub fn list_presets() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = STDLIB_NAMES
+        .iter()
+        .map(|n| (n.to_string(), first_comment(bundled_module(n).unwrap_or(""))))
+        .collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = std::path::Path::new(&home).join(".arb/lib");
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("arb") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let src = std::fs::read_to_string(&path).unwrap_or_default();
+                        out.push((stem.to_string(), first_comment(&src)));
+                    }
+                }
+            }
+        }
     }
+    out
+}
+
+fn first_comment(src: &str) -> String {
+    src.lines()
+        .find_map(|l| l.trim().strip_prefix('#'))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// Collect `-flag value` pairs into an options map.

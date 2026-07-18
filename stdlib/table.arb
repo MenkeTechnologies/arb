@@ -1,0 +1,6 @@
+# table — column view: first-column breakdown + live rows (whitespace columns).
+#   ps aux | arb -p table
+bars .col1
+tail .rows
+source .col1 { in; field 1; tally }
+source .rows { in }
