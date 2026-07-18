@@ -1002,9 +1002,16 @@ fn render_widget(
     lines: &[String],
     result: Option<QueryResult>,
 ) {
+    // `-label`/`-title` overrides the widget's display name (the dot-path).
+    let name = w
+        .opts
+        .get("label")
+        .or_else(|| w.opts.get("title"))
+        .map(String::as_str)
+        .unwrap_or(&w.path);
     let title = format!(
         " {} · {} · {} ln {:.0}/s ",
-        w.path,
+        name,
         w.kind.label(),
         st.total,
         st.rate()

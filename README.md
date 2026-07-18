@@ -414,9 +414,10 @@ headers; `spark` draws a unicode sparkline and `chart` a line plot of a numeric
 series), arranged by `grid` — `grid .w -row R -col C` places a widget, and
 `-span N` (or `-rowspan`/`-colspan`) lets one span several cells, so a main
 `chart` can be wide while small gauges take a single cell. Any widget takes
-`-color NAME` (`green`/`red`/`yellow`/`orange`/`magenta`/`blue`/`white`/`gray`,
-default `cyan`) to tint its border and accent — the same color in the TUI and the
-web dashboard, so panels can be status-coded (green ok, red errors).
+`-label "…"` to set a human header (instead of the dot-path) and `-color NAME`
+(`green`/`red`/`yellow`/`orange`/`magenta`/`blue`/`white`/`gray`, default `cyan`)
+to tint its border and accent — both apply in the TUI and the web dashboard, so
+panels read cleanly and can be status-coded (green ok, red errors).
 
 ---
 

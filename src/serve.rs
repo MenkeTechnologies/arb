@@ -315,12 +315,19 @@ fn widget_text(w: &Widget, raw: &[String], _elapsed: f64, result: Option<QueryRe
 fn render_page(spec: &Spec) -> String {
     let mut panels = String::new();
     for (i, w) in spec.widgets.iter().enumerate() {
+        // `-label`/`-title` overrides the widget's display name (the dot-path).
+        let name = w
+            .opts
+            .get("label")
+            .or_else(|| w.opts.get("title"))
+            .map(String::as_str)
+            .unwrap_or(&w.path);
         panels.push_str(&format!(
             "<section class=\"panel\">\n\
              <header class=\"phead\"><span class=\"ppath\">{}</span><span class=\"pkind\">{}</span></header>\n\
              <div class=\"pbody\" id=\"wb{i}\"></div>\n\
              </section>\n",
-            escape(&w.path),
+            escape(name),
             escape(w.kind.label()),
         ));
     }
@@ -528,6 +535,15 @@ mod tests {
         assert_eq!(json[0]["kind"], "table");
         assert_eq!(json[0]["headers"], serde_json::json!(["a", "b"]));
         assert_eq!(json[0]["rows"], serde_json::json!([["1", "2"], ["3", "4"]]));
+    }
+
+    #[test]
+    fn render_page_uses_label_over_path() {
+        let spec = build(&parse("gauge .cpu -max 100 -label \"CPU %\"").unwrap()).unwrap();
+        let page = render_page(&spec);
+        assert!(page.contains("CPU %"));
+        // The raw dot-path is no longer shown in the header once a label is set.
+        assert!(!page.contains(">.cpu<"));
     }
 
     #[test]
