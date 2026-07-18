@@ -44,6 +44,8 @@ pub enum Expr {
     /// Membership: `left in [a, b, c]` — truthy iff `left` equals any element
     /// (jq `IN`). Empty list is always falsy.
     InList(Box<Expr>, Vec<Expr>),
+    /// Range membership: `left in lo..hi` — truthy iff `lo <= left <= hi`.
+    InRange(Box<Expr>, Box<Expr>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
 }
 
@@ -133,6 +135,17 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
                     }
                 }
             }
+        }
+        Expr::InRange(left, lo, hi) => {
+            // `(left >= lo) and (left <= hi)` — both yield 0/1, product is 1 iff
+            // in range.
+            emit(left, x, resolve, b);
+            emit(lo, x, resolve, b);
+            b.emit(Op::NumGe, 0);
+            emit(left, x, resolve, b);
+            emit(hi, x, resolve, b);
+            b.emit(Op::NumLe, 0);
+            b.emit(Op::Mul, 0);
         }
         // `and`/`or` operate on truthiness: normalize each side to 0/1 first,
         // then `and` = product (1 iff both 1), `or` = sum (>=1 iff either 1).
@@ -252,10 +265,18 @@ impl Parser {
         Ok(left)
     }
 
-    /// Parse the `[a, b, c]` right-hand side of an `in` membership test.
+    /// Parse the right-hand side of an `in` test: either a `[a, b, c]` list or a
+    /// `lo..hi` range.
     fn in_list(&mut self, left: Expr) -> Result<Expr, String> {
         if self.peek() != Some('[') {
-            return Err("in: expected `[` after `in`".into());
+            // `lo..hi` range membership.
+            let lo = self.additive()?;
+            if !(self.peek() == Some('.') && self.c.get(self.i + 1) == Some(&'.')) {
+                return Err("in: expected `[list]` or `lo..hi`".into());
+            }
+            self.i += 2;
+            let hi = self.additive()?;
+            return Ok(Expr::InRange(Box::new(left), Box::new(lo), Box::new(hi)));
         }
         self.i += 1;
         let mut items = Vec::new();
@@ -373,8 +394,20 @@ impl Parser {
 
     fn number(&mut self) -> Result<Expr, String> {
         let start = self.i;
-        while self.i < self.c.len() && (self.c[self.i].is_ascii_digit() || self.c[self.i] == '.') {
+        while self.i < self.c.len() && self.c[self.i].is_ascii_digit() {
             self.i += 1;
+        }
+        // At most one fractional part, and only when the `.` is followed by a
+        // digit — so `1..10` (a range) leaves the `..` for the range parser
+        // instead of the number greedily swallowing both dots.
+        if self.i < self.c.len()
+            && self.c[self.i] == '.'
+            && matches!(self.c.get(self.i + 1), Some(d) if d.is_ascii_digit())
+        {
+            self.i += 1;
+            while self.i < self.c.len() && self.c[self.i].is_ascii_digit() {
+                self.i += 1;
+            }
         }
         let s: String = self.c[start..self.i].iter().collect();
         s.parse::<f64>()

@@ -97,3 +97,19 @@ fn in_list_membership_on_fusevm() {
     assert!(eval_pred(&parse("x in [1, 2] and x > 1").unwrap(), 2.0).unwrap());
     assert!(!eval_pred(&parse("x in [1, 2] and x > 1").unwrap(), 1.0).unwrap());
 }
+
+#[test]
+fn in_range_membership_on_fusevm() {
+    use arb::expr::eval_pred;
+    // inclusive on both ends
+    assert!(eval_pred(&parse("x in 1..10").unwrap(), 1.0).unwrap());
+    assert!(eval_pred(&parse("x in 1..10").unwrap(), 10.0).unwrap());
+    assert!(eval_pred(&parse("x in 1..10").unwrap(), 5.0).unwrap());
+    assert!(!eval_pred(&parse("x in 1..10").unwrap(), 0.0).unwrap());
+    assert!(!eval_pred(&parse("x in 1..10").unwrap(), 11.0).unwrap());
+    // float bounds, and a decimal literal elsewhere still parses (number() fix)
+    assert!(eval_pred(&parse("x in 1.5..3.5").unwrap(), 3.5).unwrap());
+    assert_eq!(eval(&parse("x * 1.5").unwrap(), 10.0).unwrap(), 15.0);
+    // composes with and
+    assert!(eval_pred(&parse("x in 500..599 and x != 500").unwrap(), 502.0).unwrap());
+}
