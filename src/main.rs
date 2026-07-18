@@ -125,11 +125,16 @@ fn main() -> io::Result<()> {
         }
         tui::run(&spec, state)
     } else if let Some(out_ops) = &spec.out {
-        // Piped downstream: arb modifies the stream — emit the `out` pipeline.
-        if needs_stdin {
-            read_stdin_sync(&state);
+        // Piped downstream: arb modifies the stream. A per-line pipeline streams
+        // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
+        if needs_stdin && !cli.json && query::is_line_streamable(out_ops) {
+            stream_out(out_ops)
+        } else {
+            if needs_stdin {
+                read_stdin_sync(&state);
+            }
+            emit_out(out_ops, &state, cli.json)
         }
-        emit_out(out_ops, &state, cli.json)
     } else {
         if needs_stdin {
             read_stdin_sync(&state);
@@ -139,6 +144,26 @@ fn main() -> io::Result<()> {
 }
 
 /// Write the `out { … }` pipeline's result to stdout (arb as a pipe filter).
+/// Stream a per-line `out` pipeline: apply it to each line as it arrives and
+/// emit results immediately with a flush, so live pipes work without buffering.
+fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
+    let stdin = io::stdin();
+    let mut out = io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let QueryResult::Lines(ls) = query::eval(ops, std::slice::from_ref(&line), 0.0) {
+            for l in ls {
+                writeln!(out, "{l}")?;
+            }
+        }
+        out.flush()?;
+    }
+    Ok(())
+}
+
 fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
     let st = state.lock().unwrap();
     let raw: Vec<String> = st.lines.iter().cloned().collect();

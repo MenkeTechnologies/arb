@@ -452,6 +452,41 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
     QueryResult::Lines(cur)
 }
 
+/// True if every op processes each line independently, so the pipeline can be
+/// applied per-line and its results emitted incrementally (streaming). Reducers,
+/// sorts/reorderers, and whole-document ops (`sel`/`csv`/`tsv`) are not.
+pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
+    ops.iter().all(|op| {
+        matches!(
+            op,
+            QueryOp::Match(_)
+                | QueryOp::Reject(_)
+                | QueryOp::Field(_)
+                | QueryOp::Each
+                | QueryOp::Keys
+                | QueryOp::Vals
+                | QueryOp::Where(_)
+                | QueryOp::Map(_)
+                | QueryOp::Contains(_)
+                | QueryOp::Starts(_)
+                | QueryOp::Ends(_)
+                | QueryOp::Nonempty
+                | QueryOp::Numeric
+                | QueryOp::Len
+                | QueryOp::Wc
+                | QueryOp::Abs
+                | QueryOp::Round
+                | QueryOp::Prepend(_)
+                | QueryOp::Append(_)
+                | QueryOp::Cut(_, _)
+                | QueryOp::Upper
+                | QueryOp::Lower
+                | QueryOp::Trim
+                | QueryOp::Replace(_, _)
+        )
+    })
+}
+
 /// Extract a field from a line per the selector.
 fn extract_field(line: &str, sel: &FieldSel) -> String {
     match sel {

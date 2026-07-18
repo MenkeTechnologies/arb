@@ -444,3 +444,11 @@ fn tsv_field_by_header() {
         QueryResult::Pairs(vec![("ok".into(), 2), ("err".into(), 1)])
     );
 }
+
+#[test]
+fn streamable_detection() {
+    use arb::query::is_line_streamable;
+    assert!(is_line_streamable(&pipeline("tail .x\nsource .x { in; match /a/; field 1; where x > 1 }")));
+    assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; sort; count }")));
+    assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; tally }")));
+}
