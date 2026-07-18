@@ -46,6 +46,7 @@ reedline = "0.47.0"
 nu-ansi-term = "0.50"
 libc = "0.2"
 toml = "0.8"
+ansi-to-tui = "7"
 
 [profile.release]
 lto = true

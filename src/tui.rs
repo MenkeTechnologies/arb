@@ -122,6 +122,18 @@ pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
     Some(score)
 }
 
+/// Parse a line's ANSI SGR colour codes into a styled ratatui line, so command
+/// output (`bat --color`, `ls --color`, a `--preview`) shows its colours instead
+/// of literal escape sequences. Plain text passes through unchanged. ratatui
+/// clips the rendered line to the pane width.
+fn ansi_line(s: &str) -> Line<'static> {
+    use ansi_to_tui::IntoText;
+    match s.as_bytes().into_text() {
+        Ok(text) => text.lines.into_iter().next().unwrap_or_default(),
+        Err(_) => Line::from(s.to_string()),
+    }
+}
+
 /// Truncate a line to `width` characters so it never overflows its box. (Wide
 /// upstream `stderr` — e.g. `find /` permission errors — must be redirected by
 /// the user; arb can only clip what flows through its own stream.)
@@ -521,13 +533,12 @@ fn render_err_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Red))
         .title(format!(" \u{26a0} {label} "));
-    let inner_w = (area.width as usize).saturating_sub(2);
     let inner_h = area.height.saturating_sub(2) as usize;
     let skip = lines.len().saturating_sub(inner_h);
     let items: Vec<ListItem> = lines
         .iter()
         .skip(skip)
-        .map(|l| ListItem::new(clip(l, inner_w)))
+        .map(|l| ListItem::new(ansi_line(l)))
         .collect();
     f.render_widget(List::new(items).block(block), area);
 }
@@ -637,13 +648,12 @@ fn render_fzf(
 fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
     let title = format!(" -- {label} · {} ln ", lines.len());
     let block = Block::default().borders(Borders::ALL).title(title);
-    let inner_w = (area.width as usize).saturating_sub(2);
     let inner_h = area.height.saturating_sub(2) as usize;
     let skip = lines.len().saturating_sub(inner_h);
     let items: Vec<ListItem> = lines
         .iter()
         .skip(skip)
-        .map(|l| ListItem::new(clip(l, inner_w)))
+        .map(|l| ListItem::new(ansi_line(l)))
         .collect();
     f.render_widget(List::new(items).block(block), area);
 }
@@ -715,7 +725,7 @@ fn render_widget(
             let items: Vec<ListItem> = owned
                 .iter()
                 .skip(skip)
-                .map(|l| ListItem::new(clip(l, inner_w)))
+                .map(|l| ListItem::new(ansi_line(l)))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
         }
