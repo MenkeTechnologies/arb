@@ -239,6 +239,30 @@ fn bind_rejects_non_control_key_and_unknown_action() {
 }
 
 #[test]
+fn expect_parses_pattern_and_action() {
+    use arb::spec::BindAction;
+    let s = build(
+        &parse("input .x\nexpect /ERROR/ set .x upper\nexpect /shutdown/ quit").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.expects.len(), 2);
+    // The pattern is a real regex fired against stream lines.
+    assert!(s.expects[0].pattern.is_match("2026 ERROR disk full"));
+    assert!(!s.expects[0].pattern.is_match("all good"));
+    assert_eq!(
+        s.expects[0].action,
+        BindAction::SetInput { name: "x".into(), value: "upper".into() }
+    );
+    assert!(s.expects[1].pattern.is_match("graceful shutdown"));
+    assert_eq!(s.expects[1].action, BindAction::Quit);
+}
+
+#[test]
+fn expect_rejects_unknown_action() {
+    assert!(build(&parse("input .x\nexpect /re/ frobnicate .x").unwrap()).is_err());
+}
+
+#[test]
 fn interactive_out_maps_stream_with_live_input() {
     use std::collections::HashMap;
     // The megafilter/map: `out { in; apply .x }` resolved against a live input,

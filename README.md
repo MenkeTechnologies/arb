@@ -176,8 +176,27 @@ tail -f access.log | arb -e 'input .x
 ```
 
 Keys are `C-<letter>` (also `c-<letter>` or `^<letter>`). `set` binds turn the
-interactive map into a set of one-key presets; `quit` exits. This is the
-foundation for event-driven reactions (`expect`) coming later.
+interactive map into a set of one-key presets; `quit` exits.
+
+### Reactions — `expect /regex/ <action>`
+
+The "react" half of Expect: when a **stream line matches** a pattern, fire an
+action automatically — no keypress. Same action vocabulary as `bind` (`set` a
+control, `quit`), so the stream can drive itself:
+
+```sh
+tail -f deploy.log | arb -e 'input .x
+                             tail .t
+                             source .t { in }
+                             out { in; apply .x }
+                             expect /ERROR/    set .x "grep /ERROR/"  # errors appear → pipe narrows to them
+                             expect /deploy ok/ quit'                 # success line → exit
+```
+
+Patterns are checked against new lines as they arrive (on the redraw cadence; a
+line that scrolls past faster than a frame on a bounded dashboard may be missed).
+Combined with `bind`, a spec reacts to both the keyboard and the stream — the
+basis for spawn/expect/react automation.
 
 ### fzf mode — `arb --fzf`
 

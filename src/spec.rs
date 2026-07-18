@@ -129,6 +129,37 @@ pub fn parse_key(spec: &str) -> Option<u8> {
     Some((ch.to_ascii_uppercase() as u8) & 0x1f)
 }
 
+/// An event-driven reaction: when a stream line matches `pattern`, fire `action`.
+/// Declared `expect /regex/ <action>` — the "react" half of Expect. Reuses
+/// [`BindAction`], so a matching line can set a control or quit.
+#[derive(Debug, Clone)]
+pub struct Expect {
+    pub pattern: Regex,
+    pub action: BindAction,
+}
+
+/// Parse an action clause (`set .name VALUE…` | `quit`) shared by `bind` and
+/// `expect`. `params` is the args AFTER the action verb.
+fn parse_action(verb: &str, params: &[Arg]) -> Result<BindAction, String> {
+    match verb {
+        "quit" => Ok(BindAction::Quit),
+        "set" => {
+            let name = params
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("set: missing input name (.name)")?;
+            let name = name.strip_prefix('.').unwrap_or(name).to_string();
+            let value = params[1..]
+                .iter()
+                .filter_map(Arg::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(BindAction::SetInput { name, value })
+        }
+        other => Err(format!("unknown action `{other}` (set | quit)")),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Spec {
     pub widgets: Vec<Widget>,
@@ -137,6 +168,8 @@ pub struct Spec {
     pub out: Option<Vec<QueryOp>>,
     /// Key bindings (`bind C-<letter> <action>`).
     pub binds: Vec<Bind>,
+    /// Event-driven reactions (`expect /re/ <action>`).
+    pub expects: Vec<Expect>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -250,25 +283,18 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .get(1)
                 .and_then(Arg::as_str)
                 .ok_or("bind: missing action (set | quit)")?;
-            let action = match verb {
-                "quit" => BindAction::Quit,
-                "set" => {
-                    let name = c
-                        .args
-                        .get(2)
-                        .and_then(Arg::as_str)
-                        .ok_or("bind set: missing input name (.name)")?;
-                    let name = name.strip_prefix('.').unwrap_or(name).to_string();
-                    let value = c.args[3..]
-                        .iter()
-                        .filter_map(Arg::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    BindAction::SetInput { name, value }
-                }
-                other => return Err(format!("bind: unknown action `{other}` (set | quit)")),
-            };
+            let action = parse_action(verb, &c.args[2..]).map_err(|e| format!("bind: {e}"))?;
             spec.binds.push(Bind { key, action });
+        } else if c.name == "expect" {
+            // `expect /regex/ set .name VALUE` | `expect /regex/ quit`
+            let pattern = regex_arg(c)?;
+            let verb = c
+                .args
+                .get(1)
+                .and_then(Arg::as_str)
+                .ok_or("expect: missing action (set | quit)")?;
+            let action = parse_action(verb, &c.args[2..]).map_err(|e| format!("expect: {e}"))?;
+            spec.expects.push(Expect { pattern, action });
         } else if c.name == "out" {
             let body = match c.args.first() {
                 Some(Arg::Block(b)) => b,

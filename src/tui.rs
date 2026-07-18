@@ -169,6 +169,20 @@ fn clip(s: &str, width: usize) -> String {
     }
 }
 
+/// Apply a [`BindAction`] to `Controls` — shared by key `bind`s and stream
+/// `expect` reactions. `Quit` sets the flag (the run loop exits on it); `SetInput`
+/// writes the named input value, driving the megafilter/map.
+fn apply_bind_action(c: &mut Controls, action: &BindAction) {
+    match action {
+        BindAction::Quit => c.quit = true,
+        BindAction::SetInput { name, value } => {
+            if let Some(slot) = c.inputs.iter_mut().find(|(n, _)| n == name) {
+                slot.1 = value.clone();
+            }
+        }
+    }
+}
+
 /// Read key bytes from `/dev/tty` and drive `Controls`: printable chars build
 /// the filter live, Backspace/Ctrl-U edit it, Esc clears it (or quits when it is
 /// already empty), Ctrl-C quits. Raw mode delivers each keypress immediately.
@@ -266,18 +280,9 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                             if let Some(action) =
                                 c.binds.iter().find(|bd| bd.key == b).map(|bd| bd.action.clone())
                             {
-                                match action {
-                                    BindAction::Quit => {
-                                        c.quit = true;
-                                        break 'read;
-                                    }
-                                    BindAction::SetInput { name, value } => {
-                                        if let Some(slot) =
-                                            c.inputs.iter_mut().find(|(n, _)| *n == name)
-                                        {
-                                            slot.1 = value;
-                                        }
-                                    }
+                                apply_bind_action(&mut c, &action);
+                                if c.quit {
+                                    break 'read;
                                 }
                             }
                         }
@@ -361,6 +366,10 @@ pub fn run(
     let mut fzf_hits: Vec<(i32, String, String, String)> = Vec::new(); // (score, display, key, original)
     let mut fzf_matched: Vec<(String, String)> = Vec::new(); // display list (display, original)
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
+    // `expect /re/ …` reactions: total stream lines already checked against the
+    // patterns. Tracked by `total` (lines-ever), not a deque index, because the
+    // dashboard ring drops old lines — we scan the newest arrivals each frame.
+    let mut expect_total: u64 = 0;
     // fzf prompt/header (set once by `main` before this call).
     let (fzf_prompt, fzf_header) = {
         let c = controls.lock().unwrap();
@@ -382,6 +391,33 @@ pub fn run(
         };
         if quit {
             break Ok(());
+        }
+        // `expect` reactions: scan any new stream lines against the patterns and
+        // fire the matching action (set a control / quit). Snapshot the new lines
+        // under the state lock, release it, THEN take the controls lock — never
+        // hold both, so the reader/key threads can't deadlock against this.
+        if !spec.expects.is_empty() {
+            let new_lines: Vec<String> = {
+                let st = state.lock().unwrap();
+                // Scan the newest `total - already-seen` lines still retained in the
+                // ring (older ones that scrolled past between frames are missed —
+                // an honest limit on a stream faster than the redraw cadence).
+                let new_count = st.total.saturating_sub(expect_total) as usize;
+                let take = new_count.min(st.lines.len());
+                let start = st.lines.len() - take;
+                expect_total = st.total;
+                st.lines.iter().skip(start).cloned().collect()
+            };
+            if !new_lines.is_empty() {
+                let mut c = controls.lock().unwrap();
+                for line in &new_lines {
+                    for ex in &spec.expects {
+                        if ex.pattern.is_match(line) {
+                            apply_bind_action(&mut c, &ex.action);
+                        }
+                    }
+                }
+            }
         }
         // Snapshot the error pane (spawned producer's stderr) — a bordered strip
         // at the bottom, so upstream errors show inside arb, never on the terminal.
