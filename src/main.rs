@@ -43,6 +43,10 @@ struct Cli {
     /// Interactive REPL — author + test specs against a sample buffer.
     #[arg(short = 'r', long = "repl")]
     repl: bool,
+    /// Generate a static HTML dashboard from the spec to stdout, then exit
+    /// (`arb -p logs --html > dash.html`).
+    #[arg(long = "html")]
+    html: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -81,6 +85,11 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
+
+    if cli.html {
+        print!("{}", arb::web::render_html(&spec));
+        return Ok(());
+    }
 
     let needs_stdin = spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
     if needs_stdin && io::stdin().is_terminal() {
