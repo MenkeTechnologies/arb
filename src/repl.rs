@@ -360,13 +360,7 @@ impl Prompt for ArbPrompt {
 pub fn run() {
     ensure_default_config_seeded();
 
-    println!(
-        "{}",
-        Style::new()
-            .fg(NuColor::Cyan)
-            .bold()
-            .paint("arb — pipeline dashboard REPL")
-    );
+    crate::banner::print_banner();
     println!(
         "\x1b[2m  type a spec (e.g. `gauge .g; source .g {{ in; count }}`) — .feed to \
          seed the sample stream, `exit` or Ctrl-D to leave, Tab to complete\x1b[0m"
