@@ -780,6 +780,9 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                 let re = regex::Regex::new(pat).map_err(|e| format!("grepf: bad regex: {e}"))?;
                 ops.push(QueryOp::Grepf(field, re));
             }
+            "basename" => ops.push(QueryOp::Basename),
+            "dirname" => ops.push(QueryOp::Dirname),
+            "commafy" => ops.push(QueryOp::Commafy),
             "flip" => {
                 ops.push(QueryOp::Flip);
             }

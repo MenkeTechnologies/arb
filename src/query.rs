@@ -148,6 +148,13 @@ pub enum QueryOp {
     Grepf(String, regex::Regex),
     /// Reverse the Unicode scalar characters of each line (chars().rev()).
     Flip,
+    /// Path basename: the part after the last `/` (the whole line if none).
+    Basename,
+    /// Path dirname: the part before the last `/` (`.` if none).
+    Dirname,
+    /// Group a numeric line's integer part with thousands separators
+    /// (`1234567` -> `1,234,567`); non-numeric lines pass through.
+    Commafy,
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -673,6 +680,27 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     *l = l.chars().rev().collect();
                 }
             }
+            QueryOp::Basename => {
+                for l in cur.iter_mut() {
+                    let t = l.trim_end_matches('/');
+                    *l = t.rsplit('/').next().unwrap_or(t).to_string();
+                }
+            }
+            QueryOp::Dirname => {
+                for l in cur.iter_mut() {
+                    let t = l.trim_end_matches('/');
+                    *l = match t.rsplit_once('/') {
+                        Some(("", _)) => "/".to_string(),
+                        Some((dir, _)) => dir.to_string(),
+                        None => ".".to_string(),
+                    };
+                }
+            }
+            QueryOp::Commafy => {
+                for l in cur.iter_mut() {
+                    *l = commafy(l);
+                }
+            }
             QueryOp::B64 => {
                 for l in cur.iter_mut() {
                     *l = STANDARD.encode(l.as_bytes());
@@ -1058,7 +1086,9 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Lpad(_)
                 | QueryOp::Grepf(_, _)
                 | QueryOp::Flip
-
+                | QueryOp::Basename
+                | QueryOp::Dirname
+                | QueryOp::Commafy
         )
     })
 }
@@ -1181,6 +1211,34 @@ fn fmt_num(v: f64) -> String {
         format!("{}", v as i64)
     } else {
         format!("{v}")
+    }
+}
+
+/// Group the integer part of a numeric line with thousands separators; leaves a
+/// non-numeric line (and any fractional/sign parts) intact.
+fn commafy(line: &str) -> String {
+    let s = line.trim();
+    if s.parse::<f64>().is_err() {
+        return line.to_string();
+    }
+    let (sign, rest) = match s.strip_prefix('-') {
+        Some(r) => ("-", r),
+        None => ("", s),
+    };
+    let (int, frac) = match rest.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (rest, None),
+    };
+    let mut grouped = String::new();
+    for (idx, ch) in int.chars().enumerate() {
+        if idx > 0 && (int.len() - idx) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    match frac {
+        Some(f) => format!("{sign}{grouped}.{f}"),
+        None => format!("{sign}{grouped}"),
     }
 }
 
