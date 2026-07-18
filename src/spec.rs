@@ -168,7 +168,19 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
     let mut saw_in = false;
     for c in cmds {
         match c.name.as_str() {
-            "in" | "in.json" => saw_in = true,
+            "in" | "in.json" | "in.html" | "in.xml" => saw_in = true,
+            "sel" => {
+                let css = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if css.trim().is_empty() {
+                    return Err("sel: expected a CSS selector".into());
+                }
+                ops.push(QueryOp::Sel(css));
+            }
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
             "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),

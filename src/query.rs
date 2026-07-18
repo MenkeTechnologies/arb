@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use regex::Regex;
+use scraper::{Html, Selector};
 use serde_json::Value;
 
 use crate::expr::Expr;
@@ -50,6 +51,9 @@ pub enum QueryOp {
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
     Vals,
+    /// Parse the accumulated stream as one HTML document and emit the text of
+    /// each element matching the CSS selector (one line per match).
+    Sel(String),
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -158,6 +162,16 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::Sel(css) => {
+                let doc = Html::parse_document(&cur.join("\n"));
+                cur = match Selector::parse(css) {
+                    Ok(sel) => doc
+                        .select(&sel)
+                        .map(|el| el.text().collect::<String>().trim().to_string())
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
             }
         }
     }

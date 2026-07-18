@@ -60,6 +60,28 @@ fn field_then_tally_groups_sorted() {
 }
 
 #[test]
+fn sel_extracts_element_text() {
+    let ops = pipeline("tail .x\nsource .x { in.html; sel h1 }");
+    let html = lines(&["<html><body><h1>Hello</h1><h1>World</h1></body></html>"]);
+    assert_eq!(
+        eval(&ops, &html, 1.0),
+        QueryResult::Lines(lines(&["Hello", "World"]))
+    );
+}
+
+#[test]
+fn sel_class_then_tally() {
+    let ops = pipeline("bars .x\nsource .x { in.html; sel .tag; tally }");
+    let html = lines(&[
+        r#"<div><span class="tag">a</span><span class="tag">a</span><span class="tag">b</span></div>"#,
+    ]);
+    assert_eq!(
+        eval(&ops, &html, 1.0),
+        QueryResult::Pairs(vec![("a".into(), 2), ("b".into(), 1)])
+    );
+}
+
+#[test]
 fn numeric_aggregates() {
     let data = lines(&["10", "20", "30", "40"]);
     let run = |verb: &str| {
