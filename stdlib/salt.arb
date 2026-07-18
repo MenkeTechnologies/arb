@@ -1,0 +1,8 @@
+# salt — minion return dashboard from salt CLI output
+#   salt '*' test.ping | arb -p salt
+bars .returns
+source .returns { in; match /^\s+(True|False)/; trim; tally }
+gauge .minions -max 100
+source .minions { in; ends ":"; count }
+tail .responders
+source .responders { in; ends ":"; trim }

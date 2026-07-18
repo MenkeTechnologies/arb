@@ -1,0 +1,8 @@
+# velero — backup status dashboard from velero backup get
+#   velero backup get | arb -p velero
+bars .status
+source .status { in; reject /^NAME/; field 2; tally }
+gauge .total -max 100
+source .total { in; reject /^NAME/; count }
+tail .backups
+source .backups { in; reject /^NAME/; field 1 }

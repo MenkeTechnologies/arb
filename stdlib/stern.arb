@@ -1,0 +1,8 @@
+# stern — per-container log volume + error count from live multi-pod tail
+#   stern . | arb -p stern
+bars .containers
+source .containers { in; nonempty; field 2; tally }
+gauge .errors -max 100
+source .errors { in; lower; contains error; count }
+tail .logs
+source .logs { in; nonempty }

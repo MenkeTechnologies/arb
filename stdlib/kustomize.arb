@@ -1,0 +1,8 @@
+# kustomize — resource kind/apiVersion dashboard from kustomize build YAML
+#   kustomize build overlays/prod | arb -p kustomize
+bars .kinds
+source .kinds { in; match /^kind:/; field 2; tally }
+bars .apiversions
+source .apiversions { in; match /^apiVersion:/; field 2; tally }
+tail .names
+source .names { in; match /^  name:/; field 2 }

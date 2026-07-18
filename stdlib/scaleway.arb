@@ -1,0 +1,8 @@
+# scaleway — instance server state dashboard from scw list output
+#   scw instance server list | arb -p scaleway
+bars .state
+source .state { in; reject /^ID/; field 4; tally }
+gauge .servers -max 100
+source .servers { in; reject /^ID/; count }
+tail .names
+source .names { in; reject /^ID/; field 2 }

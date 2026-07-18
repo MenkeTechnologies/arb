@@ -1,0 +1,10 @@
+# heroku — router-log dashboard: HTTP status mix, per-dyno traffic, platform error codes
+#   heroku logs -t | arb -p heroku
+bars .status
+source .status { in; match /heroku\[router\]/; extract /status=[0-9]+/; tally }
+bars .dynos
+source .dynos { in; match /heroku\[router\]/; extract /dyno=[a-z]+\.[0-9]+/; tally }
+gauge .requests -max 1000
+source .requests { in; match /heroku\[router\]/; count }
+tail .errors
+source .errors { in; match /at=error|code=[HR][0-9][0-9]/ }

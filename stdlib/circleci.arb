@@ -1,0 +1,8 @@
+# circleci — self-hosted runner fleet dashboard from circleci runner instance list --json
+#   circleci runner instance list <namespace> --json | arb -p circleci
+bars .versions
+source .versions { in.json; field version; tally }
+gauge .runners -max 100
+source .runners { in.json; field resource_class; count }
+tail .classes
+source .classes { in.json; field resource_class }

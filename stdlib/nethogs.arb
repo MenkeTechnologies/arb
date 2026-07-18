@@ -1,0 +1,10 @@
+# nethogs — per-process bandwidth dashboard from tracemode output
+#   nethogs -t | arb -p nethogs
+histo .received
+source .received { in; reject /Refreshing/; field 3; numeric; over 0 }
+bars .procs
+source .procs { in; reject /Refreshing/; field 1; tally }
+gauge .active -max 100
+source .active { in; reject /Refreshing/; field 3; numeric; over 0; count }
+tail .flows
+source .flows { in; reject /Refreshing/; nonempty }

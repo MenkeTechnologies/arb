@@ -1,0 +1,8 @@
+# packer — build dashboard from machine-readable output
+#   packer build -machine-readable . | arb -p packer
+bars .types
+source .types { in.csv; field 3; tally }
+gauge .errors -max 50
+source .errors { in.csv; field 3; contains error; count }
+tail .messages
+source .messages { in.csv; field 4 }

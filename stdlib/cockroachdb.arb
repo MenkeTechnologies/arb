@@ -1,0 +1,10 @@
+# cockroachdb — node liveness/health dashboard from cockroach node status
+#   cockroach node status --format=csv | arb -p cockroachdb
+bars .live
+source .live { in.csv; field is_live; tally }
+gauge .nodes -max 32
+source .nodes { in.csv; field id; count }
+bars .available
+source .available { in.csv; field is_available; tally }
+tail .addresses
+source .addresses { in.csv; field address }

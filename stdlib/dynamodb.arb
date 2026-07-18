@@ -1,0 +1,8 @@
+# dynamodb — item dashboard from a DynamoDB scan/query JSON item stream
+#   aws dynamodb scan --table T --output json | jq -c '.Items[]' | arb -p dynamodb
+bars .status
+source .status { in.json; field status; tally }
+gauge .items -max 1000
+source .items { in.json; count }
+tail .keys
+source .keys { in.json; field id }

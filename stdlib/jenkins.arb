@@ -1,0 +1,8 @@
+# jenkins — CI job status dashboard from Jenkins REST API job JSON
+#   curl -s .../api/json?tree=jobs[name,color] | jq -c '.jobs[]' | arb -p jenkins
+bars .status
+source .status { in.json; field color; tally }
+gauge .jobs -max 500
+source .jobs { in.json; field name; count }
+tail .names
+source .names { in.json; field name }

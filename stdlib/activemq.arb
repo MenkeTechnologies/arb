@@ -1,0 +1,10 @@
+# activemq — broker queue depth/throughput dashboard from activemq dstat queues
+#   activemq dstat queues | arb -p activemq
+bars .depths
+source .depths { in; reject /^Name/; reject /^Connecting/; field 2; tally }
+gauge .maxdepth -max 1000
+source .maxdepth { in; reject /^Name/; reject /^Connecting/; field 2; numeric; max }
+histo .enqueued
+source .enqueued { in; reject /^Name/; reject /^Connecting/; field 5; tally }
+tail .queues
+source .queues { in; reject /^Name/; reject /^Connecting/; field 1 }

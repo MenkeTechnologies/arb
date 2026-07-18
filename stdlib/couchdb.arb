@@ -1,0 +1,8 @@
+# couchdb — log-level, error count, and request dashboard from CouchDB logs
+#   tail -f couch.log | arb -p couchdb
+bars .levels
+source .levels { in; field 1; tally }
+gauge .errors -max 100
+source .errors { in; match /\[error\]/; count }
+tail .requests
+source .requests { in; match /GET|PUT|POST|DELETE/ }

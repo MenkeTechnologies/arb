@@ -1,0 +1,10 @@
+# nmap — port/state/service dashboard from a standard nmap scan
+#   nmap -p- host | arb -p nmap
+bars .states
+source .states { in; match /\/(tcp|udp)/; field 2; tally }
+bars .services
+source .services { in; match /\/(tcp|udp)/; field 3; tally }
+gauge .open -max 100
+source .open { in; match /\bopen\b/; count }
+tail .ports
+source .ports { in; match /\/(tcp|udp)/ }

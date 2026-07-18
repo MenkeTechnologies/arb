@@ -1,0 +1,8 @@
+# arangodb — server-log dashboard: log-level mix, error count, live log tail
+#   arangod --log.file - 2>&1 | arb -p arangodb
+bars .levels
+source .levels { in; nonempty; field 3; tally }
+gauge .errors -max 100
+source .errors { in; match /ERROR/; count }
+tail .log
+source .log { in; nonempty }

@@ -1,0 +1,10 @@
+# timescaledb — hypertable chunk & compression dashboard from timescaledb_information.chunks
+#   psql --csv -c "SELECT hypertable_name, is_compressed, chunk_name FROM timescaledb_information.chunks" | arb -p timescaledb
+bars .hypertables
+source .hypertables { in.csv; field hypertable_name; tally }
+bars .compression
+source .compression { in.csv; field is_compressed; tally }
+gauge .chunks -max 1000
+source .chunks { in.csv; field chunk_name; count }
+tail .recent
+source .recent { in.csv; field chunk_name }

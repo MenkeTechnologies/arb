@@ -1,0 +1,8 @@
+# beanstalkd — work-queue depth dashboard from the `stats` YAML dump
+#   echo stats | nc localhost 11300 | arb -p beanstalkd
+bars .states
+source .states { in; match /^current-jobs-/; reject /: 0$/; field 1; tally }
+gauge .ready -max 1000
+source .ready { in.yaml; field current-jobs-ready }
+tail .stats
+source .stats { in; match /^current-jobs-/ }

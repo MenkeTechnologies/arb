@@ -1,0 +1,10 @@
+# linode — instance status/region dashboard from linode-cli text output
+#   linode linodes list --text | arb -p linode
+bars .status
+source .status { in; reject /^id/; field 6; tally }
+bars .regions
+source .regions { in; reject /^id/; field 3; tally }
+gauge .total -max 100
+source .total { in; reject /^id/; count }
+tail .instances
+source .instances { in; reject /^id/; field 2 }

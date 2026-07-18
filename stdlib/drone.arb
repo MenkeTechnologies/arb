@@ -1,0 +1,8 @@
+# drone — Drone CI build dashboard from drone build ls output
+#   drone build ls <repo> | arb -p drone
+bars .status
+source .status { in; match /Status:/; field 2; tally }
+gauge .builds -max 100
+source .builds { in; match /^BUILD/; count }
+tail .events
+source .events { in; match /Event:/; field 2 }

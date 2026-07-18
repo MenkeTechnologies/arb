@@ -1,0 +1,10 @@
+# vnstat — live rx/tx network rate dashboard from traffic sampling
+#   vnstat -tr | arb -p vnstat
+spark .rx
+source .rx { in; match /rx/; field 2; numeric }
+gauge .peak -max 1000000
+source .peak { in; match /rx/; field 2; numeric; max }
+gauge .tx -max 1000000
+source .tx { in; match /tx/; field 2; numeric; max }
+tail .traffic
+source .traffic { in; match /packets/ }

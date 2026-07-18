@@ -1,0 +1,10 @@
+# zipkin — span dashboard from Zipkin JSON spans (name, kind, duration)
+#   curl -s localhost:9411/api/v2/trace/<id> | jq -c '.[]' | arb -p zipkin
+bars .spans
+source .spans { in.json; field name; tally }
+bars .kinds
+source .kinds { in.json; field kind; nonempty; tally }
+gauge .slowest -max 1000000
+source .slowest { in.json; field duration; numeric; max }
+tail .traces
+source .traces { in.json; field name }

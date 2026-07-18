@@ -1,0 +1,8 @@
+# cassandra — cluster node status dashboard from nodetool status
+#   nodetool status | arb -p cassandra
+bars .status
+source .status { in; match /^[UD][NLJM]/; field 1; tally }
+gauge .up -max 100
+source .up { in; match /^UN/; count }
+tail .nodes
+source .nodes { in; match /^[UD][NLJM]/; field 2 }

@@ -1,0 +1,8 @@
+# netdata — realtime health-alarm dashboard from the alarms JSON stream
+#   curl -s localhost:19999/api/v1/alarms?all | arb -p netdata
+bars .status
+source .status { in.json; field status; tally }
+gauge .critical -max 50
+source .critical { in.json; field status; match /CRITICAL/; count }
+tail .alarms
+source .alarms { in.json; field name }

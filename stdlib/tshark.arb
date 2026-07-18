@@ -1,0 +1,10 @@
+# tshark — protocol mix and top talkers from default packet output
+#   tshark -r cap.pcap | arb -p tshark
+bars .protocols
+source .protocols { in; nonempty; field 6; tally }
+bars .talkers
+source .talkers { in; nonempty; field 3; tally }
+gauge .packets -max 100000
+source .packets { in; nonempty; count }
+tail .packets_raw
+source .packets_raw { in; nonempty }

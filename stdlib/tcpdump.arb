@@ -1,0 +1,8 @@
+# tcpdump — live packet dashboard (protocol mix, packet rate, raw capture)
+#   tcpdump -nn -l | arb -p tcpdump
+bars .proto
+source .proto { in; nonempty; field 2; tally }
+gauge .packets -max 10000
+source .packets { in; nonempty; count }
+tail .capture
+source .capture { in; nonempty }

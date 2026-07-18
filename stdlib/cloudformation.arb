@@ -1,0 +1,10 @@
+# cloudformation — stack status dashboard from list-stacks output
+#   aws cloudformation list-stacks --query 'StackSummaries[].[StackStatus,StackName]' --output text | arb -p cloudformation
+bars .status
+source .status { in; field 1; tally }
+gauge .total -max 200
+source .total { in; nonempty; count }
+list .failed
+source .failed { in; match /FAILED|ROLLBACK/; field 2 }
+tail .stacks
+source .stacks { in; field 2 }

@@ -1,0 +1,8 @@
+# vultr — instance status/region dashboard from vultr-cli instance list
+#   vultr-cli instance list | arb -p vultr
+bars .status
+source .status { in; reject /^ID/; nonempty; field 5; tally }
+gauge .count -max 100
+source .count { in; reject /^ID/; nonempty; count }
+tail .instances
+source .instances { in; reject /^ID/; nonempty; field 3 }

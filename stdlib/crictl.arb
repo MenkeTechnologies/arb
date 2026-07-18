@@ -1,0 +1,8 @@
+# crictl — CRI container state dashboard from crictl ps
+#   crictl ps -a | arb -p crictl
+bars .state
+source .state { in; reject /^CONTAINER/; extract /Running|Exited|Created|Unknown/; tally }
+gauge .running -max 100
+source .running { in; match /Running/; count }
+tail .containers
+source .containers { in; reject /^CONTAINER/; nonempty }

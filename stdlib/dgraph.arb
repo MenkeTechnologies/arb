@@ -1,0 +1,8 @@
+# dgraph — server-log dashboard (glog severity tally + error count) from Dgraph Alpha/Zero logs
+#   dgraph alpha 2>&1 | arb -p dgraph
+bars .levels
+source .levels { in; extract /^[IWEF]/; tally }
+gauge .errors -max 100
+source .errors { in; match /^[EF]/; count }
+tail .log
+source .log { in; nonempty }

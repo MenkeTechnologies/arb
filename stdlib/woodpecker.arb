@@ -1,0 +1,10 @@
+# woodpecker — pipeline status/branch dashboard from woodpecker pipeline list output
+#   woodpecker pipeline ls owner/repo | arb -p woodpecker
+bars .status
+source .status { in; reject /^NUMBER/; nonempty; field 2; tally }
+bars .branch
+source .branch { in; reject /^NUMBER/; nonempty; field 4; tally }
+gauge .total -max 100
+source .total { in; reject /^NUMBER/; nonempty; count }
+tail .pipelines
+source .pipelines { in; reject /^NUMBER/; nonempty }

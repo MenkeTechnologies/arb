@@ -1,0 +1,8 @@
+# caddy — HTTP status/latency/level dashboard from Caddy JSON access logs
+#   tail -f access.json | arb -p caddy
+bars .status
+source .status { in.json; field status; tally }
+spark .latency
+source .latency { in.json; field duration }
+tail .levels
+source .levels { in.json; field level }

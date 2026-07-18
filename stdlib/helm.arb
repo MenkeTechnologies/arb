@@ -1,0 +1,8 @@
+# helm — release status dashboard from helm list JSON
+#   helm list -A -o json | arb -p helm
+bars .status
+source .status { in.json; field status; tally }
+gauge .releases -max 100
+source .releases { in.json; field name; count }
+tail .names
+source .names { in.json; field name }

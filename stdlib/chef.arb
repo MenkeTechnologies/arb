@@ -1,0 +1,8 @@
+# chef — chef-client run resource-action dashboard from converge output
+#   chef-client | arb -p chef
+bars .actions
+source .actions { in; match /action/; field 4; tally }
+gauge .resources -max 200
+source .resources { in; match /action/; count }
+tail .converged
+source .converged { in; match /^\s*\*/; field 2 }

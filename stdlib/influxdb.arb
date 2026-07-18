@@ -1,0 +1,10 @@
+# influxdb — Flux query dashboard from influx annotated-CSV output
+#   influx query --raw 'from(bucket:"x")|>range(start:-1h)' | arb -p influxdb
+bars .measurements
+source .measurements { in.csv; field _measurement; nonempty; tally }
+bars .fields
+source .fields { in.csv; field _field; nonempty; tally }
+gauge .rows -max 1000
+source .rows { in.csv; field _value; numeric; count }
+tail .values
+source .values { in.csv; field _value; nonempty }

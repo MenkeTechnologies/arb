@@ -1,0 +1,10 @@
+# clickhouse — query_log dashboard from clickhouse-client TSV output
+#   clickhouse-client -q "SELECT type, query_duration_ms, query FROM system.query_log" | arb -p clickhouse
+bars .type
+source .type { in.tsv; field 1; tally }
+histo .duration
+source .duration { in.tsv; field 2; numeric }
+gauge .events -max 1000
+source .events { in.tsv; field 1; count }
+tail .queries
+source .queries { in.tsv; field 3; nonempty }

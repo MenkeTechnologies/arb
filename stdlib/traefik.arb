@@ -1,0 +1,10 @@
+# traefik — reverse-proxy dashboard from Traefik JSON access logs
+#   tail -f access.log | arb -p traefik
+bars .status
+source .status { in.json; field DownstreamStatus; tally }
+bars .services
+source .services { in.json; field ServiceName; tally }
+tail .requests
+source .requests { in.json; field RequestPath }
+gauge .errors -max 100
+source .errors { in.json; field DownstreamStatus; over 499; count }

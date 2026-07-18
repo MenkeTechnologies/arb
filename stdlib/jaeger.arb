@@ -1,0 +1,10 @@
+# jaeger — span dashboard from Jaeger JSON trace output
+#   jaeger query --json | arb -p jaeger
+bars .operations
+source .operations { in.json; field operationName; tally }
+histo .latency
+source .latency { in.json; field duration; numeric }
+gauge .spans -max 1000
+source .spans { in.json; field spanID; count }
+tail .trace
+source .trace { in.json; field operationName; nonempty }

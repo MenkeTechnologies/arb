@@ -1,0 +1,10 @@
+# podman — rootless container status/image dashboard from podman ps
+#   podman ps | arb -p podman
+bars .status
+source .status { in; reject /^CONTAINER/; field 5; tally }
+bars .images
+source .images { in; reject /^CONTAINER/; field 2; tally }
+gauge .count -max 100
+source .count { in; reject /^CONTAINER/; count }
+tail .containers
+source .containers { in; reject /^CONTAINER/; field 2 }

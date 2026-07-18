@@ -1,0 +1,10 @@
+# collectd — live metric dashboard from collectd PUTVAL plaintext protocol
+#   collectd -T | arb -p collectd
+bars .metrics
+source .metrics { in; match /^PUTVAL/; field 2; tally }
+spark .values
+source .values { in; match /^PUTVAL/; field 3; cut : 2; numeric }
+gauge .samples -max 1000
+source .samples { in; match /^PUTVAL/; count }
+tail .stream
+source .stream { in; match /^PUTVAL/ }

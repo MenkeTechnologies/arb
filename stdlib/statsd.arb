@@ -1,0 +1,8 @@
+# statsd — metric-type and top-metric tally plus live stream from the statsd line protocol
+#   nc -lku 8125 | arb -p statsd
+bars .types
+source .types { in; contains |; cut | 2; cut : 1; tally }
+bars .metrics
+source .metrics { in; contains :; cut : 1; tally }
+tail .stream
+source .stream { in; contains | }

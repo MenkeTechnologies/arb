@@ -1,0 +1,8 @@
+# puppet — severity/change dashboard from a puppet agent run
+#   puppet agent -t | arb -p puppet
+bars .levels
+source .levels { in; nonempty; field 1; tally }
+gauge .errors -max 50
+source .errors { in; match /^Error:/; count }
+tail .changes
+source .changes { in; match /Notice:/; contains Stage }

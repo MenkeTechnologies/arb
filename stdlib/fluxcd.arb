@@ -1,0 +1,8 @@
+# fluxcd — reconciliation health from flux get output (ready/suspended tally, resource count, messages)
+#   flux get kustomizations -A | arb -p fluxcd
+bars .ready
+source .ready { in; reject /^NAME/; field 4; tally }
+gauge .total -max 100
+source .total { in; reject /^NAME/; nonempty; count }
+tail .messages
+source .messages { in; reject /^NAME/; field 5 }

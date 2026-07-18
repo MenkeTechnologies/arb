@@ -1,0 +1,8 @@
+# netstat — TCP/UDP connection dashboard from netstat -an
+#   netstat -an | arb -p netstat
+bars .states
+source .states { in; match /^(tcp|udp)/; field 6; tally }
+bars .proto
+source .proto { in; match /^(tcp|udp)/; field 1; tally }
+tail .conns
+source .conns { in; match /^(tcp|udp)/ }

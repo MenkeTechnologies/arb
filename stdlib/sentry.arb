@@ -1,0 +1,8 @@
+# sentry — error/event dashboard from sentry-cli event listings
+#   sentry-cli events list | arb -p sentry
+bars .levels
+source .levels { in; reject /^ID/; field 2; lower; tally }
+gauge .events -max 500
+source .events { in; reject /^ID/; count }
+tail .messages
+source .messages { in; reject /^ID/; pick 3… }

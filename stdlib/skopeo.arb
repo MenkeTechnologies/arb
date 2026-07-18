@@ -1,0 +1,8 @@
+# skopeo — copy progress dashboard from live skopeo copy output
+#   skopeo copy docker://src docker://dst | arb -p skopeo
+bars .ops
+source .ops { in; nonempty; field 1; tally }
+gauge .blobs -max 100
+source .blobs { in; match /Copying blob/; count }
+tail .log
+source .log { in; nonempty }

@@ -1,0 +1,10 @@
+# buildkite — build/job state dashboard from Buildkite builds JSON
+#   buildkite-agent api builds | arb -p buildkite
+bars .state
+source .state { in.json; field state; tally }
+bars .branches
+source .branches { in.json; field branch; tally }
+gauge .failed -max 100
+source .failed { in.json; field state; match /failed/; count }
+tail .builds
+source .builds { in.json; field message }

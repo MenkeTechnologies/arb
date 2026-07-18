@@ -1,0 +1,8 @@
+# mtr — per-hop latency and packet-loss dashboard from an mtr report
+#   mtr -r target | arb -p mtr
+spark .latency
+source .latency { in; reject /Loss%/; field 6; numeric }
+gauge .maxloss -max 100
+source .maxloss { in; reject /Loss%/; field 3; cut % 1; max }
+tail .hops
+source .hops { in; reject /Loss%/; field 2 }

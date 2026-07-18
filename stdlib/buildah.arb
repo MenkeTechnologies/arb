@@ -1,0 +1,8 @@
+# buildah — OCI image inventory dashboard from buildah images output
+#   buildah images | arb -p buildah
+bars .repos
+source .repos { in; reject /^REPOSITORY/; field 1; tally }
+gauge .count -max 100
+source .count { in; reject /^REPOSITORY/; count }
+tail .tags
+source .tags { in; reject /^REPOSITORY/; field 2 }

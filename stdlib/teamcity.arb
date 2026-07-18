@@ -1,0 +1,8 @@
+# teamcity — build status/state dashboard from TeamCity REST builds JSON
+#   curl -s "$TC/app/rest/builds" -H 'Accept: application/json' | jq -c '.build[]' | arb -p teamcity
+bars .status
+source .status { in.json; field status; tally }
+bars .state
+source .state { in.json; field state; tally }
+tail .builds
+source .builds { in.json; field buildTypeId }

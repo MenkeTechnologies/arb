@@ -1,0 +1,10 @@
+# opensearch — cluster index health dashboard from _cat/indices output
+#   curl -s localhost:9200/_cat/indices?v | arb -p opensearch
+bars .health
+source .health { in; reject /^health/; field 1; tally }
+bars .status
+source .status { in; reject /^health/; field 2; tally }
+gauge .indices -max 500
+source .indices { in; reject /^health/; count }
+tail .names
+source .names { in; reject /^health/; field 3 }

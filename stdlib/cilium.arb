@@ -1,0 +1,8 @@
+# cilium — endpoint policy/status dashboard from cilium endpoint list
+#   cilium endpoint list | arb -p cilium
+bars .ingress
+source .ingress { in; reject /^ENDPOINT/; field 2; tally }
+gauge .endpoints -max 100
+source .endpoints { in; reject /^ENDPOINT/; count }
+tail .list
+source .list { in; reject /^ENDPOINT/ }

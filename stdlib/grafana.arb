@@ -1,0 +1,8 @@
+# grafana — server log dashboard from Grafana JSON structured logs
+#   grafana server | arb -p grafana
+bars .levels
+source .levels { in.json; field level; tally }
+gauge .errors -max 100
+source .errors { in.json; field level; match /error/; count }
+tail .messages
+source .messages { in.json; field msg }

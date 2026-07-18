@@ -1,0 +1,10 @@
+# doctl — droplet fleet dashboard from doctl compute droplet list
+#   doctl compute droplet list | arb -p doctl
+bars .status
+source .status { in; reject /^ID/; field 12; tally }
+bars .regions
+source .regions { in; reject /^ID/; field 9; tally }
+gauge .droplets -max 100
+source .droplets { in; reject /^ID/; count }
+tail .names
+source .names { in; reject /^ID/; field 2 }

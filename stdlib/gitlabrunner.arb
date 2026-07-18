@@ -1,0 +1,8 @@
+# gitlabrunner — CI job dashboard from gitlab-runner JSON structured logs
+#   gitlab-runner run --log-format json | arb -p gitlabrunner
+bars .levels
+source .levels { in.json; field level; tally }
+gauge .received -max 100
+source .received { in.json; field msg; contains received; count }
+tail .jobs
+source .jobs { in.json; field msg }

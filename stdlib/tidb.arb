@@ -1,0 +1,10 @@
+# tidb — cluster component status/role dashboard from tiup cluster display
+#   tiup cluster display mycluster | arb -p tidb
+bars .status
+source .status { in; reject /^ID/; field 6; tally }
+bars .roles
+source .roles { in; reject /^ID/; field 2; tally }
+gauge .nodes -max 100
+source .nodes { in; reject /^ID/; field 1; count }
+tail .hosts
+source .hosts { in; reject /^ID/; field 3 }

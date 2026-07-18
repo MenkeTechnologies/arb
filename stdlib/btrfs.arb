@@ -1,0 +1,8 @@
+# btrfs — subvolume dashboard from btrfs subvolume list
+#   btrfs subvolume list / | arb -p btrfs
+bars .parents
+source .parents { in; field 7; tally }
+gauge .subvols -max 100
+source .subvols { in; count }
+tail .paths
+source .paths { in; field 9 }

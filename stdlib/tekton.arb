@@ -1,0 +1,8 @@
+# tekton — pipelinerun status dashboard from tkn pipelinerun list
+#   tkn pipelinerun list | arb -p tekton
+bars .status
+source .status { in; reject /^NAME/; extract /Succeeded|Failed|Running|Cancelled|Started/; tally }
+gauge .total -max 100
+source .total { in; reject /^NAME/; count }
+tail .runs
+source .runs { in; reject /^NAME/; field 1 }

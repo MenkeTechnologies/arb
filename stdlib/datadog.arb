@@ -1,0 +1,10 @@
+# datadog — agent check status dashboard from datadog-agent status
+#   datadog-agent status | arb -p datadog
+bars .states
+source .states { in; match /Status:/; field 2; tally }
+gauge .ok -max 100
+source .ok { in; match /Status: OK/; count }
+tail .errors
+source .errors { in; match /[Ee]rror/; trim }
+list .checks
+source .checks { in; match /Instance ID:/; field 3 }

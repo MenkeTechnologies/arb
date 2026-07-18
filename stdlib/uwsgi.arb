@@ -1,0 +1,8 @@
+# uwsgi — worker status and request dashboard from JSON stats output
+#   uwsgi --connect-and-read /tmp/stats.sock | arb -p uwsgi
+bars .status
+source .status { in.json; field status; tally }
+gauge .requests -max 100000
+source .requests { in.json; field requests; sum }
+tail .rt
+source .rt { in.json; field avg_rt }

@@ -1,0 +1,8 @@
+# questdb — query-result dashboard from CSV exported via the /exp REST endpoint
+#   curl -G 'http://localhost:9000/exp' --data-urlencode 'query=select * from trades' | arb -p questdb
+bars .symbols
+source .symbols { in.csv; field symbol; tally }
+gauge .rows -max 1000
+source .rows { in.csv; count }
+tail .prices
+source .prices { in.csv; field price }

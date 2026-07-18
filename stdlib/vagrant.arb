@@ -1,0 +1,8 @@
+# vagrant — VM state and provider dashboard from vagrant global-status
+#   vagrant global-status | arb -p vagrant
+bars .state
+source .state { in; reject /^id/; reject /^-/; nonempty; field 4; tally }
+bars .provider
+source .provider { in; reject /^id/; reject /^-/; nonempty; field 3; tally }
+tail .machines
+source .machines { in; reject /^id/; reject /^-/; nonempty; field 5 }

@@ -1,0 +1,8 @@
+# riak — cluster membership dashboard from riak-admin member-status
+#   riak-admin member-status | arb -p riak
+bars .status
+source .status { in; match /^(valid|leaving|exiting|joining|down|invalid)/; field 1; tally }
+gauge .members -max 64
+source .members { in; match /^(valid|leaving|exiting|joining|down|invalid)/; count }
+tail .nodes
+source .nodes { in; match /riak@/; field 4 }

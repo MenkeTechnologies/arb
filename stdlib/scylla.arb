@@ -1,0 +1,8 @@
+# scylla — ScyllaDB cluster node status dashboard from nodetool status
+#   nodetool status | arb -p scylla
+bars .state
+source .state { in; match /^[UD][NLJM]/; field 1; tally }
+gauge .nodes -max 100
+source .nodes { in; match /^[UD][NLJM]/; count }
+tail .addrs
+source .addrs { in; match /^[UD][NLJM]/; field 2 }

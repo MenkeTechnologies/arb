@@ -1,0 +1,8 @@
+# icinga — service check-state dashboard from icingacli monitoring list
+#   icingacli monitoring list | arb -p icinga
+bars .states
+source .states { in; reject /^State/; field 1; tally }
+gauge .critical -max 100
+source .critical { in; match /CRIT/; count }
+tail .problems
+source .problems { in; reject /^State/; reject /^OK/; field 2 }

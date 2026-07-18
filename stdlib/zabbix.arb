@@ -1,0 +1,8 @@
+# zabbix — problem/alert dashboard from exported Zabbix problem JSON
+#   zabbix_get -s host -k problems.json | arb -p zabbix
+bars .severity
+source .severity { in.json; field severity; tally }
+gauge .problems -max 100
+source .problems { in.json; field name; count }
+tail .alerts
+source .alerts { in.json; field name }

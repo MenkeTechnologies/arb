@@ -1,0 +1,10 @@
+# rclone — object-store listing dashboard from rclone ls output
+#   rclone ls remote:bucket | arb -p rclone
+bars .ext
+source .ext { in; field 2; extract /\.[A-Za-z0-9]+$/; tally }
+histo .sizes
+source .sizes { in; field 1; numeric }
+gauge .files -max 1000
+source .files { in; field 1; count }
+tail .paths
+source .paths { in; field 2 }

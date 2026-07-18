@@ -1,0 +1,10 @@
+# mssql — live session/request dashboard from sqlcmd output
+#   sqlcmd -Q "SELECT session_id,status,wait_type FROM sys.dm_exec_requests" | arb -p mssql
+bars .status
+source .status { in; reject /^-/; reject /status/; field 2; tally }
+bars .waits
+source .waits { in; reject /^-/; reject /wait_type/; field 3; nonempty; tally }
+gauge .sessions -max 200
+source .sessions { in; reject /^-/; reject /session_id/; field 1; numeric; count }
+tail .requests
+source .requests { in; reject /^-/; nonempty }

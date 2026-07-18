@@ -1,0 +1,8 @@
+# fly — live dashboard from Fly.io machine logs (level + region tally, raw tail)
+#   fly logs | arb -p fly
+bars .levels
+source .levels { in; field 4; tally }
+bars .regions
+source .regions { in; field 3; tally }
+tail .log
+source .log { in; nonempty }

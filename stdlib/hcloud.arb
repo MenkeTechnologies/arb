@@ -1,0 +1,8 @@
+# hcloud — server status dashboard from hcloud server list
+#   hcloud server list | arb -p hcloud
+bars .status
+source .status { in; reject /^ID/; field 3; tally }
+gauge .servers -max 100
+source .servers { in; reject /^ID/; count }
+tail .names
+source .names { in; reject /^ID/; field 2 }

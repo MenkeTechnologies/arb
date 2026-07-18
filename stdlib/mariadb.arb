@@ -1,0 +1,8 @@
+# mariadb — connection command mix from SHOW PROCESSLIST output
+#   mariadb -e "SHOW PROCESSLIST" | arb -p mariadb
+bars .command
+source .command { in; reject /^Id/; field 5; tally }
+gauge .threads -max 200
+source .threads { in; reject /^Id/; count }
+tail .active
+source .active { in; reject /^Id/; reject /Sleep/ }

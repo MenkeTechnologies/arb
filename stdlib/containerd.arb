@@ -1,0 +1,8 @@
+# containerd — task status dashboard from ctr tasks ls
+#   ctr tasks ls | arb -p containerd
+bars .status
+source .status { in; reject /^TASK/; field 3; tally }
+gauge .tasks -max 100
+source .tasks { in; reject /^TASK/; count }
+tail .running
+source .running { in; reject /^TASK/; match /RUNNING/; field 1 }

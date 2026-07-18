@@ -1,0 +1,10 @@
+# nsq — topic/channel depth + throughput from nsq_stat polling output
+#   nsq_stat --topic=events | arb -p nsq
+spark .depth
+source .depth { in; reject /depth/; field 3; numeric }
+gauge .msgs -max 100000
+source .msgs { in; reject /depth/; field 9; numeric; max }
+bars .channels
+source .channels { in; reject /depth/; field 2; tally }
+tail .stats
+source .stats { in; nonempty }

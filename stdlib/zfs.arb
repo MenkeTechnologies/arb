@@ -1,0 +1,8 @@
+# zfs — dataset dashboard from zfs list (pool tally, count, dataset names)
+#   zfs list | arb -p zfs
+bars .pools
+source .pools { in; reject /^NAME/; field 1; cut / 1; tally }
+gauge .datasets -max 100
+source .datasets { in; reject /^NAME/; count }
+tail .names
+source .names { in; reject /^NAME/; field 1 }

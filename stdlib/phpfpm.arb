@@ -1,0 +1,8 @@
+# phpfpm — worker-state dashboard from a PHP-FPM full status dump
+#   SCRIPT_NAME=/status cgi-fcgi -bind -connect 127.0.0.1:9000 | arb -p phpfpm
+bars .state
+source .state { in; match /^state:/; cut : 2; trim; tally }
+gauge .slow -max 100
+source .slow { in; match /^slow requests:/; cut : 2; trim; max }
+tail .requests
+source .requests { in; match /^request URI:/; cut : 2; trim }

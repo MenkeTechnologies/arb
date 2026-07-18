@@ -1,0 +1,8 @@
+# smartctl — SMART attribute health dashboard from smartctl -A output
+#   smartctl -A /dev/sda | arb -p smartctl
+bars .types
+source .types { in; match /Pre-fail|Old_age/; field 7; tally }
+gauge .failing -max 30
+source .failing { in; match /Pre-fail|Old_age/; field 9; reject /-/; count }
+tail .attributes
+source .attributes { in; match /Pre-fail|Old_age/; field 2 }

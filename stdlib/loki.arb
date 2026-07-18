@@ -1,0 +1,8 @@
+# loki — log-level dashboard from logcli query output
+#   logcli query '{job="app"}' --tail | arb -p loki
+bars .levels
+source .levels { in; extract /level=(\w+)/; lower; tally }
+gauge .lines -max 1000
+source .lines { in; nonempty; count }
+tail .problems
+source .problems { in; match /level=(error|warn)/ }

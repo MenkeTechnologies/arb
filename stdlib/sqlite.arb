@@ -1,0 +1,8 @@
+# sqlite — query-result dashboard from pipe-separated sqlite3 output
+#   sqlite3 app.db 'SELECT level,msg FROM logs' | arb -p sqlite
+bars .levels
+source .levels { in; nonempty; cut | 1; tally }
+gauge .rows -max 1000
+source .rows { in; nonempty; count }
+tail .out
+source .out { in; nonempty }

@@ -1,0 +1,8 @@
+# cdk — CloudFormation resource-status dashboard from cdk deploy output
+#   cdk deploy | arb -p cdk
+bars .status
+source .status { in; contains |; cut | 4; trim; tally }
+gauge .events -max 100
+source .events { in; contains |; count }
+tail .resources
+source .resources { in; contains |; cut | 6; trim; nonempty }

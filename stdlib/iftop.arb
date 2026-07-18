@@ -1,0 +1,10 @@
+# iftop — bandwidth-by-host dashboard from iftop text-mode output
+#   iftop -t -s 5 | arb -p iftop
+bars .hosts
+source .hosts { in; match /=>|<=/; field 2; tally }
+bars .direction
+source .direction { in; match /=>|<=/; field 3; tally }
+gauge .flows -max 100
+source .flows { in; match /=>|<=/; count }
+tail .traffic
+source .traffic { in; match /=>|<=/ }

@@ -1,0 +1,8 @@
+# neo4j — node-label distribution from cypher-shell CSV query results
+#   cypher-shell --format plain "MATCH (n) RETURN labels(n)[0] AS label, n.name AS name" | arb -p neo4j
+bars .labels
+source .labels { in.csv; field label; tally }
+gauge .nodes -max 1000
+source .nodes { in.csv; field label; count }
+tail .rows
+source .rows { in.csv; field name }

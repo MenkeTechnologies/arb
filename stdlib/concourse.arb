@@ -1,0 +1,8 @@
+# concourse — CI build status dashboard from fly builds output
+#   fly -t main builds | arb -p concourse
+bars .status
+source .status { in; reject /^id/; field 4; tally }
+gauge .builds -max 200
+source .builds { in; reject /^id/; count }
+tail .recent
+source .recent { in; reject /^id/; field 2 }

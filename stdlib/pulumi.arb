@@ -1,0 +1,8 @@
+# pulumi — resource operation dashboard from pulumi preview output
+#   pulumi preview | arb -p pulumi
+bars .ops
+source .ops { in; match /(create|update|delete|replace)/; extract /(create|update|delete|replace)/; tally }
+gauge .changes -max 100
+source .changes { in; match /(create|update|delete|replace)/; count }
+tail .resources
+source .resources { in; match /(create|update|delete|replace|same)/ }

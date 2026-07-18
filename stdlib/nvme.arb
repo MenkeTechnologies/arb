@@ -1,0 +1,10 @@
+# nvme — NVMe device inventory dashboard from `nvme list`
+#   nvme list | arb -p nvme
+bars .models
+source .models { in; reject /^Node/; reject /^-+/; field 3; tally }
+gauge .devices -max 32
+source .devices { in; match /^\/dev\//; field 1; count }
+tail .nodes
+source .nodes { in; match /^\/dev\//; field 1 }
+list .firmware
+source .firmware { in; reject /^Node/; reject /^-+/; field 3 }

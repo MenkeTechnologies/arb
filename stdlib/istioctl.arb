@@ -1,0 +1,8 @@
+# istioctl — proxy sync-status dashboard from istioctl proxy-status
+#   istioctl proxy-status | arb -p istioctl
+bars .cds
+source .cds { in; reject /^NAME/; field 3; tally }
+gauge .proxies -max 100
+source .proxies { in; reject /^NAME/; count }
+tail .proxies
+source .proxies { in; reject /^NAME/; field 1 }

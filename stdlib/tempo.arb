@@ -1,0 +1,8 @@
+# tempo — trace-backend log dashboard (level tally + error count) from JSON logs
+#   tempo 2>&1 | arb -p tempo
+bars .levels
+source .levels { in.json; field level; tally }
+gauge .errors -max 100
+source .errors { in.json; field level; match /error/; count }
+tail .messages
+source .messages { in.json; field msg }

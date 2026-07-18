@@ -1,0 +1,8 @@
+# kubectx — Kubernetes context inventory dashboard from kubectx output
+#   kubectx | arb -p kubectx
+gauge .total -max 50
+source .total { in; nonempty; count }
+bars .prefixes
+source .prefixes { in; nonempty; field 1; split - ; first; tally }
+list .contexts
+source .contexts { in; nonempty }

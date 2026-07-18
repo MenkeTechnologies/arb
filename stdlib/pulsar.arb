@@ -1,0 +1,10 @@
+# pulsar — live event dashboard from JSON messages consumed off a Pulsar topic
+#   pulsar-client consume -n 0 -s sub my-topic | arb -p pulsar
+bars .status
+source .status { in.json; field status; tally }
+spark .latency
+source .latency { in.json; field latency; numeric }
+gauge .errors -max 100
+source .errors { in.json; field level; match /ERROR/; count }
+tail .events
+source .events { in.json; field event }

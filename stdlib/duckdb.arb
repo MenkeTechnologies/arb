@@ -1,0 +1,8 @@
+# duckdb — query-result dashboard from duckdb CSV output
+#   duckdb -csv -c "SELECT ..." | arb -p duckdb
+bars .categories
+source .categories { in.csv; drop 1; field 1; tally }
+gauge .rows -max 1000
+source .rows { in.csv; drop 1; count }
+tail .data
+source .data { in.csv; drop 1 }

@@ -1,0 +1,10 @@
+# linkerd — mesh success-rate & RPS dashboard from linkerd viz stat
+#   linkerd viz stat deploy | arb -p linkerd
+bars .success
+source .success { in; reject /^NAME/; nonempty; field 3; tally }
+spark .rps
+source .rps { in; reject /^NAME/; field 4; numeric }
+gauge .meshed -max 100
+source .meshed { in; reject /^NAME/; nonempty; field 1; count }
+tail .workloads
+source .workloads { in; reject /^NAME/; nonempty }

@@ -1,0 +1,8 @@
+# victoriametrics — TSDB self-metrics dashboard from the /metrics exposition endpoint
+#   curl -s http://localhost:8428/metrics | arb -p victoriametrics
+gauge .series -max 5000
+source .series { in; reject /^#/; nonempty; count }
+bars .metrics
+source .metrics { in; reject /^#/; field 1; extract /^[a-zA-Z_:]+/; tally }
+tail .samples
+source .samples { in; reject /^#/; nonempty }

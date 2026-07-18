@@ -1,0 +1,8 @@
+# telegraf — InfluxDB line-protocol dashboard from telegraf --test
+#   telegraf --test | arb -p telegraf
+bars .measurements
+source .measurements { in; nonempty; field 1; cut , 1; tally }
+gauge .points -max 500
+source .points { in; nonempty; count }
+tail .metrics
+source .metrics { in; nonempty }

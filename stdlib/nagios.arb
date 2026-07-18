@@ -1,0 +1,8 @@
+# nagios — service-state dashboard (OK/WARNING/CRITICAL/UNKNOWN) from Nagios status output
+#   nagios status.dat | arb -p nagios
+bars .states
+source .states { in; reject /^host/; field 3; tally }
+gauge .critical -max 100
+source .critical { in; match /CRITICAL/; count }
+tail .problems
+source .problems { in; reject /OK/ }

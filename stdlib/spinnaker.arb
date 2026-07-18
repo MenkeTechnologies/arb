@@ -1,0 +1,8 @@
+# spinnaker — pipeline execution status dashboard from spin CLI execution JSON
+#   spin pipeline execution list --application foo | arb -p spinnaker
+bars .status
+source .status { in.json; field status; tally }
+gauge .running -max 100
+source .running { in.json; field status; match /RUNNING/; count }
+tail .pipelines
+source .pipelines { in.json; field name }
