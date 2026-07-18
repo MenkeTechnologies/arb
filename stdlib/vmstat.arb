@@ -1,0 +1,8 @@
+# vmstat — CPU idle %, free memory, and run-queue length distribution
+#   vmstat 1 | arb -p vmstat
+gauge .idle -max 100
+source .idle { in; reject /[a-z]/; field 15; avg }
+gauge .free -max 16000000
+source .free { in; reject /[a-z]/; field 4; max }
+bars .runq
+source .runq { in; reject /[a-z]/; field 1; tally }

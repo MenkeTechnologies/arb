@@ -1,0 +1,10 @@
+# terraform — plan change types, resource providers, and apply durations
+#   terraform plan -json | arb -p terraform
+bars .change
+source .change { in.json; field change; tally }
+bars .provider
+source .provider { in.json; field provider_name; tally }
+gauge .applied -max 100
+source .applied { in.json; match /apply_complete/; count }
+tail .msg
+source .msg { in.json; field @message }

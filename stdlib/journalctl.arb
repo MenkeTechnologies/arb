@@ -1,0 +1,8 @@
+# journalctl — syslog priority levels, top units, and error count
+#   journalctl -o json -f | arb -p journalctl
+bars .priority
+source .priority { in.json; field PRIORITY; tally }
+bars .units
+source .units { in.json; field _SYSTEMD_UNIT; tally }
+gauge .errors -max 500
+source .errors { in.json; where PRIORITY < 4; count }

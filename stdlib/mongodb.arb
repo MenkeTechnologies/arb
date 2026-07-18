@@ -1,0 +1,10 @@
+# mongodb — mongod JSON log: severity mix, components, and slow-op messages
+#   tail -f /var/log/mongodb/mongod.log | arb -p mongodb
+bars .sev
+source .sev { in.json; field s; tally }
+bars .comp
+source .comp { in.json; field c; tally }
+gauge .lines -max 10000
+source .lines { in.json; count }
+tail .msg
+source .msg { in.json; field msg }

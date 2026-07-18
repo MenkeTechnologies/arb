@@ -1,0 +1,8 @@
+# ps — process snapshot: process count, owners, total CPU load
+#   ps aux | arb -p ps
+gauge .procs -max 500
+source .procs { in; count }
+bars .user
+source .user { in; field 1; tally }
+gauge .cpu -max 100
+source .cpu { in; field 3; sum }

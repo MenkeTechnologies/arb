@@ -1,0 +1,10 @@
+# curl — HTTP status distribution, avg transfer time, live request log
+#   curl -sw 'code=%{http_code} time=%{time_total} size=%{size_download}\n' -o /dev/null $URLS | arb -p curl
+bars .codes
+source .codes { in.logfmt; field code; tally }
+gauge .avgtime -max 5
+source .avgtime { in.logfmt; field time; avg }
+gauge .maxsize -max 1000000
+source .maxsize { in.logfmt; field size; max }
+tail .log
+source .log { in }

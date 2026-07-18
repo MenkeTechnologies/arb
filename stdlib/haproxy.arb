@@ -1,0 +1,10 @@
+# haproxy — JSON access log: status codes, backend latency, live requests
+#   tail -f /var/log/haproxy.json | arb -p haproxy
+bars .status
+source .status { in.json; field status; tally }
+bars .backend
+source .backend { in.json; field backend_name; tally }
+gauge .slow -max 50
+source .slow { in.json; where Tt > 1000; count }
+tail .log
+source .log { in.json; field http_request }

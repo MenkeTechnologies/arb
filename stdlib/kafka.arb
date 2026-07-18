@@ -1,0 +1,8 @@
+# kafka — consumer-group lag: per-topic message counts, peak lag, raw rows
+#   kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group app | arb -p kafka
+bars .topics
+source .topics { in; reject /^GROUP/; field 2; tally }
+gauge .maxlag -max 100000
+source .maxlag { in; reject /^GROUP/; field 6; max }
+tail .rows
+source .rows { in; reject /^GROUP/ }

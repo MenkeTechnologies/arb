@@ -1,0 +1,8 @@
+# dig — record types and TTLs from dig answer-section output
+#   dig example.com ANY | arb -p dig
+bars .types
+source .types { in; match /IN/; field 4; tally }
+gauge .maxttl -max 86400
+source .maxttl { in; match /IN/; field 2; max }
+tail .answers
+source .answers { in; match /IN/ }

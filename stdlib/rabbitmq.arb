@@ -1,0 +1,10 @@
+# rabbitmq — queue depths, consumer totals, and per-queue state from rabbitmqctl
+#   rabbitmqctl list_queues name messages consumers state | arb -p rabbitmq
+bars .states
+source .states { in; field 4; tally }
+gauge .backlog -max 100000
+source .backlog { in; field 2; sum }
+gauge .consumers -max 500
+source .consumers { in; field 3; sum }
+tail .queues
+source .queues { in }

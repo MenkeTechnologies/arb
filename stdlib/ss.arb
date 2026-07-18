@@ -1,0 +1,8 @@
+# ss — TCP socket connection states and recv-queue backlog
+#   ss -tan | arb -p ss
+bars .states
+source .states { in; reject /State/; field 1; tally }
+gauge .backlog -max 500
+source .backlog { in; reject /State/; field 2; sum }
+tail .conns
+source .conns { in; match /ESTAB/ }

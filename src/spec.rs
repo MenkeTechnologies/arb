@@ -197,7 +197,9 @@ fn resolve_module(name: &str) -> Result<String, String> {
 /// Names of the bundled stdlib presets.
 pub const STDLIB_NAMES: &[&str] = &[
     "nums", "logs", "http", "json", "table", "top", "docker", "k8s", "nginx", "git", "systemd",
-    "redis",
+    "redis", "postgres", "mysql", "mongodb", "kafka", "prometheus", "elasticsearch", "rabbitmq",
+    "apache", "haproxy", "journalctl", "dmesg", "ps", "htop", "iostat", "vmstat", "ss", "dig",
+    "curl", "gh", "terraform",
 ];
 
 fn bundled_module(name: &str) -> Option<&'static str> {
@@ -214,6 +216,26 @@ fn bundled_module(name: &str) -> Option<&'static str> {
         "git" => include_str!("../stdlib/git.arb"),
         "systemd" => include_str!("../stdlib/systemd.arb"),
         "redis" => include_str!("../stdlib/redis.arb"),
+        "postgres" => include_str!("../stdlib/postgres.arb"),
+        "mysql" => include_str!("../stdlib/mysql.arb"),
+        "mongodb" => include_str!("../stdlib/mongodb.arb"),
+        "kafka" => include_str!("../stdlib/kafka.arb"),
+        "prometheus" => include_str!("../stdlib/prometheus.arb"),
+        "elasticsearch" => include_str!("../stdlib/elasticsearch.arb"),
+        "rabbitmq" => include_str!("../stdlib/rabbitmq.arb"),
+        "apache" => include_str!("../stdlib/apache.arb"),
+        "haproxy" => include_str!("../stdlib/haproxy.arb"),
+        "journalctl" => include_str!("../stdlib/journalctl.arb"),
+        "dmesg" => include_str!("../stdlib/dmesg.arb"),
+        "ps" => include_str!("../stdlib/ps.arb"),
+        "htop" => include_str!("../stdlib/htop.arb"),
+        "iostat" => include_str!("../stdlib/iostat.arb"),
+        "vmstat" => include_str!("../stdlib/vmstat.arb"),
+        "ss" => include_str!("../stdlib/ss.arb"),
+        "dig" => include_str!("../stdlib/dig.arb"),
+        "curl" => include_str!("../stdlib/curl.arb"),
+        "gh" => include_str!("../stdlib/gh.arb"),
+        "terraform" => include_str!("../stdlib/terraform.arb"),
         _ => return None,
     })
 }

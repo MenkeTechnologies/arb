@@ -1,0 +1,8 @@
+# postgres — jsonlog severity mix, slowest query duration, live message tail
+#   tail -f /var/log/postgresql/postgresql.json | arb -p postgres
+bars .sev
+source .sev { in.json; field error_severity; tally }
+gauge .slow -max 5000
+source .slow { in.json; field duration_ms; max }
+tail .log
+source .log { in.json; field message }

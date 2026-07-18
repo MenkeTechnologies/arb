@@ -1,0 +1,10 @@
+# dmesg — kernel ring buffer: subsystem activity, error count, live log
+#   dmesg | arb -p dmesg
+bars .subsys
+source .subsys { in; field 2; tally }
+gauge .errors -max 50
+source .errors { in; match /error|fail|warn/; count }
+text .total
+source .total { in; count }
+tail .log
+source .log { in }

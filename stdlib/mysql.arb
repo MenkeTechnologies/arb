@@ -1,0 +1,8 @@
+# mysql — live SHOW PROCESSLIST: command mix, longest query time, running SELECTs
+#   mysql -e 'SHOW PROCESSLIST' | arb -p mysql
+bars .cmd
+source .cmd { in; field 5; tally }
+gauge .slow -max 60
+source .slow { in; field 6; max }
+tail .running
+source .running { in; match /SELECT/ }

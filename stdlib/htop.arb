@@ -1,0 +1,10 @@
+# htop — process state mix, mean CPU load, and busiest processes
+#   htop -C | arb -p htop
+bars .state
+source .state { in; match /^ *[0-9]+ /; field 8; tally }
+gauge .cpu -max 100
+source .cpu { in; match /^ *[0-9]+ /; field 9; avg }
+gauge .mem -max 100
+source .mem { in; match /^ *[0-9]+ /; field 10; max }
+tail .procs
+source .procs { in; match /^ *[0-9]+ /; field 12 }

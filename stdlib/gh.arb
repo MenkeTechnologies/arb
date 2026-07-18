@@ -1,0 +1,8 @@
+# gh — pull-request states, open count, and recent titles
+#   gh pr list --state all --json state,title,additions | arb -p gh
+bars .state
+source .state { in.json; field state; tally }
+gauge .open -max 50
+source .open { in.json; field state; match /OPEN/; count }
+tail .titles
+source .titles { in.json; field title }

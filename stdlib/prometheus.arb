@@ -1,0 +1,8 @@
+# prometheus — exposition metrics: sample counts by name and value range
+#   curl -s localhost:9090/metrics | arb -p prometheus
+bars .names
+source .names { in; reject /^#/; field 1; tally }
+gauge .max -max 1000
+source .max { in; reject /^#/; field 2; max }
+tail .raw
+source .raw { in; reject /^#/ }

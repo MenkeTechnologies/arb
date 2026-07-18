@@ -1,0 +1,10 @@
+# iostat — per-device I/O: tps by device, peak read throughput, raw stream
+#   iostat 1 | arb -p iostat
+bars .dev
+source .dev { in; match /^[a-z]/; field 1; tally }
+gauge .rkbs -max 100000
+source .rkbs { in; match /^[a-z]/; field 3; max }
+gauge .tps -max 500
+source .tps { in; match /^[a-z]/; field 2; max }
+tail .raw
+source .raw { in }

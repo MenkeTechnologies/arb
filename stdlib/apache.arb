@@ -1,0 +1,10 @@
+# apache — access-log status codes, top client IPs, request volume, and live requests
+#   tail -f access.log | arb -p apache
+bars .status
+source .status { in; field 9; tally }
+bars .ips
+source .ips { in; field 1; tally }
+gauge .hits -max 10000
+source .hits { in; count }
+tail .log
+source .log { in }

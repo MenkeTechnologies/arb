@@ -1,0 +1,8 @@
+# elasticsearch — JSON log levels, mean query duration, and live log tail
+#   tail -f /var/log/elasticsearch/es.json | arb -p elasticsearch
+bars .level
+source .level { in.json; field level; tally }
+gauge .took -max 500
+source .took { in.json; field took_millis; avg }
+tail .log
+source .log { in }
