@@ -131,48 +131,67 @@ fn clip(s: &str, width: usize) -> String {
 fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
     if let Ok(mut tty) = OpenOptions::new().read(true).open("/dev/tty") {
         thread::spawn(move || {
-            let mut buf = [0u8; 1];
-            while let Ok(1) = tty.read(&mut buf) {
-                let b = buf[0];
+            // Read several bytes at once so a `\x1b[A/B` arrow escape (which the
+            // terminal delivers as one burst) is parsed as a unit, while a lone
+            // Esc (1 byte) still reads as Esc. Fast typing/paste is handled too.
+            let mut buf = [0u8; 32];
+            'read: loop {
+                let n = match tty.read(&mut buf) {
+                    Ok(n) if n > 0 => n,
+                    _ => break,
+                };
                 let mut c = controls.lock().unwrap();
                 let fzf = c.fzf;
-                match b {
-                    0x03 => {
-                        c.quit = true;
-                        break;
-                    }
-                    // fzf select mode: Enter submits; Ctrl-N/J move down (toward
-                    // newer), Ctrl-P/K move up (toward older).
-                    0x0d if fzf => {
-                        c.submit = true;
-                        break;
-                    }
-                    0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_sub(1),
-                    0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_add(1),
-                    0x09 if fzf => c.toggle = true, // Tab: mark/unmark (multi-select)
-                    0x1b => {
-                        // Esc: fzf mode aborts; otherwise clear the filter (or quit
-                        // when it is already empty).
-                        if fzf || c.filter.is_empty() {
-                            c.quit = true;
-                            break;
+                let mut i = 0;
+                while i < n {
+                    let b = buf[i];
+                    // Arrow keys: ESC [ A (up) / B (down).
+                    if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
+                        match buf[i + 2] {
+                            b'A' if fzf => c.cursor = c.cursor.saturating_sub(1),
+                            b'B' if fzf => c.cursor = c.cursor.saturating_add(1),
+                            _ => {}
                         }
-                        c.filter.clear();
-                        c.cursor = 0;
+                        i += 3;
+                        continue;
                     }
-                    0x08 | 0x7f => {
-                        c.filter.pop();
-                        c.cursor = 0;
+                    match b {
+                        0x03 => {
+                            c.quit = true;
+                            break 'read;
+                        }
+                        // fzf select: Enter submits; Ctrl-N/J = down, Ctrl-P/K = up.
+                        0x0d if fzf => {
+                            c.submit = true;
+                            break 'read;
+                        }
+                        0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_add(1),
+                        0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_sub(1),
+                        0x09 if fzf => c.toggle = true, // Tab: mark/unmark
+                        0x1b => {
+                            // Esc: fzf aborts; else clear the filter (or quit if empty).
+                            if fzf || c.filter.is_empty() {
+                                c.quit = true;
+                                break 'read;
+                            }
+                            c.filter.clear();
+                            c.cursor = 0;
+                        }
+                        0x08 | 0x7f => {
+                            c.filter.pop();
+                            c.cursor = 0;
+                        }
+                        0x15 => {
+                            c.filter.clear();
+                            c.cursor = 0;
+                        }
+                        0x20..=0x7e => {
+                            c.filter.push(b as char);
+                            c.cursor = 0;
+                        }
+                        _ => {}
                     }
-                    0x15 => {
-                        c.filter.clear();
-                        c.cursor = 0;
-                    }
-                    0x20..=0x7e => {
-                        c.filter.push(b as char);
-                        c.cursor = 0;
-                    }
-                    _ => {}
+                    i += 1;
                 }
             }
         });
