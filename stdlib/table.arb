@@ -1,6 +1,4 @@
-# table — column view: first-column breakdown + live rows (whitespace columns).
+# table — columnar view of whitespace-delimited input (ps aux, ls -l, df, …).
 #   ps aux | arb -p table
-bars .col1
-tail .rows
-source .col1 { in; field 1; tally }
+table .rows
 source .rows { in }

@@ -1225,3 +1225,19 @@ fn clamp_bounds_numeric_lines_and_passes_others() {
         other => panic!("got {other:?}"),
     }
 }
+
+#[test]
+fn table_data_splits_cells_and_names_headers() {
+    use arb::query::{table_data, table_ncols};
+    let lines = vec!["alice 100 vim".to_string(), "bob 200 bash".to_string()];
+    let (headers, rows) = table_data(&lines, Some("user, pid, cmd"));
+    assert_eq!(headers, vec!["user", "pid", "cmd"]);
+    assert_eq!(rows, vec![vec!["alice", "100", "vim"], vec!["bob", "200", "bash"]]);
+    assert_eq!(table_ncols(&headers, &rows), 3);
+
+    // No cols header: headers empty, ncols from the widest row.
+    let ragged = vec!["a b c d".to_string(), "x y".to_string()];
+    let (h2, r2) = table_data(&ragged, None);
+    assert!(h2.is_empty());
+    assert_eq!(table_ncols(&h2, &r2), 4);
+}

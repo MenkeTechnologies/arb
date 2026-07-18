@@ -19,7 +19,9 @@ use ratatui::crossterm::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    BarChart, Block, Borders, Cell, Gauge, List, ListItem, ListState, Paragraph, Row, Table,
+};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use rayon::prelude::*;
@@ -1040,8 +1042,45 @@ fn render_widget(
                 .data(&shown[..]);
             f.render_widget(chart, area);
         }
+        WidgetKind::Table => {
+            let src_lines: Vec<String> = match &result {
+                Some(QueryResult::Lines(ls)) => ls.clone(),
+                Some(QueryResult::Pairs(p)) => {
+                    p.iter().map(|(k, v)| format!("{k} {v}")).collect()
+                }
+                _ => lines.to_vec(),
+            };
+            let (headers, rows) =
+                crate::query::table_data(&src_lines, w.opts.get("cols").map(String::as_str));
+            let ncols = crate::query::table_ncols(&headers, &rows);
+            let widths: Vec<Constraint> =
+                (0..ncols).map(|_| Constraint::Ratio(1, ncols as u32)).collect();
+            // Keep the newest rows that fit (leave room for borders + header).
+            let reserve = if headers.is_empty() { 2 } else { 3 };
+            let inner_h = area.height.saturating_sub(reserve) as usize;
+            let skip = rows.len().saturating_sub(inner_h);
+            let body: Vec<Row> = rows
+                .iter()
+                .skip(skip)
+                .map(|r| {
+                    Row::new(
+                        (0..ncols)
+                            .map(|i| Cell::from(r.get(i).cloned().unwrap_or_default()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let mut table = Table::new(body, widths).block(block);
+            if !headers.is_empty() {
+                table = table.header(
+                    Row::new(headers.iter().map(|h| Cell::from(h.clone())).collect::<Vec<_>>())
+                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                );
+            }
+            f.render_widget(table, area);
+        }
         _ => {
-            let msg = format!("{} — not yet rendered (M2b)", w.kind.label());
+            let msg = format!("{} — not yet rendered", w.kind.label());
             f.render_widget(Paragraph::new(msg).block(block), area);
         }
     }

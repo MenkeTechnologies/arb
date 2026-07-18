@@ -248,6 +248,18 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
             let top = w.opts.get("top").and_then(|s| s.parse::<usize>().ok()).unwrap_or(20);
             base(json!({ "pairs": pairs, "top": top }))
         }
+        WidgetKind::Table => {
+            let lines: Vec<String> = match &result {
+                Some(QueryResult::Lines(ls)) => ls.clone(),
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k} {v}")).collect(),
+                _ => raw.to_vec(),
+            };
+            let (headers, rows) =
+                crate::query::table_data(&lines, w.opts.get("cols").map(String::as_str));
+            let n = rows.len();
+            let rows = &rows[n.saturating_sub(200)..]; // cap per poll
+            base(json!({ "headers": headers, "rows": rows }))
+        }
         _ => base(json!({ "text": widget_text(w, raw, elapsed, result) })),
     }
 }
@@ -314,6 +326,9 @@ const WIDGET_CSS: &str = "<style>\n\
 .lab { flex: 0 0 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }\n\
 .track { flex: 1; height: 0.8rem; background: rgba(0,229,255,0.08); border-radius: 2px; overflow: hidden; }\n\
 .fill { height: 100%; background: var(--cyan); }\n\
+.tbl { border-collapse: collapse; width: 100%; font-size: 0.9em; }\n\
+.tbl th, .tbl td { border: 1px solid var(--edge); padding: 2px 6px; text-align: left; white-space: nowrap; }\n\
+.tbl th { color: var(--cyan); position: sticky; top: 0; background: var(--panel); }\n\
 </style>\n";
 
 /// Client poller: fetch `/data` on an interval and render each widget by kind.
@@ -335,6 +350,20 @@ function render(el, it) {\n\
   if (it.kind === 'gauge') {\n\
     const max = it.max || 100, v = it.scalar || 0;\n\
     el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0));\n\
+  } else if (it.rows) {\n\
+    const t = document.createElement('table'); t.className = 'tbl';\n\
+    if (it.headers && it.headers.length) {\n\
+      const tr = document.createElement('tr');\n\
+      it.headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });\n\
+      const thead = document.createElement('thead'); thead.appendChild(tr); t.appendChild(thead);\n\
+    }\n\
+    const tb = document.createElement('tbody');\n\
+    it.rows.forEach(r => {\n\
+      const tr = document.createElement('tr');\n\
+      r.forEach(c => { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); });\n\
+      tb.appendChild(tr);\n\
+    });\n\
+    t.appendChild(tb); el.appendChild(t);\n\
   } else if (it.pairs) {\n\
     const rows = it.pairs.slice(0, it.top || 20);\n\
     const maxv = Math.max(1, ...rows.map(p => p[1]));\n\
@@ -421,6 +450,17 @@ mod tests {
         assert_eq!(pairs[0][1], 3);
         assert_eq!(pairs[1][0], "y");
         assert_eq!(pairs[1][1], 2);
+    }
+
+    #[test]
+    fn data_json_table_carries_headers_and_rows() {
+        let spec =
+            build(&parse("table .t -cols \"a,b\"\nsource .t { in }").unwrap()).unwrap();
+        let st = state_with(&["1 2", "3 4"]);
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        assert_eq!(json[0]["kind"], "table");
+        assert_eq!(json[0]["headers"], serde_json::json!(["a", "b"]));
+        assert_eq!(json[0]["rows"], serde_json::json!([["1", "2"], ["3", "4"]]));
     }
 
     #[test]

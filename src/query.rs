@@ -1036,6 +1036,36 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
 /// True if every op processes each line independently, so the pipeline can be
 /// applied per-line and its results emitted incrementally (streaming). Reducers,
 /// sorts/reorderers, and whole-document ops (`sel`/`csv`/`tsv`) are not.
+/// Split lines into table `(headers, rows)` for the `table` widget. Each line is
+/// split on whitespace into cells; `cols` (a comma-separated list, from `-cols`)
+/// names the header row when present. Renderers pad short rows to the column
+/// count. Shared by the ratatui TUI and the web dashboard so both agree.
+pub fn table_data(lines: &[String], cols: Option<&str>) -> (Vec<String>, Vec<Vec<String>>) {
+    let headers: Vec<String> = cols
+        .map(|c| {
+            c.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = lines
+        .iter()
+        .map(|l| l.split_whitespace().map(str::to_string).collect())
+        .collect();
+    (headers, rows)
+}
+
+/// The number of columns a table needs to hold `headers` and `rows` (at least 1).
+pub fn table_ncols(headers: &[String], rows: &[Vec<String>]) -> usize {
+    rows.iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0)
+        .max(headers.len())
+        .max(1)
+}
+
 pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
     ops.iter().all(|op| {
         matches!(

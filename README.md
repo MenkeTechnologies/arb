@@ -402,8 +402,9 @@ The expression layer — `where PRED` (filter), `map EXPR` (per-line transform),
 field-aware references, compound predicates via `and`/`or`/`not`, and set/range
 membership `in [a, b, c]` / `in lo..hi` (`where ms > 1000 and status in [500,
 502, 503]`, `where code in 500..599`, `map bytes / 1024`, `where not healthy`, `map x != 0 ? 100 / x : 0` ternary).
-Results render into `text`/`tail`/`list`/`gauge`/`bars`/`histo` widgets, arranged
-by `grid`.
+Results render into `text`/`tail`/`list`/`gauge`/`bars`/`histo`/`table` widgets
+(the `table` widget splits whitespace columns, with optional `-cols "a,b,c"`
+headers), arranged by `grid`.
 
 ---
 
