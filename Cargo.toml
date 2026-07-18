@@ -3,7 +3,7 @@
 # stays `arb`.
 [package]
 name = "arblang"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 license = "MIT"
 description = "Visualize and modify Unix pipelines: pipe a stream in, arb spawns a dynamic TUI."
@@ -11,6 +11,10 @@ repository = "https://github.com/MenkeTechnologies/arb"
 readme = "README.md"
 keywords = ["tui", "pipeline", "unix", "dashboard", "stream"]
 categories = ["command-line-utilities"]
+# Keep the published crate lean: ship only what the lib/bin needs to build
+# (`src/`, the build-embedded `stdlib/*.arb` presets, README/LICENSE/SPEC).
+# `stdlib/` is NOT excluded — it is embedded at compile time via include_str!.
+exclude = ["/.github/", "/tests/", "/docs/"]
 
 [lib]
 name = "arb"
