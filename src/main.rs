@@ -135,11 +135,42 @@ fn main() -> io::Result<()> {
             }
             emit_out(out_ops, &state, cli.json)
         }
+    } else if needs_stdin {
+        // A dashboard spec piped onward with no `out { … }` reshape — arb is a
+        // passive tap: forward the stream through untouched so the downstream
+        // consumer still receives it (`find / | arb dash.arb | stryke`). Only an
+        // explicit `out { … }` changes what flows downstream.
+        passthrough()
     } else {
-        if needs_stdin {
-            read_stdin_sync(&state);
-        }
         dump(&spec, &state)
+    }
+}
+
+/// arb as a transparent tap: copy every stdin line to stdout unchanged, flushing
+/// per line so a live upstream (`tail -f`) reaches the downstream consumer
+/// promptly. Used when a dashboard spec is piped onward with no `out { … }`.
+fn passthrough() -> io::Result<()> {
+    let stdin = io::stdin();
+    let mut out = io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let l = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let Err(e) = writeln!(out, "{l}").and_then(|()| out.flush()) {
+            return ok_on_broken_pipe(Err(e));
+        }
+    }
+    Ok(())
+}
+
+/// Treat a closed downstream pipe (the consumer exited — `| head`, `| stryke`
+/// quitting) as clean EOF rather than an error, like any well-behaved Unix
+/// filter. Other I/O errors propagate.
+fn ok_on_broken_pipe(r: io::Result<()>) -> io::Result<()> {
+    match r {
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
     }
 }
 
@@ -156,10 +187,14 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
         };
         if let QueryResult::Lines(ls) = query::eval(ops, std::slice::from_ref(&line), 0.0) {
             for l in ls {
-                writeln!(out, "{l}")?;
+                if let Err(e) = writeln!(out, "{l}") {
+                    return ok_on_broken_pipe(Err(e));
+                }
             }
         }
-        out.flush()?;
+        if let Err(e) = out.flush() {
+            return ok_on_broken_pipe(Err(e));
+        }
     }
     Ok(())
 }

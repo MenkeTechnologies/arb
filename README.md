@@ -108,10 +108,21 @@ seq 1 100000 | arb -e 'gauge .g -max 100000; source .g { in; count }'
 
 # a filtered list: keep 5xx lines, drop health checks
 tail -f access.log | arb -e 'list .l; source .l { in; match /5\d\d/; reject /health/ }'
+
+# pipe citizen — a viz tap/peek: arb sits mid-pipe, and with no `out { }` it
+# passes the stream through untouched, so the downstream consumer still gets it
+find / | arb dash.arb | stryke
+
+# or a filter/map: an `out { }` block reshapes what flows downstream (streams
+# live for per-line pipelines; `head`/consumer exit is a clean stop, not an error)
+tail -f access.log | arb -e 'out { in; match /5\d\d/; field 7 }' | stryke
 ```
 
-With no controlling terminal on stdout (piped onward / redirected / CI), arb
-prints the parsed spec and each source's evaluated result instead of a TUI.
+Mid-pipe, arb is either a **tap/peek** (no `out` — the stream passes through
+unchanged while the spec visualizes it) or a **filter/map** (an `out { … }` block
+reshapes the passthrough). With no controlling terminal on stdout it forwards the
+stream (tap) or emits the `out` result (filter); with no stdin-reading spec it
+prints the parsed spec summary.
 
 ---
 
