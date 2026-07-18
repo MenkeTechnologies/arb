@@ -1,5 +1,8 @@
+# Published to crates.io as `arblang` (the name `arb` is taken); the binary and
+# library are still `arb` (see [[bin]]/[lib] below) so the command you pipe into
+# stays `arb`.
 [package]
-name = "arb"
+name = "arblang"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
@@ -18,6 +21,10 @@ name = "arb"
 path = "src/main.rs"
 
 [dependencies]
+# arb's computational core executes on fusevm: expressions lower to a
+# fusevm::Chunk and run on the VM, with the three-tier Cranelift JIT for hot
+# chunks. Same engine as the sibling frontends (zshrs/stryke/rubyrs/…).
+fusevm = { version = "0.14.10", features = ["jit"] }
 ratatui = "0.29"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1"

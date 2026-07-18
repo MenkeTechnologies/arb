@@ -92,6 +92,15 @@ fn json_missing_key_is_empty() {
 }
 
 #[test]
+fn calc_transforms_count_via_fusevm() {
+    let ops = pipeline("gauge .x\nsource .x { in; match /err/; calc x / 2 }");
+    assert_eq!(
+        eval(&ops, &lines(&["err", "err", "ok", "err", "err"]), 1.0),
+        QueryResult::Scalar(2.0)
+    );
+}
+
+#[test]
 fn empty_pipeline_passes_lines_through() {
     let ops = pipeline("tail .x\nsource .x { in }");
     assert_eq!(

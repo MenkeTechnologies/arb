@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use regex::Regex;
 use serde_json::Value;
 
+use crate::expr::Expr;
+
 /// How `field` selects a value: a 1-based whitespace column, or a JSON key path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldSel {
@@ -31,6 +33,9 @@ pub enum QueryOp {
     Rate,
     /// Group identical values and count them, sorted by count desc then key asc.
     Tally,
+    /// Reduce to a scalar computed by an arithmetic expression over the current
+    /// line count (`x`), evaluated on the fusevm VM.
+    Calc(Expr),
 }
 
 /// The output of evaluating a pipeline: lines, a scalar, or grouped counts.
@@ -65,6 +70,10 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let mut pairs: Vec<(String, u64)> = counts.into_iter().collect();
                 pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                 return QueryResult::Pairs(pairs);
+            }
+            QueryOp::Calc(e) => {
+                let x = cur.len() as f64;
+                return QueryResult::Scalar(crate::expr::eval(e, x).unwrap_or(0.0));
             }
         }
     }

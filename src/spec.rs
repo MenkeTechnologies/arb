@@ -175,6 +175,15 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "count" => ops.push(QueryOp::Count),
             "rate" => ops.push(QueryOp::Rate),
             "tally" => ops.push(QueryOp::Tally),
+            "calc" => {
+                let src = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ops.push(QueryOp::Calc(crate::expr::parse(&src)?));
+            }
             other => return Err(format!("source: unknown verb `{other}`")),
         }
     }

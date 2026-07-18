@@ -10,6 +10,7 @@
 //! milestones — not stubbed here as if present.
 
 pub mod ast;
+pub mod expr;
 pub mod lexer;
 pub mod parser;
 pub mod query;
