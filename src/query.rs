@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use regex::Regex;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 
 use crate::expr::Expr;
@@ -83,6 +83,17 @@ pub enum QueryOp {
         css: String,
         attr: Option<String>,
     },
+    /// Recursive descent (xpath `//TAG`): parse the accumulated stream as one
+    /// HTML document and emit the outer HTML of every element matching the
+    /// selector, one per line — so `attr`/`text` can then pull from each.
+    Find(String),
+    /// From element fragments (one per line, as emitted by `find`), emit the
+    /// named attribute of each (xpath `@NAME`, css attr); drop lines whose first
+    /// element lacks it.
+    Attr(String),
+    /// From element fragments, emit each element's inner text; non-element lines
+    /// pass through unchanged.
+    Text,
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -329,6 +340,31 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         .collect(),
                     Err(_) => Vec::new(),
                 };
+            }
+            QueryOp::Find(css) => {
+                let doc = Html::parse_document(&cur.join("\n"));
+                cur = match Selector::parse(css) {
+                    Ok(sel) => doc.select(&sel).map(|el| el.html()).collect(),
+                    Err(_) => Vec::new(),
+                };
+            }
+            QueryOp::Attr(name) => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    let frag = Html::parse_fragment(l);
+                    if let Some(v) = first_element(&frag).and_then(|e| e.value().attr(name)) {
+                        out.push(v.to_string());
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Text => {
+                for l in cur.iter_mut() {
+                    let frag = Html::parse_fragment(l);
+                    if let Some(e) = first_element(&frag) {
+                        *l = e.text().collect::<String>().trim().to_string();
+                    }
+                }
             }
             QueryOp::Contains(s) => cur.retain(|l| l.contains(s.as_str())),
             QueryOp::Starts(p) => cur.retain(|l| l.starts_with(p.as_str())),
@@ -637,6 +673,14 @@ fn value_to_f64(v: &Value) -> f64 {
 }
 
 /// Render a JSON scalar as a plain string; containers as compact JSON.
+/// The first real element of a parsed fragment, skipping the synthetic
+/// `html`/`head`/`body` wrappers that `Html::parse_fragment` inserts.
+fn first_element(frag: &Html) -> Option<ElementRef<'_>> {
+    let star = Selector::parse("*").ok()?;
+    frag.select(&star)
+        .find(|e| !matches!(e.value().name(), "html" | "head" | "body"))
+}
+
 fn json_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),

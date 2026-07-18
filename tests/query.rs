@@ -486,3 +486,33 @@ fn pick_is_streamable() {
         "tail .x\nsource .x { in.json; pick a b }"
     )));
 }
+
+#[test]
+fn find_attr_text_xpath_leg() {
+    let html = vec![
+        r#"<div class="card"><a href="/a">Alpha</a></div>"#.to_string(),
+        r#"<div class="card"><a href="/b">Beta</a></div>"#.to_string(),
+    ];
+    // //a/@href
+    let hrefs = pipeline("tail .x\nsource .x { in.html; find a; attr href }");
+    match arb::query::eval(&hrefs, &html, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["/a", "/b"]),
+        other => panic!("expected Lines, got {other:?}"),
+    }
+    // find a; text
+    let texts = pipeline("tail .x\nsource .x { in.html; find a; text }");
+    match arb::query::eval(&texts, &html, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["Alpha", "Beta"]),
+        other => panic!("expected Lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn attr_drops_missing() {
+    let html = vec![r#"<a href="/x">y</a><a>no</a>"#.to_string()];
+    let ops = pipeline("tail .x\nsource .x { in.html; find a; attr href }");
+    match arb::query::eval(&ops, &html, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["/x"]),
+        other => panic!("expected Lines, got {other:?}"),
+    }
+}

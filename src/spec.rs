@@ -353,6 +353,26 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                 }
                 ops.push(QueryOp::Sel { css, attr });
             }
+            "find" => {
+                let css = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if css.trim().is_empty() {
+                    return Err("find: expected a tag/selector".into());
+                }
+                ops.push(QueryOp::Find(css));
+            }
+            "attr" => {
+                let name = str_arg(c);
+                if name.is_empty() {
+                    return Err("attr: expected an attribute name".into());
+                }
+                ops.push(QueryOp::Attr(name));
+            }
+            "text" => ops.push(QueryOp::Text),
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
             "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
