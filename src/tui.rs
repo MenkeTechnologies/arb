@@ -13,13 +13,13 @@ use std::time::{Duration, Instant};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
-use ratatui::{Frame, Terminal};
+use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
@@ -38,6 +38,19 @@ pub fn events_available() -> bool {
         .write(true)
         .open("/dev/tty")
         .is_ok()
+}
+
+/// Parse a `--height` spec into inline viewport rows: `N` (absolute) or `N%` of
+/// the terminal height. `None` (doesn't parse) → full-screen.
+fn parse_height(spec: &str) -> Option<u16> {
+    let s = spec.trim();
+    if let Some(p) = s.strip_suffix('%') {
+        let pct: u32 = p.trim().parse().ok()?;
+        let rows = size().map(|(_, h)| h).unwrap_or(24) as u32;
+        Some((rows * pct / 100).clamp(3, rows) as u16)
+    } else {
+        s.parse::<u16>().ok().map(|n| n.max(3))
+    }
 }
 
 /// Interactive control state shared between the key reader, the render loop, and
@@ -231,14 +244,28 @@ pub fn run(
     down: Option<(Arc<Mutex<StreamState>>, String)>,
     err: Option<(Arc<Mutex<StreamState>>, String)>,
     fzf: bool,
+    height: Option<String>,
 ) -> io::Result<()> {
     let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     enable_raw_mode()?;
-    // Wrap the tty in the backend before entering the alternate screen: the
-    // backend is write-only, so `execute!` isn't ambiguous over `File`'s Read +
-    // Write `by_ref`.
-    let mut terminal = Terminal::new(CrosstermBackend::new(tty))?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    // `--height`: render inline (a viewport of N rows at the bottom, keeping the
+    // scrollback) instead of taking over the whole screen with the alternate
+    // buffer. `N%` is a fraction of the terminal height.
+    let inline = height.as_deref().and_then(parse_height);
+    let backend = CrosstermBackend::new(tty);
+    let mut terminal = match inline {
+        Some(rows) => Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(rows),
+            },
+        )?,
+        None => {
+            let mut t = Terminal::new(backend)?;
+            execute!(t.backend_mut(), EnterAlternateScreen)?;
+            t
+        }
+    };
 
     controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
@@ -392,7 +419,13 @@ pub fn run(
     };
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    if inline.is_some() {
+        // Inline mode never entered the alternate screen; clear the viewport
+        // region so the UI doesn't linger in the scrollback.
+        terminal.clear()?;
+    } else {
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    }
     terminal.show_cursor()?;
     outcome
 }

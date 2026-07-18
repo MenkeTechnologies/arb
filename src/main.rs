@@ -140,6 +140,11 @@ struct Cli {
     #[arg(long = "header", value_name = "STR",
         help = "\x1b[32m//\x1b[0m fzf header line shown above the list")]
     header: Option<String>,
+    /// fzf height: render inline in N rows (or `N%` of the terminal) at the
+    /// bottom instead of full-screen, keeping the scrollback. E.g. `--height 40%`.
+    #[arg(long = "height", value_name = "N|N%",
+        help = "\x1b[32m//\x1b[0m fzf height: inline in N rows or N% (not full-screen)")]
+    height: Option<String>,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
@@ -298,7 +303,7 @@ fn main() -> io::Result<()> {
             c.prompt = cli.prompt.clone().unwrap_or_default();
             c.header = cli.header.clone().unwrap_or_default();
         }
-        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf);
+        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf, cli.height.clone());
         if cli.fzf {
             // On Enter (submit) emit the selection (marked lines, or the cursor
             // line). With a `| CONS` consumer, pipe the selection through it first
