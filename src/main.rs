@@ -10,9 +10,7 @@
 //! binds). The expression layer, fusevm lowering, web target, actors, and package
 //! manager are later milestones (see SPEC.md) and are not faked here.
 
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
-use std::path::PathBuf;
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -115,12 +113,12 @@ struct Cli {
     #[arg(long = "json",
         help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines")]
     json: bool,
-    /// Downstream command after `--`: arb spawns it, feeds it the filtered
-    /// stream, and hooks its stdout+stderr to a temp file it tails in a pane —
-    /// so the program's output shows inside arb instead of corrupting the TUI.
+    /// Preview command after `--`: re-run over arb's current post-filter output
+    /// whenever the filter changes; its stdout+stderr show in a pane, always in
+    /// sync with the filter and never touching the terminal.
     /// E.g. `find / | arb -- grep error`.
     #[arg(last = true,
-        help = "\x1b[32m//\x1b[0m Downstream `-- CMD …`: run it, capture its output into a pane")]
+        help = "\x1b[32m//\x1b[0m Preview `-- CMD …`: re-run over the filtered output, shown in a pane")]
     down: Vec<String>,
 }
 
@@ -197,33 +195,25 @@ fn main() -> io::Result<()> {
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
-        // Optional `arb -- CMD`: spawn CMD with its stdout+stderr hooked to a temp
-        // file, tail that file into a display pane, and feed CMD the filtered
-        // stream on its stdin. Its output shows INSIDE arb instead of printing to
-        // the terminal (which would corrupt the TUI).
-        let (child_stdin, down_pane) = if cli.down.is_empty() {
-            (None, None)
-        } else {
-            match spawn_downstream(&cli.down) {
-                Ok((stdin, dstate)) => (Some(stdin), Some((dstate, cli.down.join(" ")))),
-                Err(e) => {
-                    eprintln!("arb: {}: {e}", cli.down[0]);
-                    std::process::exit(1);
-                }
-            }
-        };
-
         if needs_stdin {
-            // Feed the live filtered stream to stdout (only when piped onward, so
-            // arb never blocks or corrupts the terminal) AND to the downstream
-            // child's stdin. The filter narrows both in real time (the megafilter).
-            spawn_reader(
-                state.clone(),
-                !io::stdout().is_terminal(),
-                controls.clone(),
-                child_stdin,
-            );
+            // Tee the live filtered stream to stdout (only when piped onward, so
+            // arb never blocks or corrupts the terminal). The filter narrows it in
+            // real time — the megafilter.
+            spawn_reader(state.clone(), !io::stdout().is_terminal(), controls.clone());
         }
+
+        // Optional `arb -- CMD`: a re-run preview. CMD is re-executed over the
+        // CURRENT filtered buffer whenever the filter or the stream changes; its
+        // output (stdout+stderr) is captured and shown in a pane — always in sync
+        // with the filter, never accumulating stale pre-filter results, and never
+        // printing to the terminal.
+        let down_pane = if cli.down.is_empty() {
+            None
+        } else {
+            let dstate = Arc::new(Mutex::new(StreamState::new()));
+            spawn_preview(cli.down.clone(), state.clone(), controls.clone(), dstate.clone());
+            Some((dstate, cli.down.join(" ")))
+        };
         tui::run(&spec, state, controls, down_pane)
     } else if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
@@ -386,12 +376,7 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// so `find / | arb | consumer` feeds `consumer` continuously while the TUI
 /// renders to /dev/tty — arb never blocks the pipeline. A closed consumer stops
 /// the passthrough but the TUI keeps updating.
-fn spawn_reader(
-    state: Arc<Mutex<StreamState>>,
-    tee: bool,
-    controls: Arc<Mutex<tui::Controls>>,
-    mut child_stdin: Option<std::process::ChildStdin>,
-) {
+fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
     thread::spawn(move || {
         let mut out = io::stdout().lock();
         let mut downstream_open = tee;
@@ -400,72 +385,98 @@ fn spawn_reader(
                 Ok(l) => l,
                 Err(_) => break,
             };
-            // Megafilter: only lines matching the live filter flow onward, so what
-            // the user types reshapes both stdout and the child's input live.
+            // Megafilter: only lines matching the live filter flow to stdout, so
+            // what the user types reshapes the downstream pipe in real time.
             let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
-            if pass {
-                if downstream_open && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
-                    downstream_open = false;
-                }
-                if let Some(ci) = child_stdin.as_mut() {
-                    let _ = writeln!(ci, "{l}");
-                }
+            if pass
+                && downstream_open
+                && writeln!(out, "{l}").and_then(|()| out.flush()).is_err()
+            {
+                downstream_open = false;
             }
             state.lock().unwrap().push(l);
         }
-        // Close the child's stdin so it sees EOF and can finish.
-        drop(child_stdin);
     });
 }
 
-/// Spawn `arb -- CMD`: run CMD with its stdout+stderr redirected to a temp file
-/// (never the terminal), start a tailer that streams that file into a fresh
-/// `StreamState` for the display pane, and hand back CMD's stdin so the reader
-/// can feed it the filtered stream. The temp file is left in place on exit.
-fn spawn_downstream(
-    cmd: &[String],
-) -> io::Result<(std::process::ChildStdin, Arc<Mutex<StreamState>>)> {
-    let tmp = std::env::temp_dir().join(format!("arb-{}.down", std::process::id()));
-    let out = File::create(&tmp)?;
-    let err = out.try_clone()?;
-    let mut child = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .spawn()?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("no child stdin"))?;
-    // Detach: the child runs on its own; dropping the handle does not kill it.
-    drop(child);
-    let dstate = Arc::new(Mutex::new(StreamState::new()));
-    spawn_tailer(tmp, dstate.clone());
-    Ok((stdin, dstate))
-}
-
-/// Tail a growing file (the downstream child's captured output) into `dstate`,
-/// like `tail -f`: read new lines as they appear, sleeping at EOF.
-fn spawn_tailer(path: PathBuf, dstate: Arc<Mutex<StreamState>>) {
+/// `arb -- CMD` preview: re-run the command chain over arb's CURRENT post-filter
+/// output whenever the filter or the stream changes, capturing its stdout+stderr
+/// into `dstate` for the pane. The chain always sees the filtered lines, and the
+/// pane stays in sync with the filter — no stale pre-filter accumulation, and the
+/// command's output never touches the terminal.
+fn spawn_preview(
+    cmd: Vec<String>,
+    state: Arc<Mutex<StreamState>>,
+    controls: Arc<Mutex<tui::Controls>>,
+    dstate: Arc<Mutex<StreamState>>,
+) {
     thread::spawn(move || {
-        let file = loop {
-            match File::open(&path) {
-                Ok(f) => break f,
-                Err(_) => thread::sleep(Duration::from_millis(50)),
-            }
-        };
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
+        let mut last: Option<(String, u64)> = None;
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => thread::sleep(Duration::from_millis(100)),
-                Ok(_) => dstate.lock().unwrap().push(line.trim_end().to_string()),
-                Err(_) => break,
+            thread::sleep(Duration::from_millis(250));
+            let (filter, quit) = {
+                let c = controls.lock().unwrap();
+                (c.filter.clone(), c.quit)
+            };
+            if quit {
+                break;
+            }
+            // Re-run only when the filter or the line count changed.
+            let key = (filter.clone(), state.lock().unwrap().total);
+            if last.as_ref() == Some(&key) {
+                continue;
+            }
+            last = Some(key);
+            let input: Vec<String> = {
+                let s = state.lock().unwrap();
+                s.lines
+                    .iter()
+                    .filter(|l| tui::filter_matches(l, &filter))
+                    .cloned()
+                    .collect()
+            };
+            let output = run_capture(&cmd, &input);
+            let mut d = dstate.lock().unwrap();
+            *d = StreamState::new();
+            for l in output {
+                d.push(l);
             }
         }
     });
+}
+
+/// Run `cmd`, feeding `input` on its stdin, and collect its stdout then stderr as
+/// lines. A spawn/exec error becomes a single diagnostic line so it shows in the
+/// pane rather than crashing arb.
+fn run_capture(cmd: &[String], input: &[String]) -> Vec<String> {
+    let child = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return vec![format!("arb: {}: {e}", cmd[0])],
+    };
+    if let Some(mut si) = child.stdin.take() {
+        for l in input {
+            if writeln!(si, "{l}").is_err() {
+                break; // consumer closed its stdin early (e.g. `head`)
+            }
+        }
+    }
+    match child.wait_with_output() {
+        Ok(o) => {
+            let mut v: Vec<String> = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(String::from)
+                .collect();
+            v.extend(String::from_utf8_lossy(&o.stderr).lines().map(String::from));
+            v
+        }
+        Err(e) => vec![format!("arb: {}: {e}", cmd[0])],
+    }
 }
 
 fn read_stdin_sync(state: &Arc<Mutex<StreamState>>) {
