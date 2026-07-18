@@ -29,6 +29,17 @@ fn uses_x_directly() {
 }
 
 #[test]
+fn comparison_predicates_on_fusevm() {
+    use arb::expr::eval_pred;
+    assert!(eval_pred(&parse("x > 100").unwrap(), 150.0).unwrap());
+    assert!(!eval_pred(&parse("x > 100").unwrap(), 50.0).unwrap());
+    assert!(eval_pred(&parse("x <= 10").unwrap(), 10.0).unwrap());
+    assert!(eval_pred(&parse("x == 5").unwrap(), 5.0).unwrap());
+    assert!(eval_pred(&parse("x != 5").unwrap(), 6.0).unwrap());
+    assert!(eval_pred(&parse("x >= 3").unwrap(), 3.0).unwrap());
+}
+
+#[test]
 fn rejects_trailing_garbage() {
     assert!(parse("1 + ) 2").is_err());
 }

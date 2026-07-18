@@ -27,6 +27,9 @@ pub enum QueryOp {
     Reject(Regex),
     /// Replace each line with a selected field (whitespace column or JSON key path).
     Field(FieldSel),
+    /// Keep lines whose numeric value (`x` = line parsed as a number) satisfies
+    /// the predicate — compiled to fusevm and evaluated per line.
+    Where(Expr),
     /// Reduce to the current line count.
     Count,
     /// Reduce to lines-per-second over the elapsed window.
@@ -57,6 +60,12 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in cur.iter_mut() {
                     *l = extract_field(l, sel);
                 }
+            }
+            QueryOp::Where(e) => {
+                cur.retain(|l| {
+                    let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
+                    crate::expr::eval_pred(e, x).unwrap_or(false)
+                });
             }
             QueryOp::Count => return QueryResult::Scalar(cur.len() as f64),
             QueryOp::Rate => {

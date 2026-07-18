@@ -92,6 +92,15 @@ fn json_missing_key_is_empty() {
 }
 
 #[test]
+fn where_filters_numeric_lines_via_fusevm() {
+    let ops = pipeline("tail .x\nsource .x { in; field 2; where x > 100 }");
+    assert_eq!(
+        eval(&ops, &lines(&["a 50", "b 150", "c 200", "d 30"]), 1.0),
+        QueryResult::Lines(lines(&["150", "200"]))
+    );
+}
+
+#[test]
 fn calc_transforms_count_via_fusevm() {
     let ops = pipeline("gauge .x\nsource .x { in; match /err/; calc x / 2 }");
     assert_eq!(
