@@ -1,0 +1,10 @@
+# consul — service health check status and top failing checks
+#   consul watch -type checks -format json | arb -p consul
+bars .status
+source .status { in.json; field Status; tally }
+bars .service
+source .service { in.json; reject /Status=passing/; field ServiceName; tally }
+gauge .critical -max 50
+source .critical { in.json; match /Status=critical/; count }
+tail .log
+source .log { in.json; field Output }

@@ -1,0 +1,10 @@
+# gcloud — compute instance states and error-log severity mix
+#   gcloud compute instances list --format=json | arb -p gcloud
+bars .status
+source .status { in.json; field status; tally }
+bars .severity
+source .severity { in.json; field severity; tally }
+gauge .running -max 100
+source .running { in.json; where status == 1; count }
+tail .log
+source .log { in.logfmt; field textPayload }

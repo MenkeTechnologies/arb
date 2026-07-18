@@ -1,0 +1,10 @@
+# celery — task events by state, runtimes, and slow-task tail
+#   celery events --dump --json | arb -p celery
+bars .states
+source .states { in.json; field type; tally }
+gauge .succeeded -max 1000
+source .succeeded { in.json; match /task-succeeded/; count }
+gauge .slow -max 500
+source .slow { in.json; field runtime; where x > 5; count }
+tail .failures
+source .failures { in.json; match /task-failed/; field exception }

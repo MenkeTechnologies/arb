@@ -1,0 +1,10 @@
+# fail2ban — banned IPs, jail activity, and ban-attempt counts from the log
+#   tail -f /var/log/fail2ban.log | arb -p fail2ban
+bars .jails
+source .jails { in; match /\[(\w+)\]/; field 5; tally }
+bars .bans
+source .bans { in; match /Ban /; field 8; tally }
+gauge .banrate -max 100
+source .banrate { in; match /Ban /; count }
+tail .log
+source .log { in; match /(Ban|Unban|Found)/ }

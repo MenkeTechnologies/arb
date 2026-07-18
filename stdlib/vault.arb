@@ -1,0 +1,10 @@
+# vault — audit-log request paths, latency, and error rate
+#   vault audit -format=json | arb -p vault
+bars .paths
+source .paths { in.json; field request.path; tally }
+gauge .latency -max 500
+source .latency { in.json; field request.duration_ms; where x > 0; avg }
+gauge .errors -max 100
+source .errors { in.json; match /error/; count }
+tail .denied
+source .denied { in.json; match /permission denied/ }

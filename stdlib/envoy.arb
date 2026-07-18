@@ -1,0 +1,8 @@
+# envoy — response codes, upstream latency, and top authorities
+#   tail -f access.json | arb -p envoy
+bars .codes
+source .codes { in.json; field response_code; tally }
+gauge .slow -max 500
+source .slow { in.json; field duration; where duration > 1000; count }
+tail .hosts
+source .hosts { in.json; field authority; take 20 }

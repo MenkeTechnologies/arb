@@ -1,0 +1,8 @@
+# etcd — cluster log levels, error/warn count, and live message tail (zap JSON)
+#   etcd 2>&1 | arb -p etcd
+bars .level
+source .level { in.json; field level; tally }
+gauge .errors -max 100
+source .errors { in.json; field level; match /error|warn/; count }
+tail .log
+source .log { in.json; field msg }

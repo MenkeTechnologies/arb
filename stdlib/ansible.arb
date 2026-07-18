@@ -1,0 +1,8 @@
+# ansible — task recap by status and slowest hosts
+#   ansible-playbook site.yml | arb -p ansible
+bars .status
+source .status { in; match /^(ok|changed|failed|skipping|unreachable):/; field 1; replace /:$/ ; tally }
+gauge .failed -max 50
+source .failed { in; match /^failed:/; count }
+tail .recap
+source .recap { in; match /PLAY RECAP|ok=|changed=|failed=|unreachable=/ }

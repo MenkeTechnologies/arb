@@ -1,0 +1,10 @@
+# pgbouncer — connection-pool log: severity mix, top databases, error rate
+#   tail -f pgbouncer.log | arb -p pgbouncer
+bars .level
+source .level { in.logfmt; field level; tally }
+bars .db
+source .db { in.logfmt; field db; tally }
+gauge .errors -max 100
+source .errors { in.logfmt; where level == 4; count }
+tail .log
+source .log { in }

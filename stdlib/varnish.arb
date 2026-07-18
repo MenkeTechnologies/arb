@@ -1,0 +1,8 @@
+# varnish — cache hit/miss distribution and slow backend responses
+#   varnishncsa -F '%{VCL_Log:hit}x %{Varnish:time_firstbyte}x %U' | arb -p varnish
+bars .cache
+source .cache { in; field 1; tally }
+gauge .slow -max 500
+source .slow { in; field 2; where x > 0.1; count }
+tail .urls
+source .urls { in; field 3 }

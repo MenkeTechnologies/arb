@@ -1,0 +1,8 @@
+# memcached — command mix and slow-item sizes from stats output
+#   memcached-tool 127.0.0.1:11211 stats | arb -p memcached
+bars .cmds
+source .cmds { in; match /^STAT (get|set|delete|touch|incr|decr)_hits/; field 2; tally }
+gauge .hitrate -max 100
+source .hitrate { in; match /^STAT get_hits/; field 3; sum }
+tail .misses
+source .misses { in; match /^STAT get_misses/ }

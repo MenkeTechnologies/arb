@@ -1,0 +1,8 @@
+# nomad — allocation client statuses and slow evals from event-stream JSON
+#   nomad monitor -json | arb -p nomad
+bars .status
+source .status { in.json; field ClientStatus; tally }
+gauge .running -max 200
+source .running { in.json; where CreateIndex > 0; count }
+tail .evals
+source .evals { in.json; field EvalID }

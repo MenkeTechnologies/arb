@@ -1,0 +1,10 @@
+# sidekiq — job throughput by class, failures, and slow-job durations
+#   sidekiqmon --json | arb -p sidekiq
+bars .class
+source .class { in.json; field class; tally }
+gauge .failed -max 100
+source .failed { in.json; where retry_count > 0; count }
+gauge .slow -max 5000
+source .slow { in.json; field run_time; max }
+tail .log
+source .log { in.json; where run_time > 1000; map class }

@@ -1,0 +1,8 @@
+# supervisor — process states, uptime, and event stream
+#   supervisorctl status --json | arb -p supervisor
+bars .states
+source .states { in.json; field statename; tally }
+gauge .running -max 100
+source .running { in.json; where uptime > 0; count }
+tail .events
+source .events { in.logfmt; match /processname=/; field eventname }

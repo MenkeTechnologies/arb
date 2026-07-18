@@ -199,7 +199,9 @@ pub const STDLIB_NAMES: &[&str] = &[
     "nums", "logs", "http", "json", "table", "top", "docker", "k8s", "nginx", "git", "systemd",
     "redis", "postgres", "mysql", "mongodb", "kafka", "prometheus", "elasticsearch", "rabbitmq",
     "apache", "haproxy", "journalctl", "dmesg", "ps", "htop", "iostat", "vmstat", "ss", "dig",
-    "curl", "gh", "terraform",
+    "curl", "gh", "terraform", "aws", "gcloud", "azure", "ansible", "consul", "vault", "etcd",
+    "nomad", "envoy", "memcached", "varnish", "pgbouncer", "celery", "sidekiq", "gunicorn",
+    "supervisor", "fail2ban", "iptables", "conntrack", "sar",
 ];
 
 fn bundled_module(name: &str) -> Option<&'static str> {
@@ -236,6 +238,26 @@ fn bundled_module(name: &str) -> Option<&'static str> {
         "curl" => include_str!("../stdlib/curl.arb"),
         "gh" => include_str!("../stdlib/gh.arb"),
         "terraform" => include_str!("../stdlib/terraform.arb"),
+        "aws" => include_str!("../stdlib/aws.arb"),
+        "gcloud" => include_str!("../stdlib/gcloud.arb"),
+        "azure" => include_str!("../stdlib/azure.arb"),
+        "ansible" => include_str!("../stdlib/ansible.arb"),
+        "consul" => include_str!("../stdlib/consul.arb"),
+        "vault" => include_str!("../stdlib/vault.arb"),
+        "etcd" => include_str!("../stdlib/etcd.arb"),
+        "nomad" => include_str!("../stdlib/nomad.arb"),
+        "envoy" => include_str!("../stdlib/envoy.arb"),
+        "memcached" => include_str!("../stdlib/memcached.arb"),
+        "varnish" => include_str!("../stdlib/varnish.arb"),
+        "pgbouncer" => include_str!("../stdlib/pgbouncer.arb"),
+        "celery" => include_str!("../stdlib/celery.arb"),
+        "sidekiq" => include_str!("../stdlib/sidekiq.arb"),
+        "gunicorn" => include_str!("../stdlib/gunicorn.arb"),
+        "supervisor" => include_str!("../stdlib/supervisor.arb"),
+        "fail2ban" => include_str!("../stdlib/fail2ban.arb"),
+        "iptables" => include_str!("../stdlib/iptables.arb"),
+        "conntrack" => include_str!("../stdlib/conntrack.arb"),
+        "sar" => include_str!("../stdlib/sar.arb"),
         _ => return None,
     })
 }

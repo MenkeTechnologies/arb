@@ -1,0 +1,10 @@
+# conntrack — live NAT/connection tracking by protocol, state, and byte volume
+#   conntrack -E -o extended | arb -p conntrack
+bars .proto
+source .proto { in; field 1; tally }
+bars .state
+source .state { in; match /ESTABLISHED|TIME_WAIT|SYN_SENT|CLOSE_WAIT/; tally }
+gauge .assured -max 5000
+source .assured { in; match /ASSURED/; count }
+tail .flows
+source .flows { in }

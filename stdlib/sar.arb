@@ -1,0 +1,10 @@
+# sar — CPU utilization, load, and memory pressure from sar samples
+#   sar -u -q -r 1 | arb -p sar
+gauge .cpu -max 100
+source .cpu { in; match /all/; field 8; where x < 100; map 100 - x; avg }
+bars .runq
+source .runq { in; reject /runq-sz/; field 2; tally }
+gauge .memused -max 100
+source .memused { in; match /kbmemused/; reject /%memused/; field 5; max }
+tail .raw
+source .raw { in }

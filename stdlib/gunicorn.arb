@@ -1,0 +1,8 @@
+# gunicorn — response status codes, slow requests, and live access log
+#   gunicorn app:app --access-logformat '%(s)s %(D)s %(U)s' 2>&1 | arb -p gunicorn
+bars .status
+source .status { in; field 1; tally }
+gauge .slow -max 200
+source .slow { in; field 2; where x > 500000; count }
+tail .log
+source .log { in }

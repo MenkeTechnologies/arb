@@ -1,0 +1,8 @@
+# iptables — packet counts by target and high-traffic source addresses
+#   iptables -L -v -n | arb -p iptables
+bars .targets
+source .targets { in; reject /Chain|target|^$/; field 3; tally }
+gauge .pkts -max 100000
+source .pkts { in; reject /Chain|target|^$/; field 1; where x > 0; sum }
+tail .sources
+source .sources { in; reject /Chain|target|^$/; field 8 }

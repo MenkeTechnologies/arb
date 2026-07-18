@@ -1,0 +1,10 @@
+# azure — az CLI activity-log operations, statuses, and durations
+#   az monitor activity-log list -o json | jq -c '.[]' | arb -p azure
+bars .ops
+source .ops { in.json; field operationName; tally }
+bars .status
+source .status { in.json; field status; tally }
+gauge .errors -max 100
+source .errors { in.json; where level == 40; count }
+tail .recent
+source .recent { in.json; field resourceGroupName }

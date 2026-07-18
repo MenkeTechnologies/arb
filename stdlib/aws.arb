@@ -1,0 +1,8 @@
+# aws — CloudTrail event names, error counts, and request latency
+#   aws cloudtrail lookup-events --output json | jq -c '.Events[]' | arb -p aws
+bars .events
+source .events { in.json; field eventName; tally }
+gauge .errors -max 500
+source .errors { in.json; match /errorCode/; count }
+tail .slow
+source .slow { in.json; field requestParameters; match /Duration/ }
