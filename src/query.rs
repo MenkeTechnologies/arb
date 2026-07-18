@@ -112,6 +112,11 @@ pub enum QueryOp {
     /// value -> count pairs sorted by count desc then value asc; non-object lines
     /// are counted under their whole-line text. Reducer (early return).
     CountBy(String),
+    /// Group lines by the value of FIELD (jq `group_by`): emit one JSON-array
+    /// line per distinct value, each array holding that group's members in input
+    /// order; groups are ordered by key ascending. Object lines group by the
+    /// field's value, other lines by their whole-line text.
+    GroupBy(String),
     /// Reducer: emit the single JSON record whose numeric FIELD is smallest (records with a missing/non-numeric FIELD are ignored; empty input yields no lines).
     MinBy(String),
     /// Reducer: emit the single record whose numeric FIELD is the largest.
@@ -274,6 +279,8 @@ pub enum QueryOp {
     Sample(usize),
     /// keep lines from index A to B inclusive (1-based).
     Slice(usize, usize),
+    /// keep only the Nth line (1-based); out-of-range yields no lines.
+    Index(usize),
     /// bucket numeric lines into N equal-width ranges -> (range, count) pairs.
     Bins(usize),
 }
@@ -557,6 +564,28 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let mut pairs: Vec<(String, u64)> = counts.into_iter().collect();
                 pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                 return QueryResult::Pairs(pairs);
+            }
+            QueryOp::GroupBy(field) => {
+                // jq group_by: one array per distinct key, groups sorted by key.
+                let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+                for l in &cur {
+                    let (key, val) = match serde_json::from_str::<Value>(l) {
+                        Ok(v @ Value::Object(_)) => {
+                            let k = v
+                                .get(field)
+                                .map(json_to_string)
+                                .unwrap_or_default();
+                            (k, v)
+                        }
+                        Ok(v) => (l.clone(), v),
+                        Err(_) => (l.clone(), Value::String(l.clone())),
+                    };
+                    groups.entry(key).or_default().push(val);
+                }
+                cur = groups
+                    .into_values()
+                    .map(|g| Value::Array(g).to_string())
+                    .collect();
             }
             QueryOp::MinBy(field) => {
                 let best = cur
@@ -1082,6 +1111,13 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let lo = a.saturating_sub(1).min(cur.len());
                 let hi = (*b).min(cur.len());
                 cur = if lo < hi { cur[lo..hi].to_vec() } else { Vec::new() };
+            }
+            QueryOp::Index(n) => {
+                cur = n
+                    .checked_sub(1)
+                    .and_then(|i| cur.get(i).cloned())
+                    .into_iter()
+                    .collect();
             }
             QueryOp::Bins(n) => {
                 let vals = nums(&cur);

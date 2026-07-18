@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use ratatui::symbols;
 use ratatui::widgets::{
     Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem,
-    ListState, Paragraph, Row, Table,
+    ListState, Paragraph, Row, Table, Tabs,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -1225,9 +1225,44 @@ fn render_widget(
             }
             f.render_widget(table, area);
         }
+        WidgetKind::Tabs => {
+            // `-tabs {a b}` -> a tab bar; the first tab is selected (there is no
+            // per-tab content model yet, so this is a labelled selector).
+            let titles: Vec<Line> = w
+                .opts
+                .get("tabs")
+                .map(|s| {
+                    s.split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(|t| Line::from(t.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tabs = Tabs::new(titles)
+                .block(block)
+                .style(Style::default().fg(accent))
+                .highlight_style(
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                )
+                .select(0);
+            f.render_widget(tabs, area);
+        }
+        // Containers (`block`/`frame`) and any remaining kind render their bound
+        // stream content inside the bordered box — never a placeholder string.
         _ => {
-            let msg = format!("{} — not yet rendered", w.kind.label());
-            f.render_widget(Paragraph::new(msg).block(block), area);
+            let owned: Vec<String> = match &result {
+                Some(QueryResult::Lines(ls)) => ls.clone(),
+                Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
+                Some(QueryResult::Pairs(p)) => {
+                    p.iter().map(|(k, v)| format!("{k}  {v}")).collect()
+                }
+                None => lines.to_vec(),
+            };
+            let inner_h = area.height.saturating_sub(2) as usize;
+            let skip = owned.len().saturating_sub(inner_h);
+            let items: Vec<ListItem> =
+                owned.iter().skip(skip).map(|l| ListItem::new(ansi_line(l))).collect();
+            f.render_widget(List::new(items).block(block), area);
         }
     }
 }
@@ -1280,5 +1315,35 @@ mod tests {
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].height, 20);
         assert_eq!(rects[1].y, 20);
+    }
+
+    // Renders one widget into a TestBackend and returns its cell text.
+    fn render_text(spec_src: &str) -> String {
+        use super::render_widget;
+        use crate::stream::StreamState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let spec = build(&parse(spec_src).unwrap()).unwrap();
+        let w = &spec.widgets[0];
+        let st = StreamState::new();
+        let data = vec!["one".to_string(), "two".to_string()];
+        let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None)).unwrap();
+        term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn tabs_block_frame_render_without_placeholder() {
+        // The old fallback printed "<kind> — not yet rendered"; these kinds now
+        // render real widgets, so that string must never appear.
+        for src in ["tabs .t -tabs {alpha beta}", "block .b -title Box", "frame .f"] {
+            let text = render_text(src);
+            assert!(!text.contains("not yet rendered"), "placeholder leaked for `{src}`: {text}");
+        }
+        // Tab labels captured from the `{alpha beta}` block reach the tab bar.
+        let tabs = render_text("tabs .t -tabs {alpha beta}");
+        assert!(tabs.contains("alpha") && tabs.contains("beta"), "tab labels missing: {tabs}");
+        // A container shows its bound stream content, not an apology string.
+        assert!(render_text("block .b").contains("two"));
     }
 }

@@ -160,6 +160,28 @@ fn import_then_extend_with_own_widget() {
 }
 
 #[test]
+fn import_absolute_arb_path_resolves() {
+    // A path-like name ending in `.arb` is read verbatim — the resolver must not
+    // append a second `.arb` (regression: `import "/x.arb"` -> "/x.arb.arb").
+    let dir = temp_lib("import-path");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mylib.arb");
+    std::fs::write(&file, "gauge .fromfile -max 7").unwrap();
+    let src = format!("import \"{}\"", file.display());
+    let s = build(&parse(&src).unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".fromfile"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tabs_widget_captures_labels_from_block() {
+    // `-tabs {a b}` -> the widget's opts carry a comma-joined word list.
+    let s = build(&parse("tabs .t -tabs {alpha beta}").unwrap()).unwrap();
+    let w = s.widgets.iter().find(|w| w.path == ".t").unwrap();
+    assert_eq!(w.opts.get("tabs").map(String::as_str), Some("alpha,beta"));
+}
+
+#[test]
 fn out_block_defines_downstream_pipeline() {
     let s = build(&parse("out { in; match /ERROR/ }").unwrap()).unwrap();
     assert!(s.out.is_some());

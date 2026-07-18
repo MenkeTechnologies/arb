@@ -336,6 +336,13 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
 /// Resolve a module name to its source: a local `NAME.arb`, then
 /// `~/.arb/lib/NAME.arb`, then a bundled stdlib preset.
 fn resolve_module(name: &str) -> Result<String, String> {
+    // A path-like or already-suffixed name (`import "./lib.arb"`, `import
+    // "/abs/lib.arb"`) is read verbatim — don't double up the extension.
+    if name.ends_with(".arb") || name.contains('/') {
+        if let Ok(s) = std::fs::read_to_string(name) {
+            return Ok(s);
+        }
+    }
     let local = format!("{name}.arb");
     if let Ok(s) = std::fs::read_to_string(&local) {
         return Ok(s);
@@ -720,11 +727,21 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
     let mut i = 0;
     while i < args.len() {
         if let Some(flag) = args[i].as_str().and_then(|w| w.strip_prefix('-')) {
-            let val = args
-                .get(i + 1)
-                .and_then(Arg::as_str)
-                .unwrap_or("")
-                .to_string();
+            // A block value (`-tabs {a b}`) becomes a comma-joined word list:
+            // each top-level command contributes its name plus its word args
+            // (Tcl-flavored `{a b}` is one command `a b`), so `{a b}` -> "a,b".
+            let val = match args.get(i + 1) {
+                Some(Arg::Block(cmds)) => {
+                    let mut words = Vec::new();
+                    for c in cmds {
+                        words.push(c.name.clone());
+                        words.extend(c.args.iter().filter_map(|a| a.as_str().map(str::to_string)));
+                    }
+                    words.join(",")
+                }
+                Some(a) => a.as_str().unwrap_or("").to_string(),
+                None => String::new(),
+            };
             m.insert(flag.to_string(), val);
             i += 2;
         } else {
@@ -917,6 +934,13 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     return Err("count_by: expected a field name".into());
                 }
                 ops.push(QueryOp::CountBy(field));
+            }
+            "group_by" => {
+                let field = str_arg(c);
+                if field.is_empty() {
+                    return Err("group_by: expected a field name".into());
+                }
+                ops.push(QueryOp::GroupBy(field));
             }
             "min_by" => {
                 let field = str_arg(c);
@@ -1155,6 +1179,7 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "distinct" => ops.push(QueryOp::Distinct),
             "sample" => ops.push(QueryOp::Sample(count_arg(c, "sample")?)),
             "bins" => ops.push(QueryOp::Bins(count_arg(c, "bins")?)),
+            "index" => ops.push(QueryOp::Index(count_arg(c, "index")?)),
             "slice" => {
                 let a = c
                     .args

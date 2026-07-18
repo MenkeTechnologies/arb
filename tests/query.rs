@@ -1334,3 +1334,52 @@ fn fields_projects_and_reorders_columns() {
     // Out-of-range columns are empty.
     assert_eq!(f("fields 1 9", &["only"]), QueryResult::Lines(lines(&["only "])));
 }
+
+#[test]
+fn commafy_thousands_groups_numeric_lines() {
+    let ops = pipeline("list .x\nsource .x { in; commafy }");
+    assert_eq!(
+        eval(&ops, &lines(&["1234567", "-1234567.5", "42", "n/a"]), 1.0),
+        // Integer part grouped; sign and fraction kept; non-numeric untouched.
+        QueryResult::Lines(lines(&["1,234,567", "-1,234,567.5", "42", "n/a"]))
+    );
+}
+
+#[test]
+fn vals_emits_object_values() {
+    // jq `.[]` over an object: one line per value (sibling of `keys`).
+    let ops = pipeline("list .x\nsource .x { in.json; vals }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"a":1,"b":"x"}"#, "plain"]), 1.0),
+        // Object -> its values (as strings, insertion order); non-object passes through.
+        QueryResult::Lines(lines(&["1", "x", "plain"]))
+    );
+}
+
+#[test]
+fn group_by_emits_one_array_per_key() {
+    // jq `group_by(.dept)`: one JSON array per distinct value, groups key-sorted,
+    // members in input order; non-object lines group under their whole text.
+    let ops = pipeline("list .x\nsource .x { in.json; group_by dept }");
+    let data = lines(&[
+        r#"{"dept":"eng","n":"a"}"#,
+        r#"{"dept":"sales","n":"b"}"#,
+        r#"{"dept":"eng","n":"c"}"#,
+    ]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Lines(lines(&[
+            r#"[{"dept":"eng","n":"a"},{"dept":"eng","n":"c"}]"#,
+            r#"[{"dept":"sales","n":"b"}]"#,
+        ]))
+    );
+}
+
+#[test]
+fn index_keeps_only_the_nth_line() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    // 1-based positional access (mirrors `slice A B`).
+    assert_eq!(f("index 2", &["a", "b", "c"]), QueryResult::Lines(lines(&["b"])));
+    // Out-of-range yields no lines.
+    assert_eq!(f("index 9", &["a", "b"]), QueryResult::Lines(Vec::new()));
+}
