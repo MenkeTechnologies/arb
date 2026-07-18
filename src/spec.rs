@@ -296,6 +296,13 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "avg" => ops.push(QueryOp::Avg),
             "keys" => ops.push(QueryOp::Keys),
             "vals" => ops.push(QueryOp::Vals),
+            "sort" => ops.push(QueryOp::Sort),
+            "uniq" => ops.push(QueryOp::Uniq),
+            "rev" => ops.push(QueryOp::Rev),
+            "first" => ops.push(QueryOp::First),
+            "last" => ops.push(QueryOp::Last),
+            "take" => ops.push(QueryOp::Take(count_arg(c, "take")?)),
+            "drop" => ops.push(QueryOp::Drop(count_arg(c, "drop")?)),
             "calc" => {
                 let src = c
                     .args
@@ -344,6 +351,15 @@ fn regex_arg(c: &Command) -> Result<Regex, String> {
         .and_then(|s| s.strip_suffix('/'))
         .unwrap_or(raw);
     Regex::new(pat).map_err(|e| format!("{}: bad regex: {e}", c.name))
+}
+
+/// Parse a required count argument for `take`/`drop`.
+fn count_arg(c: &Command, verb: &str) -> Result<usize, String> {
+    c.args
+        .first()
+        .and_then(Arg::as_str)
+        .and_then(|s| s.parse::<usize>().ok())
+        .ok_or_else(|| format!("{verb}: expected a count"))
 }
 
 /// A single numeric arg selects a whitespace column; anything else is a JSON

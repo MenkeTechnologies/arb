@@ -5,7 +5,7 @@
 //! `field N` (1-based whitespace column), `count`, `rate`. JSON/CSV field
 //! extraction, `where(pred)`, and aggregation to tables land with later verbs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use regex::Regex;
 use scraper::{Html, Selector};
@@ -51,6 +51,14 @@ pub enum QueryOp {
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
     Vals,
+    /// Line-list transforms.
+    Sort,
+    Uniq,
+    Rev,
+    First,
+    Last,
+    Take(usize),
+    Drop(usize),
     /// Parse the accumulated stream as one HTML document and emit, per element
     /// matching the CSS selector, its text (or a named attribute if `attr` is
     /// set; elements lacking that attribute are dropped).
@@ -163,6 +171,24 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::Sort => cur.sort(),
+            QueryOp::Uniq => {
+                let mut seen = HashSet::new();
+                cur.retain(|l| seen.insert(l.clone()));
+            }
+            QueryOp::Rev => cur.reverse(),
+            QueryOp::First => cur.truncate(1),
+            QueryOp::Last => {
+                if let Some(l) = cur.pop() {
+                    cur = vec![l];
+                } else {
+                    cur.clear();
+                }
+            }
+            QueryOp::Take(n) => cur.truncate(*n),
+            QueryOp::Drop(n) => {
+                cur.drain(0..(*n).min(cur.len()));
             }
             QueryOp::Sel { css, attr } => {
                 let doc = Html::parse_document(&cur.join("\n"));

@@ -92,6 +92,55 @@ fn sel_class_then_tally() {
 }
 
 #[test]
+fn sort_then_uniq() {
+    let ops = pipeline("tail .x\nsource .x { in; sort; uniq }");
+    assert_eq!(
+        eval(&ops, &lines(&["b", "a", "b", "c", "a"]), 1.0),
+        QueryResult::Lines(lines(&["a", "b", "c"]))
+    );
+}
+
+#[test]
+fn take_and_drop() {
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; take 2 }"),
+            &lines(&["1", "2", "3", "4"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["1", "2"]))
+    );
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; drop 2 }"),
+            &lines(&["1", "2", "3", "4"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["3", "4"]))
+    );
+}
+
+#[test]
+fn last_and_rev() {
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; last }"),
+            &lines(&["a", "b", "c"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["c"]))
+    );
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; rev }"),
+            &lines(&["a", "b", "c"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["c", "b", "a"]))
+    );
+}
+
+#[test]
 fn numeric_aggregates() {
     let data = lines(&["10", "20", "30", "40"]);
     let run = |verb: &str| {
