@@ -184,14 +184,17 @@ fn main() -> io::Result<()> {
     // detached exec) it also falls through, instead of crashing on the reader.
     let downstream_reshape = spec.out.is_some() && !io::stdout().is_terminal();
     if tui::events_available() && !downstream_reshape {
+        let controls = Arc::new(Mutex::new(tui::Controls::default()));
         if needs_stdin {
             // Tee stdin→stdout live only when piped onward, so a downstream
             // consumer still receives the stream (`find / | arb | consumer`)
             // without arb ever blocking the pipeline. When stdout is the terminal
-            // the TUI already owns it (via /dev/tty), so no tee.
-            spawn_reader(state.clone(), !io::stdout().is_terminal());
+            // the TUI already owns it (via /dev/tty), so no tee. The tee is
+            // narrowed by the live filter — the megafilter reshapes what the
+            // consumer receives as you type.
+            spawn_reader(state.clone(), !io::stdout().is_terminal(), controls.clone());
         }
-        tui::run(&spec, state)
+        tui::run(&spec, state, controls)
     } else if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
@@ -353,7 +356,7 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// so `find / | arb | consumer` feeds `consumer` continuously while the TUI
 /// renders to /dev/tty — arb never blocks the pipeline. A closed consumer stops
 /// the passthrough but the TUI keeps updating.
-fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool) {
+fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
     thread::spawn(move || {
         let mut out = io::stdout().lock();
         let mut downstream_open = tee;
@@ -362,8 +365,13 @@ fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool) {
                 Ok(l) => l,
                 Err(_) => break,
             };
-            if downstream_open && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
-                downstream_open = false;
+            if downstream_open {
+                // Megafilter: only tee lines matching the live filter, so what the
+                // user types reshapes the downstream consumer's input in real time.
+                let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
+                if pass && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
+                    downstream_open = false;
+                }
             }
             state.lock().unwrap().push(l);
         }

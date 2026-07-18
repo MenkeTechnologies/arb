@@ -6,7 +6,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -39,21 +38,64 @@ pub fn events_available() -> bool {
         .is_ok()
 }
 
-/// Spawn a thread that reads key bytes straight from `/dev/tty` and flags quit
-/// on `q` / Esc / Ctrl-C. We read the terminal device directly — exactly how
-/// `vipe` gets the keyboard while stdin carries the pipe — instead of using
-/// crossterm's event source, whose `mio`-on-tty reader fails to initialize on
-/// some hosts (the "failed to initialize input reader" crash on `find / | arb`).
-/// Raw mode (set on the terminal device by `enable_raw_mode`) makes these bytes
-/// arrive unbuffered, so a single keypress is seen immediately.
-fn spawn_key_reader(quit: Arc<AtomicBool>) {
+/// Interactive control state shared between the key reader, the render loop, and
+/// the stdin→stdout tee: the live filter text and the quit flag. Keys are read
+/// straight from `/dev/tty` (like `vipe`) rather than crossterm's event source,
+/// whose `mio`-on-tty reader fails to initialize on some hosts.
+#[derive(Default)]
+pub struct Controls {
+    pub filter: String,
+    pub quit: bool,
+}
+
+/// The megafilter predicate: a line is kept iff it matches the interactive
+/// filter (case-insensitive substring); an empty filter keeps everything. The
+/// SAME test narrows the on-screen dashboard and the passthrough to a downstream
+/// consumer, so what you type reshapes both live.
+pub fn filter_matches(line: &str, filter: &str) -> bool {
+    filter.is_empty() || line.to_lowercase().contains(&filter.to_lowercase())
+}
+
+/// Truncate a line to `width` characters so it never overflows its box. (Wide
+/// upstream `stderr` — e.g. `find /` permission errors — must be redirected by
+/// the user; arb can only clip what flows through its own stream.)
+fn clip(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        s.to_string()
+    } else {
+        s.chars().take(width).collect()
+    }
+}
+
+/// Read key bytes from `/dev/tty` and drive `Controls`: printable chars build
+/// the filter live, Backspace/Ctrl-U edit it, Esc clears it (or quits when it is
+/// already empty), Ctrl-C quits. Raw mode delivers each keypress immediately.
+fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
     if let Ok(mut tty) = OpenOptions::new().read(true).open("/dev/tty") {
         thread::spawn(move || {
             let mut buf = [0u8; 1];
             while let Ok(1) = tty.read(&mut buf) {
-                if matches!(buf[0], b'q' | 0x1b | 0x03) {
-                    quit.store(true, Ordering::SeqCst);
-                    break;
+                let b = buf[0];
+                let mut c = controls.lock().unwrap();
+                match b {
+                    0x03 => {
+                        c.quit = true;
+                        break;
+                    }
+                    0x1b => {
+                        // Esc: clear the filter; quit if it is already empty.
+                        if c.filter.is_empty() {
+                            c.quit = true;
+                            break;
+                        }
+                        c.filter.clear();
+                    }
+                    0x08 | 0x7f => {
+                        c.filter.pop();
+                    }
+                    0x15 => c.filter.clear(),
+                    0x20..=0x7e => c.filter.push(b as char),
+                    _ => {}
                 }
             }
         });
@@ -66,7 +108,11 @@ fn spawn_key_reader(quit: Arc<AtomicBool>) {
 /// the pipeline: the caller tees stdin→stdout live in a separate thread while
 /// this loop draws. The terminal is always restored (raw mode off, alternate
 /// screen left, cursor shown) before returning, even on a draw error.
-pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
+pub fn run(
+    spec: &Spec,
+    state: Arc<Mutex<StreamState>>,
+    controls: Arc<Mutex<Controls>>,
+) -> io::Result<()> {
     let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     enable_raw_mode()?;
     // Wrap the tty in the backend before entering the alternate screen: the
@@ -75,18 +121,21 @@ pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(tty))?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
 
-    let quit = Arc::new(AtomicBool::new(false));
-    spawn_key_reader(quit.clone());
+    spawn_key_handler(controls.clone());
 
-    // Redraw on a fixed cadence so live stream updates show; the key reader runs
+    // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
     // flowing regardless of keypresses).
     let outcome = loop {
-        if quit.load(Ordering::SeqCst) {
+        let (filter, quit) = {
+            let c = controls.lock().unwrap();
+            (c.filter.clone(), c.quit)
+        };
+        if quit {
             break Ok(());
         }
         let st = state.lock().unwrap();
-        let draw = terminal.draw(|f| render(f, spec, &st));
+        let draw = terminal.draw(|f| render(f, spec, &st, &filter));
         drop(st);
         if let Err(e) = draw {
             break Err(e);
@@ -100,8 +149,29 @@ pub fn run(spec: &Spec, state: Arc<Mutex<StreamState>>) -> io::Result<()> {
     outcome
 }
 
-fn render(f: &mut Frame, spec: &Spec, st: &StreamState) {
-    let area = f.area();
+fn render(f: &mut Frame, spec: &Spec, st: &StreamState, filter: &str) {
+    // Reserve a one-row filter bar at the very bottom; widgets fill the rest.
+    let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
+    let area = chunks[0];
+    let bar = chunks[1];
+
+    let matched = st.lines.iter().filter(|l| filter_matches(l, filter)).count();
+    let hint = if filter.is_empty() {
+        "  type to filter  ·  Bksp edit  ·  Esc clear  ·  Ctrl-C quit".to_string()
+    } else {
+        format!("  filter: {filter}▏   {matched}/{} lines", st.lines.len())
+    };
+    f.render_widget(Paragraph::new(hint), bar);
+
+    // Materialize the ring once, narrowed by the interactive filter — so the
+    // whole dashboard (tail, counts, tallies) reflects what you typed.
+    let raw: Vec<String> = st
+        .lines
+        .iter()
+        .filter(|l| filter_matches(l, filter))
+        .cloned()
+        .collect();
+
     if spec.widgets.is_empty() {
         let msg = Paragraph::new("arb: spec has no widgets")
             .block(Block::default().borders(Borders::ALL).title(" arb "));
@@ -110,12 +180,10 @@ fn render(f: &mut Frame, spec: &Spec, st: &StreamState) {
     }
 
     let rects = compute_rects(area, spec);
-    // One materialization of the ring per frame, shared by every widget's eval.
-    let raw: Vec<String> = st.lines.iter().cloned().collect();
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
         let result = w.source.as_ref().map(|s| eval(&s.pipeline, &raw, elapsed));
-        render_widget(f, rects[i], w, st, result);
+        render_widget(f, rects[i], w, st, &raw, result);
     }
 }
 
@@ -144,7 +212,14 @@ fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
         .collect()
 }
 
-fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result: Option<QueryResult>) {
+fn render_widget(
+    f: &mut Frame,
+    area: Rect,
+    w: &Widget,
+    st: &StreamState,
+    lines: &[String],
+    result: Option<QueryResult>,
+) {
     let title = format!(
         " {} · {} · {} ln {:.0}/s ",
         w.path,
@@ -153,6 +228,8 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
         st.rate()
     );
     let block = Block::default().borders(Borders::ALL).title(title);
+    // Inner width for clipping long lines so they never overflow the box.
+    let inner_w = (area.width as usize).saturating_sub(2);
     match w.kind {
         WidgetKind::Text => {
             let s = match &result {
@@ -162,9 +239,9 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
                     .first()
                     .map(|(k, v)| format!("{k} ({v})"))
                     .unwrap_or_default(),
-                None => st.lines.back().cloned().unwrap_or_default(),
+                None => lines.last().cloned().unwrap_or_default(),
             };
-            f.render_widget(Paragraph::new(s).block(block), area);
+            f.render_widget(Paragraph::new(clip(&s, inner_w)).block(block), area);
         }
         WidgetKind::Tail | WidgetKind::List => {
             let owned: Vec<String> = match &result {
@@ -173,14 +250,14 @@ fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result
                 Some(QueryResult::Pairs(p)) => {
                     p.iter().map(|(k, v)| format!("{k}  {v}")).collect()
                 }
-                None => st.lines.iter().cloned().collect(),
+                None => lines.to_vec(),
             };
             let inner_h = area.height.saturating_sub(2) as usize;
             let skip = owned.len().saturating_sub(inner_h);
             let items: Vec<ListItem> = owned
                 .iter()
                 .skip(skip)
-                .map(|l| ListItem::new(l.as_str()))
+                .map(|l| ListItem::new(clip(l, inner_w)))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
         }
