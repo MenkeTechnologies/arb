@@ -323,6 +323,26 @@ std TCP socket (SHA-1 + base64, no crypto or WebSocket dependency); if the
 browser or connection can't upgrade, the client automatically falls back to
 polling `/data`.
 
+### Presets & sharing — `--save` / `--install`
+
+A spec is a portable file, so dashboards are shareable units. Save your own,
+install ones others send you, and run any of them by name from anywhere:
+
+```sh
+arb --save api -e 'gauge .g -max 1000; source .g { in; rate }'  # save your own
+arb --install team-dash.arb                                     # install a shared spec
+arb --install team-dash.arb --as prod                           # …under a chosen name
+arb --installed                                                  # list installed presets
+find / | arb -p api                                             # run one by name
+arb --uninstall api                                             # remove it
+```
+
+Installed specs live in `~/.arb/lib` (override with `$ARB_LIB`); the first `#`
+comment line is the description shown by `--installed`/`--list`. Install
+validates the spec before adding it, so the library only holds runnable
+dashboards. A shared spec is any `.arb` file today; a remote registry (install by
+URL/name) plugs into the same resolver next.
+
 ---
 
 ## [0x03] DESIGN

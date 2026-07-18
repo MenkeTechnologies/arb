@@ -335,11 +335,8 @@ fn resolve_module(name: &str) -> Result<String, String> {
     if let Ok(s) = std::fs::read_to_string(&local) {
         return Ok(s);
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = std::path::Path::new(&home)
-            .join(".arb/lib")
-            .join(format!("{name}.arb"));
-        if let Ok(s) = std::fs::read_to_string(p) {
+    if let Some(dir) = lib_dir() {
+        if let Ok(s) = std::fs::read_to_string(dir.join(format!("{name}.arb"))) {
             return Ok(s);
         }
     }
@@ -628,19 +625,8 @@ pub fn list_presets() -> Vec<(String, String)> {
             )
         })
         .collect();
-    if let Some(home) = std::env::var_os("HOME") {
-        let dir = std::path::Path::new(&home).join(".arb/lib");
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("arb") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        let src = std::fs::read_to_string(&path).unwrap_or_default();
-                        out.push((stem.to_string(), first_comment(&src)));
-                    }
-                }
-            }
-        }
+    if let Some(dir) = lib_dir() {
+        out.extend(list_user_presets(&dir));
     }
     out
 }
@@ -650,6 +636,60 @@ fn first_comment(src: &str) -> String {
         .find_map(|l| l.trim().strip_prefix('#'))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The user preset library directory: `$ARB_LIB` when set (used by tests and for
+/// relocating the library), else `$HOME/.arb/lib`. `None` if neither is set.
+pub fn lib_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("ARB_LIB") {
+        return Some(std::path::PathBuf::from(d));
+    }
+    std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".arb/lib"))
+}
+
+/// Install a spec `src` into `dir` as `NAME.arb` — the shareable-package unit.
+/// The spec is validated (parse + build) first; an invalid package is rejected
+/// so the library only ever holds runnable dashboards. Returns the written path.
+pub fn install_preset(dir: &std::path::Path, name: &str, src: &str) -> Result<std::path::PathBuf, String> {
+    if name.is_empty() || name.contains(['/', '\\', '.']) {
+        return Err(format!("install: invalid preset name `{name}`"));
+    }
+    let cmds = crate::parser::parse(src).map_err(|e| format!("install: invalid spec: {e}"))?;
+    build(&cmds).map_err(|e| format!("install: invalid spec: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("install: {e}"))?;
+    let path = dir.join(format!("{name}.arb"));
+    std::fs::write(&path, src).map_err(|e| format!("install: {e}"))?;
+    Ok(path)
+}
+
+/// Remove `NAME.arb` from `dir`. Returns whether a preset was actually removed.
+pub fn uninstall_preset(dir: &std::path::Path, name: &str) -> std::io::Result<bool> {
+    let path = dir.join(format!("{name}.arb"));
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// List installed user presets in `dir` as `(name, description)`, sorted by name.
+/// The description is the preset's first `#` comment line.
+pub fn list_user_presets(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("arb") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let src = std::fs::read_to_string(&path).unwrap_or_default();
+                    out.push((stem.to_string(), first_comment(&src)));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Collect `-flag value` pairs into an options map.

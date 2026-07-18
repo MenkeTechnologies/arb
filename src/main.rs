@@ -95,6 +95,23 @@ struct Cli {
     #[arg(long = "save", value_name = "NAME",
         help = "\x1b[32m//\x1b[0m Save a spec (FILE or -e SRC) as a named user preset, then exit")]
     save: Option<String>,
+    /// Install a shared `.arb` spec into the preset library, then exit.
+    /// `arb --install dash.arb` (name = file stem, or override with `--as NAME`).
+    #[arg(long = "install", value_name = "FILE",
+        help = "\x1b[32m//\x1b[0m Install a .arb spec into the preset library, then exit")]
+    install: Option<String>,
+    /// Name to install under (defaults to the file stem).
+    #[arg(long = "as", value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Name to install the spec under (default: file stem)")]
+    install_as: Option<String>,
+    /// Uninstall a named preset from the library, then exit.
+    #[arg(long = "uninstall", value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Remove a named preset from the library, then exit")]
+    uninstall: Option<String>,
+    /// List only installed (user library) presets, then exit.
+    #[arg(long = "installed",
+        help = "\x1b[32m//\x1b[0m List installed user-library presets, then exit")]
+    installed: bool,
     /// Interactive REPL — author + test specs against a sample buffer.
     #[arg(short = 'r', long = "repl",
         help = "\x1b[32m//\x1b[0m Interactive REPL — author + test specs against a sample buffer")]
@@ -180,6 +197,41 @@ fn main() -> io::Result<()> {
 
     if let Some(name) = cli.save.clone() {
         return save_preset(&name, &cli);
+    }
+
+    if cli.installed {
+        let Some(dir) = spec::lib_dir() else {
+            eprintln!("arb: no preset library (set HOME or ARB_LIB)");
+            std::process::exit(1);
+        };
+        let mut out = io::stdout().lock();
+        for (name, desc) in spec::list_user_presets(&dir) {
+            writeln!(out, "{name:<10} {desc}")?;
+        }
+        return Ok(());
+    }
+
+    if let Some(file) = cli.install.clone() {
+        return install_cmd(&file, cli.install_as.as_deref());
+    }
+
+    if let Some(name) = cli.uninstall.clone() {
+        let Some(dir) = spec::lib_dir() else {
+            eprintln!("arb: no preset library (set HOME or ARB_LIB)");
+            std::process::exit(1);
+        };
+        match spec::uninstall_preset(&dir, &name) {
+            Ok(true) => eprintln!("arb: uninstalled `{name}`"),
+            Ok(false) => {
+                eprintln!("arb: `{name}` is not installed");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("arb: uninstall: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
     }
 
     // Bare `arb` on an interactive terminal — no spec/`-e`/`-p` and nothing
@@ -515,15 +567,43 @@ fn save_preset(name: &str, cli: &Cli) -> io::Result<()> {
         eprintln!("arb: --save: invalid spec: {e}");
         std::process::exit(1);
     }
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME not set"))?;
-    let dir = home.join(".arb/lib");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{name}.arb"));
-    std::fs::write(&path, src)?;
-    eprintln!("arb: saved preset `{name}` -> {}", path.display());
-    Ok(())
+    let dir = spec::lib_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no preset library (set HOME or ARB_LIB)"))?;
+    match spec::install_preset(&dir, name, &src) {
+        Ok(path) => {
+            eprintln!("arb: saved preset `{name}` -> {}", path.display());
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("arb: --save: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `arb --install FILE [--as NAME]`: install a shared spec file into the preset
+/// library so it can be run with `arb -p NAME` from anywhere.
+fn install_cmd(file: &str, as_name: Option<&str>) -> io::Result<()> {
+    let src = std::fs::read_to_string(file)
+        .map_err(|e| io::Error::new(e.kind(), format!("{file}: {e}")))?;
+    let name = as_name
+        .map(str::to_string)
+        .or_else(|| std::path::Path::new(file).file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .unwrap_or_default();
+    let Some(dir) = spec::lib_dir() else {
+        eprintln!("arb: no preset library (set HOME or ARB_LIB)");
+        std::process::exit(1);
+    };
+    match spec::install_preset(&dir, &name, &src) {
+        Ok(path) => {
+            eprintln!("arb: installed `{name}` -> {}", path.display());
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("arb: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn load_spec(cli: &Cli) -> Result<Spec, String> {

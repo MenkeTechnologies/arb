@@ -3,6 +3,44 @@
 use arb::parser::parse;
 use arb::spec::{build, WidgetKind};
 
+/// A unique temp directory for a package-manager test (no tempfile dep). The
+/// caller removes it; `label` keeps parallel tests from colliding.
+fn temp_lib(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("arb-pm-{}-{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn install_list_and_uninstall_preset() {
+    use arb::spec::{install_preset, list_user_presets, uninstall_preset};
+    let dir = temp_lib("roundtrip");
+    let src = "# my dashboard\ngauge .g -max 100\nsource .g { in; count }";
+    let path = install_preset(&dir, "mydash", src).expect("install ok");
+    assert!(path.exists());
+
+    let listed = list_user_presets(&dir);
+    assert_eq!(listed, vec![("mydash".to_string(), "my dashboard".to_string())]);
+
+    assert!(uninstall_preset(&dir, "mydash").unwrap());
+    assert!(!uninstall_preset(&dir, "mydash").unwrap()); // already gone
+    assert!(list_user_presets(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_rejects_invalid_spec_and_bad_name() {
+    use arb::spec::install_preset;
+    let dir = temp_lib("reject");
+    // Invalid spec is never written to the library.
+    assert!(install_preset(&dir, "bad", "gauge .x {").is_err());
+    assert!(!dir.join("bad.arb").exists());
+    // Names that would escape the library are rejected.
+    assert!(install_preset(&dir, "../evil", "gauge .g").is_err());
+    assert!(install_preset(&dir, "a/b", "gauge .g").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn parses_widgets_with_opts() {
     let s = build(&parse("text .a -label hi -max 100\ntail .b").unwrap()).unwrap();
