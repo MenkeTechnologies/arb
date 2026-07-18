@@ -1,7 +1,7 @@
 //! Parser + interpreter tests — headless, CI-safe (no terminal touched).
 
 use arb::parser::parse;
-use arb::spec::{build, Source, WidgetKind};
+use arb::spec::{build, WidgetKind};
 
 #[test]
 fn parses_widgets_with_opts() {
@@ -17,18 +17,34 @@ fn parses_widgets_with_opts() {
 #[test]
 fn source_block_binds_stdin() {
     let s = build(&parse("tail .b\nsource .b { in }").unwrap()).unwrap();
-    assert_eq!(s.widgets[0].source, Some(Source::Stdin));
+    let src = s.widgets[0].source.as_ref().unwrap();
+    assert_eq!(src.pipeline.len(), 0);
 }
 
 #[test]
 fn bind_shorthand_binds_stdin() {
     let s = build(&parse("tail .x\n.x <- in").unwrap()).unwrap();
-    assert_eq!(s.widgets[0].source, Some(Source::Stdin));
+    assert!(s.widgets[0].source.is_some());
+}
+
+#[test]
+fn source_pipeline_ops_count() {
+    let s = build(&parse("tail .x\nsource .x { in; match /err/; count }").unwrap()).unwrap();
+    assert_eq!(s.widgets[0].source.as_ref().unwrap().pipeline.len(), 2);
+}
+
+#[test]
+fn source_requires_in() {
+    assert!(build(&parse("tail .x\nsource .x { count }").unwrap()).is_err());
+}
+
+#[test]
+fn source_unknown_verb_errors() {
+    assert!(build(&parse("tail .x\nsource .x { in; bogus }").unwrap()).is_err());
 }
 
 #[test]
 fn comments_and_semicolons() {
-    // `;#` = separator then a comment; both widgets still parse.
     let s = build(&parse("# header\ntext .a ;# trailing note\ntail .b").unwrap()).unwrap();
     assert_eq!(s.widgets.len(), 2);
 }
@@ -54,7 +70,6 @@ fn source_for_missing_widget_errors() {
 
 #[test]
 fn unknown_verb_ignored() {
-    // A future/unknown verb should not break older specs.
     let s = build(&parse("frobnicate .x\ntext .a").unwrap()).unwrap();
     assert_eq!(s.widgets.len(), 1);
     assert_eq!(s.widgets[0].path, ".a");

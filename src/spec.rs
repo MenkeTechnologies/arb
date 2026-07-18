@@ -1,11 +1,14 @@
-//! Interpreter: command tree -> a `Spec` (a flat list of widgets with options
-//! and an optional data source). M1 recognizes the widget verbs, `source .x {
-//! in }`, and the `.x <- in` bind shorthand. Unknown verbs are ignored so the
-//! language can grow without breaking older specs.
+//! Interpreter: command tree -> a `Spec`. Recognizes the widget verbs,
+//! `source .x { … }` whose body compiles to a query pipeline (see `query`), and
+//! the `.x <- in` bind shorthand. Unknown widget verbs are ignored so specs stay
+//! forward-compatible.
 
 use std::collections::BTreeMap;
 
+use regex::Regex;
+
 use crate::ast::{Arg, Command};
+use crate::query::QueryOp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WidgetKind {
@@ -60,10 +63,10 @@ impl WidgetKind {
     }
 }
 
-/// M1 sources. Only stdin so far.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Source {
-    Stdin,
+/// A data source: reads stdin, then applies a query pipeline.
+#[derive(Debug, Clone)]
+pub struct Source {
+    pub pipeline: Vec<QueryOp>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,17 +114,18 @@ pub fn build(cmds: &[Command]) -> Result<Spec, String> {
                 Some(Arg::Block(b)) => b,
                 _ => return Err("source: expected `{ body }`".into()),
             };
-            set_source(&mut spec, path, source_from_body(body)?)?;
+            let pipeline = pipeline_from_body(body)?;
+            set_source(&mut spec, path, Source { pipeline })?;
         } else if c.name.starts_with('.') {
-            // `.path <- in` bind shorthand. `configure` etc. land later.
+            // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
             if c.args.first().and_then(Arg::as_str) == Some("<-")
                 && c.args.get(1).and_then(Arg::as_str) == Some("in")
             {
                 let path = c.name.clone();
-                set_source(&mut spec, &path, Source::Stdin)?;
+                set_source(&mut spec, &path, Source { pipeline: vec![] })?;
             }
         }
-        // Unknown verbs are ignored in M1.
+        // Unknown verbs are ignored.
     }
     Ok(spec)
 }
@@ -146,12 +150,47 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
     m
 }
 
-fn source_from_body(cmds: &[Command]) -> Result<Source, String> {
-    if cmds.iter().any(|c| c.name == "in") {
-        Ok(Source::Stdin)
-    } else {
-        Err("source: only `in` (stdin) is supported in M1".into())
+/// Compile a `source { … }` body into a query pipeline. Must start with `in`.
+fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
+    let mut ops = Vec::new();
+    let mut saw_in = false;
+    for c in cmds {
+        match c.name.as_str() {
+            "in" => saw_in = true,
+            "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
+            "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
+            "field" => {
+                let n = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or("field: expected a 1-based column number (M2a: numeric fields)")?;
+                ops.push(QueryOp::Field(n));
+            }
+            "count" => ops.push(QueryOp::Count),
+            "rate" => ops.push(QueryOp::Rate),
+            other => return Err(format!("source: unknown verb `{other}`")),
+        }
     }
+    if !saw_in {
+        return Err("source: pipeline must start with `in`".into());
+    }
+    Ok(ops)
+}
+
+/// Read a regex argument, stripping optional `/…/` delimiters.
+fn regex_arg(c: &Command) -> Result<Regex, String> {
+    let raw = c
+        .args
+        .first()
+        .and_then(Arg::as_str)
+        .ok_or_else(|| format!("{}: expected a pattern", c.name))?;
+    let pat = raw
+        .strip_prefix('/')
+        .and_then(|s| s.strip_suffix('/'))
+        .unwrap_or(raw);
+    Regex::new(pat).map_err(|e| format!("{}: bad regex: {e}", c.name))
 }
 
 fn set_source(spec: &mut Spec, path: &str, src: Source) -> Result<(), String> {

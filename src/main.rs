@@ -2,12 +2,13 @@
 //!
 //! Pipe a stream in and arb renders a dynamic TUI built from a declarative spec.
 //! With no spec it synthesizes a full-screen `tail` of stdin. With no controlling
-//! terminal on stdout (piped onward / CI) it prints the parsed spec plus stream
-//! stats instead of a TUI — correct behavior and the headless-test path.
+//! terminal on stdout (piped onward / CI) it prints the parsed spec, each source
+//! pipeline, and its evaluated result instead of a TUI — correct behavior and the
+//! headless-test path.
 //!
-//! M1 interprets the declarative subset (widgets, `source`, binds). The
-//! expression layer, fusevm lowering, query verbs, web target, actors, and
-//! package manager are later milestones (see SPEC.md) and are not faked here.
+//! M1/M2a interpret the declarative subset (widgets, `source` query pipelines,
+//! binds). The expression layer, fusevm lowering, web target, actors, and package
+//! manager are later milestones (see SPEC.md) and are not faked here.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,8 @@ use std::thread;
 
 use clap::Parser;
 
-use arb::spec::{self, Source, Spec};
+use arb::query::{self, QueryResult};
+use arb::spec::{self, Spec};
 use arb::stream::StreamState;
 use arb::{parser, tui};
 
@@ -25,7 +27,7 @@ use arb::{parser, tui};
 struct Cli {
     /// Dashboard spec file (.arb).
     spec: Option<String>,
-    /// Inline spec, e.g. `-e 'text .t; source .t { in }'`.
+    /// Inline spec, e.g. `-e 'gauge .g -max 100; source .g { in; count }'`.
     #[arg(short = 'e', long = "eval")]
     eval: Option<String>,
 }
@@ -41,7 +43,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let needs_stdin = spec.widgets.iter().any(|w| w.source == Some(Source::Stdin));
+    let needs_stdin = spec.widgets.iter().any(|w| w.source.is_some());
     if needs_stdin && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
@@ -96,6 +98,8 @@ fn read_stdin_sync(state: &Arc<Mutex<StreamState>>) {
 
 fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
     let st = state.lock().unwrap();
+    let raw: Vec<String> = st.lines.iter().cloned().collect();
+    let elapsed = st.start.elapsed().as_secs_f64();
     let mut out = io::stdout().lock();
     writeln!(
         out,
@@ -103,22 +107,26 @@ fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
         spec.widgets.len()
     )?;
     for w in &spec.widgets {
-        let src = match &w.source {
-            Some(Source::Stdin) => "stdin",
-            None => "-",
+        let (src, res) = match &w.source {
+            Some(s) => {
+                let r = match query::eval(&s.pipeline, &raw, elapsed) {
+                    QueryResult::Scalar(v) => format!("= {v}"),
+                    QueryResult::Lines(ls) => format!("-> {} line(s)", ls.len()),
+                };
+                (format!("stdin[{} op]", s.pipeline.len()), r)
+            }
+            None => ("-".to_string(), String::new()),
         };
         writeln!(
             out,
-            "  {:<10} {:<6} source={:<6} opts={:?}",
+            "  {:<10} {:<6} source={:<12} {:<16} opts={:?}",
             w.path,
             w.kind.label(),
             src,
+            res,
             w.opts
         )?;
     }
     writeln!(out, "stream: {} lines", st.total)?;
-    for l in st.lines.iter().rev().take(5).rev() {
-        writeln!(out, "  {l}")?;
-    }
     Ok(())
 }

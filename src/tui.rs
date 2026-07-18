@@ -1,7 +1,8 @@
 //! ratatui render loop. Widgets are auto-tiled vertically (explicit `pack`/`grid`
-//! geometry arrives in a later milestone). `text`/`tail`/`list` render live from
-//! the shared stream; other widget kinds show an honest "not yet rendered"
-//! placeholder rather than faking output.
+//! geometry arrives later). Each widget's `source` pipeline is evaluated against
+//! the shared stream every frame; `text`/`tail`/`list` render the resulting
+//! lines and `gauge` renders a scalar against `-max`. Widget kinds without a
+//! renderer yet show an honest placeholder rather than faking output.
 
 use std::io::{self, Stdout};
 use std::sync::{Arc, Mutex};
@@ -14,9 +15,10 @@ use ratatui::crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
+use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
 
@@ -77,32 +79,67 @@ fn render(f: &mut Frame, spec: &Spec, st: &StreamState) {
         return;
     }
 
+    // One materialization of the ring per frame, shared by every widget's eval.
+    let raw: Vec<String> = st.lines.iter().cloned().collect();
+    let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
-        render_widget(f, chunks[i], w, st);
+        let result = w.source.as_ref().map(|s| eval(&s.pipeline, &raw, elapsed));
+        render_widget(f, chunks[i], w, st, result);
     }
 }
 
-fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState) {
-    let title = format!(" {} · {} · {} ln {:.0}/s ", w.path, w.kind.label(), st.total, st.rate());
+fn render_widget(f: &mut Frame, area: Rect, w: &Widget, st: &StreamState, result: Option<QueryResult>) {
+    let title = format!(
+        " {} · {} · {} ln {:.0}/s ",
+        w.path,
+        w.kind.label(),
+        st.total,
+        st.rate()
+    );
     let block = Block::default().borders(Borders::ALL).title(title);
     match w.kind {
         WidgetKind::Text => {
-            let last = st.lines.back().map(String::as_str).unwrap_or("");
-            f.render_widget(Paragraph::new(last).block(block), area);
+            let s = match &result {
+                Some(QueryResult::Scalar(v)) => format!("{v:.2}"),
+                Some(QueryResult::Lines(ls)) => ls.last().cloned().unwrap_or_default(),
+                None => st.lines.back().cloned().unwrap_or_default(),
+            };
+            f.render_widget(Paragraph::new(s).block(block), area);
         }
         WidgetKind::Tail | WidgetKind::List => {
+            let owned: Vec<String> = match &result {
+                Some(QueryResult::Lines(ls)) => ls.clone(),
+                Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
+                None => st.lines.iter().cloned().collect(),
+            };
             let inner_h = area.height.saturating_sub(2) as usize;
-            let skip = st.lines.len().saturating_sub(inner_h);
-            let items: Vec<ListItem> = st
-                .lines
+            let skip = owned.len().saturating_sub(inner_h);
+            let items: Vec<ListItem> = owned
                 .iter()
                 .skip(skip)
                 .map(|l| ListItem::new(l.as_str()))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
         }
+        WidgetKind::Gauge => {
+            let val = match &result {
+                Some(QueryResult::Scalar(v)) => *v,
+                _ => 0.0,
+            };
+            let max = w
+                .opts
+                .get("max")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(100.0);
+            let ratio = if max > 0.0 { (val / max).clamp(0.0, 1.0) } else { 0.0 };
+            let g = Gauge::default()
+                .block(block)
+                .ratio(ratio)
+                .label(format!("{val:.0}/{max:.0}"));
+            f.render_widget(g, area);
+        }
         _ => {
-            let msg = format!("{} — not yet rendered (M1)", w.kind.label());
+            let msg = format!("{} — not yet rendered (M2a)", w.kind.label());
             f.render_widget(Paragraph::new(msg).block(block), area);
         }
     }
