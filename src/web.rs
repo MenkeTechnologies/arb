@@ -101,7 +101,7 @@ fn body_text(w: &Widget) -> String {
 }
 
 /// Escape the five HTML-special characters so dynamic text can't break markup.
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -117,7 +117,7 @@ fn escape(s: &str) -> String {
 }
 
 /// Inline dark "cyberpunk" stylesheet. Self-contained: no fonts, no CDNs.
-const STYLE: &str = "<style>\n\
+pub(crate) const STYLE: &str = "<style>\n\
 :root { --bg: #0a0e14; --panel: #0e131c; --edge: #1b2735; --cyan: #00e5ff; --fg: #c7d0da; --dim: #6b7a8d; }\n\
 * { box-sizing: border-box; }\n\
 body { margin: 0; padding: 1.5rem; background: var(--bg); color: var(--fg);\n\

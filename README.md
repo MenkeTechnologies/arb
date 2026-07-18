@@ -296,6 +296,25 @@ printf 'alice\nbob\ncarol\n' | arb -e '
 clear it. Any query verb (`upper`, `field N`, `grep /re/`, `commafy`, …) is valid
 after `apply`, so the field drives the whole downstream pipeline interactively.
 
+### Web dashboard — `arb --serve`
+
+The **same spec** that drives the ratatui TUI drives a browser. `--serve` starts a
+local HTTP server (std-only, no framework), serves one self-contained page, and
+the page polls the live stream — so a pipeline becomes a shareable dashboard:
+
+```sh
+tail -f metrics.log | arb --serve --port 8787 -e 'gauge .rps -max 1000
+                                                  source .rps { in; rate }
+                                                  histo .codes
+                                                  source .codes { in; field 9; tally }'
+#  → arb: serving dashboard at http://127.0.0.1:8787/
+```
+
+Every widget's `source` is evaluated server-side each poll; the page updates in
+place (`/data` returns JSON, the client swaps text via `textContent`, never
+`innerHTML`). `--port 0` picks a free port and prints it. This is the polling v1;
+a WebSocket push path and richer per-widget rendering come next.
+
 ---
 
 ## [0x03] DESIGN

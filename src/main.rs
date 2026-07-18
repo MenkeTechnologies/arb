@@ -108,6 +108,14 @@ struct Cli {
     #[arg(long = "check",
         help = "\x1b[32m//\x1b[0m Validate the spec (parse + build) and exit 0/1, no stdin")]
     check: bool,
+    /// Serve the spec as a live browser dashboard (polls the stream over HTTP).
+    #[arg(long = "serve",
+        help = "\x1b[32m//\x1b[0m Serve the spec as a live browser dashboard on 127.0.0.1")]
+    serve: bool,
+    /// Port for `--serve` (0 = OS-assigned, printed on start).
+    #[arg(long = "port", value_name = "N", default_value_t = 8787,
+        help = "\x1b[32m//\x1b[0m Port for --serve (0 = pick a free port)")]
+    port: u16,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.
     #[arg(long = "json",
@@ -260,6 +268,21 @@ fn main() -> io::Result<()> {
     } else {
         StreamState::new()
     }));
+
+    // `--serve`: the same spec as a live browser dashboard. Feed the stream in the
+    // background (spawned producer or stdin) and run the HTTP server (blocks).
+    if cli.serve {
+        if let Some(prod) = &producer {
+            if let Err(e) = spawn_producer(prod, state.clone()) {
+                eprintln!("arb: run: {e}");
+                std::process::exit(1);
+            }
+        } else if needs_stdin {
+            let controls = Arc::new(Mutex::new(tui::Controls::default()));
+            spawn_reader(state.clone(), false, controls, None);
+        }
+        return arb::serve::serve(spec, state, cli.port);
+    }
 
     // Interactive TUI whenever a controlling terminal is reachable (a `/dev/tty`
     // we can open — see `tui::events_available`); the TUI renders THERE, not to
