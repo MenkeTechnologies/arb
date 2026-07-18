@@ -125,6 +125,8 @@ pub enum QueryOp {
     Sample(usize),
     /// keep lines from index A to B inclusive (1-based).
     Slice(usize, usize),
+    /// bucket numeric lines into N equal-width ranges -> (range, count) pairs.
+    Bins(usize),
 }
 
 /// The output of evaluating a pipeline: lines, a scalar, or grouped counts.
@@ -432,6 +434,30 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let lo = a.saturating_sub(1).min(cur.len());
                 let hi = (*b).min(cur.len());
                 cur = if lo < hi { cur[lo..hi].to_vec() } else { Vec::new() };
+            }
+            QueryOp::Bins(n) => {
+                let vals = nums(&cur);
+                let n = (*n).max(1);
+                if vals.is_empty() {
+                    return QueryResult::Pairs(Vec::new());
+                }
+                let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let width = ((max - min) / n as f64).max(f64::MIN_POSITIVE);
+                let mut counts = vec![0u64; n];
+                for v in &vals {
+                    let idx = (((v - min) / width) as usize).min(n - 1);
+                    counts[idx] += 1;
+                }
+                let pairs = counts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| {
+                        let lo = min + i as f64 * width;
+                        (format!("{}-{}", fmt_num(lo), fmt_num(lo + width)), c)
+                    })
+                    .collect();
+                return QueryResult::Pairs(pairs);
             }
         }
     }

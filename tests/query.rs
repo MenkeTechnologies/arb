@@ -421,3 +421,16 @@ fn v20_reduces() {
         _ => panic!("stddev not scalar"),
     }
 }
+
+#[test]
+fn bins_numeric_histogram() {
+    let ops = pipeline("histo .x\nsource .x { in; bins 2 }");
+    match eval(&ops, &lines(&["0", "10", "20", "30", "40"]), 1.0) {
+        QueryResult::Pairs(p) => {
+            assert_eq!(p.len(), 2);
+            assert_eq!(p[0].1, 2);
+            assert_eq!(p[1].1, 3);
+        }
+        other => panic!("expected pairs, got {other:?}"),
+    }
+}

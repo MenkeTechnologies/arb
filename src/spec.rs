@@ -453,6 +453,7 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "product" => ops.push(QueryOp::Product),
             "distinct" => ops.push(QueryOp::Distinct),
             "sample" => ops.push(QueryOp::Sample(count_arg(c, "sample")?)),
+            "bins" => ops.push(QueryOp::Bins(count_arg(c, "bins")?)),
             "slice" => {
                 let a = c
                     .args
