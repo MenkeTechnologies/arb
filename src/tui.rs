@@ -19,8 +19,10 @@ use ratatui::crossterm::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::symbols;
 use ratatui::widgets::{
-    BarChart, Block, Borders, Cell, Gauge, List, ListItem, ListState, Paragraph, Row, Table,
+    Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem,
+    ListState, Paragraph, Row, Table,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -1040,6 +1042,35 @@ fn render_widget(
                 .bar_width(bw)
                 .bar_gap(1)
                 .data(&shown[..]);
+            f.render_widget(chart, area);
+        }
+        WidgetKind::Chart => {
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(lines),
+            };
+            let points: Vec<(f64, f64)> =
+                series.iter().enumerate().map(|(i, v)| (i as f64, *v)).collect();
+            let min = series.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = series.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            // Pad a flat/empty range so the line has somewhere to sit.
+            let (lo, hi) = if !min.is_finite() || min == max {
+                (min.min(0.0), max.max(min + 1.0))
+            } else {
+                (min, max)
+            };
+            let xmax = (series.len().saturating_sub(1)).max(1) as f64;
+            let datasets = vec![Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Cyan))
+                .data(&points)];
+            let chart = Chart::new(datasets)
+                .block(block)
+                .x_axis(Axis::default().bounds([0.0, xmax]))
+                .y_axis(Axis::default().bounds([lo, hi]));
             f.render_widget(chart, area);
         }
         WidgetKind::Spark => {

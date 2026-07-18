@@ -259,6 +259,17 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
             let series = &series[n.saturating_sub(400)..]; // cap points per poll
             base(json!({ "spark": crate::query::sparkline(series) }))
         }
+        WidgetKind::Chart => {
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(raw),
+            };
+            let n = series.len();
+            let series = &series[n.saturating_sub(500)..]; // cap points per poll
+            base(json!({ "series": series }))
+        }
         WidgetKind::Table => {
             let lines: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),
@@ -341,6 +352,7 @@ const WIDGET_CSS: &str = "<style>\n\
 .tbl th, .tbl td { border: 1px solid var(--edge); padding: 2px 6px; text-align: left; white-space: nowrap; }\n\
 .tbl th { color: var(--cyan); position: sticky; top: 0; background: var(--panel); }\n\
 .spark { color: var(--cyan); font-size: 2rem; line-height: 1; letter-spacing: 1px; word-break: break-all; }\n\
+.chart { width: 100%; height: 6rem; display: block; }\n\
 </style>\n";
 
 /// Client poller: fetch `/data` on an interval and render each widget by kind.
@@ -365,6 +377,21 @@ function render(el, it) {\n\
   } else if (it.spark !== undefined) {\n\
     const s = document.createElement('div'); s.className = 'spark';\n\
     s.textContent = it.spark || '\\u2014'; el.appendChild(s);\n\
+  } else if (it.series) {\n\
+    const NS = 'http://www.w3.org/2000/svg', W = 100, H = 40;\n\
+    const svg = document.createElementNS(NS, 'svg');\n\
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);\n\
+    svg.setAttribute('class', 'chart'); svg.setAttribute('preserveAspectRatio', 'none');\n\
+    const s = it.series;\n\
+    if (s.length > 1) {\n\
+      const mn = Math.min(...s), mx = Math.max(...s), rng = (mx - mn) || 1;\n\
+      const pts = s.map((v, i) => (i / (s.length - 1) * W) + ',' + (H - (v - mn) / rng * H)).join(' ');\n\
+      const pl = document.createElementNS(NS, 'polyline');\n\
+      pl.setAttribute('points', pts); pl.setAttribute('fill', 'none');\n\
+      pl.setAttribute('stroke', '#00e5ff'); pl.setAttribute('stroke-width', '1');\n\
+      pl.setAttribute('vector-effect', 'non-scaling-stroke'); svg.appendChild(pl);\n\
+    }\n\
+    el.appendChild(svg);\n\
   } else if (it.rows) {\n\
     const t = document.createElement('table'); t.className = 'tbl';\n\
     if (it.headers && it.headers.length) {\n\
@@ -477,6 +504,15 @@ mod tests {
         let spark = json[0]["spark"].as_str().unwrap();
         assert_eq!(spark.chars().count(), 4);
         assert!(spark.starts_with('▁') && spark.ends_with('█'));
+    }
+
+    #[test]
+    fn data_json_chart_carries_series() {
+        let spec = build(&parse("chart .c\nsource .c { in }").unwrap()).unwrap();
+        let st = state_with(&["3", "1", "4", "1", "5"]);
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        assert_eq!(json[0]["kind"], "chart");
+        assert_eq!(json[0]["series"], serde_json::json!([3.0, 1.0, 4.0, 1.0, 5.0]));
     }
 
     #[test]
