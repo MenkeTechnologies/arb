@@ -225,6 +225,15 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
             out.push("--exact".to_string());
             continue;
         }
+        // fzf short flags with an attached value and no arb analog: `-nFIELDS`
+        // (nth), `-dCHAR` (delimiter). Drop them (and a following value if the
+        // flag stands alone, e.g. `-n 2..`).
+        if fzf && (a.starts_with("-n") || a.starts_with("-d")) {
+            if a.len() == 2 {
+                it.next(); // `-n 2..` — consume the separate value
+            }
+            continue;
+        }
         // fzf `+m` disables multi, `+s` disables sort (keep input order).
         match a.as_str() {
             "+m" => {
@@ -1051,6 +1060,15 @@ mod tests {
         let out2 = run(&["arb", "-e", "gauge .g"]);
         assert!(out2.iter().any(|a| a == "-e"));
         assert!(!out2.iter().any(|a| a == "--exact"));
+    }
+
+    #[test]
+    fn drops_fzf_short_value_flags() {
+        // `-n2..,..` (attached) and `-n 2..` (separate) and `-d:` are dropped.
+        let out = run(&["arb", "--fzf", "-n2..,..", "-d", ":", "--query", "q"]);
+        assert!(!out.iter().any(|a| a.starts_with("-n") || a.starts_with("-d")));
+        assert!(!out.iter().any(|a| a == "2.." || a == ":"));
+        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"q".to_string()));
     }
 
     #[test]
