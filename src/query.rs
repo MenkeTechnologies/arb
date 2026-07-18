@@ -233,6 +233,11 @@ pub enum QueryOp {
     Abs,
     /// round each numeric line to the nearest integer.
     Round,
+    /// consecutive differences of the numeric series (n values → n-1 deltas) —
+    /// turns a monotonic counter into a per-step rate-of-change.
+    Delta,
+    /// running (cumulative) total of the numeric series.
+    Cumsum,
     /// prefix every line with a literal string.
     Prepend(String),
     /// suffix every line with a literal string.
@@ -921,6 +926,21 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         *l = fmt_num(v.round());
                     }
                 }
+            }
+            QueryOp::Delta => {
+                let ns = nums(&cur);
+                cur = ns.windows(2).map(|w| fmt_num(w[1] - w[0])).collect();
+            }
+            QueryOp::Cumsum => {
+                let ns = nums(&cur);
+                let mut acc = 0.0;
+                cur = ns
+                    .iter()
+                    .map(|&v| {
+                        acc += v;
+                        fmt_num(acc)
+                    })
+                    .collect();
             }
             QueryOp::Prepend(pre) => {
                 for l in cur.iter_mut() {

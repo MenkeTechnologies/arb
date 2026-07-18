@@ -1098,6 +1098,8 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "wc" => ops.push(QueryOp::Wc),
             "abs" => ops.push(QueryOp::Abs),
             "round" => ops.push(QueryOp::Round),
+            "delta" => ops.push(QueryOp::Delta),
+            "cumsum" => ops.push(QueryOp::Cumsum),
             "prepend" => ops.push(QueryOp::Prepend(str_arg(c))),
             "append" => ops.push(QueryOp::Append(str_arg(c))),
             "cut" => {

@@ -1270,3 +1270,18 @@ fn percentile_nearest_rank_and_sugar() {
     // Empty input → 0.
     assert_eq!(f("percentile 99", &[]), QueryResult::Scalar(0.0));
 }
+
+#[test]
+fn delta_and_cumsum() {
+    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    // Consecutive differences: n values → n-1 deltas.
+    assert_eq!(f("delta", &["10", "15", "15", "40"]), QueryResult::Lines(lines(&["5", "0", "25"])));
+    // Running total.
+    assert_eq!(f("cumsum", &["1", "2", "3", "4"]), QueryResult::Lines(lines(&["1", "3", "6", "10"])));
+    // Edge cases: single value → empty delta; empty input → empty.
+    assert_eq!(f("delta", &["5"]), QueryResult::Lines(lines(&[])));
+    assert_eq!(f("cumsum", &[]), QueryResult::Lines(lines(&[])));
+    // Composes: delta then sum recovers the net change (40-10=30).
+    let net = eval(&pipeline("gauge .x\nsource .x { in; delta; sum }"), &lines(&["10", "15", "15", "40"]), 1.0);
+    assert_eq!(net, QueryResult::Scalar(30.0));
+}

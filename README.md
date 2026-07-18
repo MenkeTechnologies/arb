@@ -389,7 +389,8 @@ families:
   `default K V`, `merge`.
 - **Transform** — `map EXPR`, `upper`/`lower`/`trim`/`title`, `replace`,
   `prepend`/`append`, `pad`/`lpad`, `repeat N`, `flip`, `words`, `enumerate`,
-  `join`, `floor`/`ceil`, `clamp LO HI`.
+  `join`, `floor`/`ceil`, `clamp LO HI`, `delta` (consecutive differences — a
+  counter's rate-of-change) / `cumsum` (running total).
 - **Encode** — `b64`/`b64d`, `hex`/`unhex`, `urlenc`/`urldec`.
 - **Order / dedup** — `sort`, `sort_by F`, `uniq`, `unique_by F`, `dedup`, `rev`,
   `first`/`last`/`take`/`drop`/`tailn`/`nth`/`slice`, `sample`.
