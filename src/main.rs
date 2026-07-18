@@ -132,6 +132,14 @@ struct Cli {
     #[arg(long = "preview", value_name = "CMD",
         help = "\x1b[32m//\x1b[0m fzf preview: run CMD on the cursor line ({}), output in a pane")]
     preview: Option<String>,
+    /// fzf prompt string (default `> `).
+    #[arg(long = "prompt", value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf prompt string (default '> ')")]
+    prompt: Option<String>,
+    /// fzf header line shown above the list.
+    #[arg(long = "header", value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf header line shown above the list")]
+    header: Option<String>,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
@@ -285,6 +293,11 @@ fn main() -> io::Result<()> {
             let label = consumer.clone().unwrap_or_else(|| cli.down.join(" "));
             Some((dstate, label))
         };
+        {
+            let mut c = controls.lock().unwrap();
+            c.prompt = cli.prompt.clone().unwrap_or_default();
+            c.header = cli.header.clone().unwrap_or_default();
+        }
         let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, cli.fzf);
         if cli.fzf {
             // On Enter (submit) emit the selection (marked lines, or the cursor

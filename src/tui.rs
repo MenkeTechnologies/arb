@@ -65,6 +65,10 @@ pub struct Controls {
     /// The line currently under the cursor (fzf mode), published by the run loop
     /// so a `--preview` thread can run its command on it as you move.
     pub current: String,
+    /// fzf prompt string (`--prompt`); empty falls back to `> `.
+    pub prompt: String,
+    /// fzf header line shown above the list (`--header`); empty = no header.
+    pub header: String,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -236,6 +240,16 @@ pub fn run(
     let mut fzf_hits: Vec<(i32, String)> = Vec::new(); // matching lines (non-empty filter)
     let mut fzf_matched: Vec<String> = Vec::new(); // display list
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
+    // fzf prompt/header (set once by `main` before this call).
+    let (fzf_prompt, fzf_header) = {
+        let c = controls.lock().unwrap();
+        let p = if c.prompt.is_empty() {
+            "> ".to_string()
+        } else {
+            c.prompt.clone()
+        };
+        (p, c.header.clone())
+    };
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
@@ -332,8 +346,12 @@ pub fn run(
                 (d.lines.iter().cloned().collect(), label.clone())
             });
             let prev_ref = prev_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
-            let draw = terminal
-                .draw(|f| render_fzf(f, matched, &filter, sel, &marks, total, err_ref, prev_ref));
+            let draw = terminal.draw(|f| {
+                render_fzf(
+                    f, matched, &filter, sel, &marks, total, err_ref, prev_ref, &fzf_prompt,
+                    &fzf_header,
+                )
+            });
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -524,6 +542,8 @@ fn render_fzf(
     total: u64,
     err: Option<(&[String], &str)>,
     preview: Option<(&[String], &str)>,
+    prompt: &str,
+    header: &str,
 ) {
     // Reserve a bottom strip for the stderr pane when present.
     let (top, err_area) = match err {
@@ -550,17 +570,23 @@ fn render_fzf(
     if let (Some(pa), Some((lines, label))) = (prev_area, preview) {
         render_output_pane(f, pa, label, lines);
     }
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(main_top);
+    let header_h: u16 = if header.is_empty() { 0 } else { 1 };
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(header_h),
+        Constraint::Min(0),
+    ])
+    .split(main_top);
     let marked = if marks.is_empty() {
         String::new()
     } else {
         format!(" ({})", marks.len())
     };
-    // fzf-style prompt: cyan "> ", the query with a cursor bar, then a cyan
-    // matched/total(marked) counter and dim key hints.
+    // fzf-style prompt: cyan prompt string, the query with a cursor bar, then a
+    // cyan matched/total(marked) counter and dim key hints.
     let cyan = Style::default().fg(Color::Cyan);
-    let prompt = Line::from(vec![
-        Span::styled("> ", cyan.add_modifier(Modifier::BOLD)),
+    let prompt_line = Line::from(vec![
+        Span::styled(prompt.to_string(), cyan.add_modifier(Modifier::BOLD)),
         Span::raw(format!("{filter}\u{258f}")),
         Span::styled(format!("   {}/{total}{marked}", matched.len()), cyan),
         Span::styled(
@@ -568,13 +594,19 @@ fn render_fzf(
             Style::default().fg(Color::DarkGray),
         ),
     ]);
-    f.render_widget(Paragraph::new(prompt), chunks[0]);
+    f.render_widget(Paragraph::new(prompt_line), chunks[0]);
+    if !header.is_empty() {
+        f.render_widget(
+            Paragraph::new(header).style(Style::default().fg(Color::DarkGray)),
+            chunks[1],
+        );
+    }
 
-    let inner_w = chunks[1].width as usize;
+    let inner_w = chunks[2].width as usize;
     // Only build ListItems for the VISIBLE window around the cursor — not the
     // whole (possibly million-line) match list. This is what keeps arb as fast as
     // fzf: fuzzy-highlighting and allocation happen for ~a screenful, not all rows.
-    let list_h = chunks[1].height as usize;
+    let list_h = chunks[2].height as usize;
     let n = matched.len();
     let sel = sel.min(n.saturating_sub(1));
     let start = if list_h > 0 && sel >= list_h {
@@ -596,7 +628,7 @@ fn render_fzf(
     let list = List::new(items)
         .highlight_symbol("\u{25b6} ")
         .highlight_style(Style::default().bg(Color::Rgb(38, 38, 46)).add_modifier(Modifier::BOLD));
-    f.render_stateful_widget(list, chunks[1], &mut state);
+    f.render_stateful_widget(list, chunks[2], &mut state);
 }
 
 /// Render the captured downstream output (`arb -- CMD`) as a tailed list pane —
