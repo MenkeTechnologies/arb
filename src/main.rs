@@ -10,9 +10,13 @@
 //! binds). The expression layer, fusevm lowering, web target, actors, and package
 //! manager are later milestones (see SPEC.md) and are not faked here.
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use clap::Parser;
 
@@ -111,6 +115,13 @@ struct Cli {
     #[arg(long = "json",
         help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines")]
     json: bool,
+    /// Downstream command after `--`: arb spawns it, feeds it the filtered
+    /// stream, and hooks its stdout+stderr to a temp file it tails in a pane —
+    /// so the program's output shows inside arb instead of corrupting the TUI.
+    /// E.g. `find / | arb -- grep error`.
+    #[arg(last = true,
+        help = "\x1b[32m//\x1b[0m Downstream `-- CMD …`: run it, capture its output into a pane")]
+    down: Vec<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -185,16 +196,35 @@ fn main() -> io::Result<()> {
     let downstream_reshape = spec.out.is_some() && !io::stdout().is_terminal();
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
+
+        // Optional `arb -- CMD`: spawn CMD with its stdout+stderr hooked to a temp
+        // file, tail that file into a display pane, and feed CMD the filtered
+        // stream on its stdin. Its output shows INSIDE arb instead of printing to
+        // the terminal (which would corrupt the TUI).
+        let (child_stdin, down_pane) = if cli.down.is_empty() {
+            (None, None)
+        } else {
+            match spawn_downstream(&cli.down) {
+                Ok((stdin, dstate)) => (Some(stdin), Some((dstate, cli.down.join(" ")))),
+                Err(e) => {
+                    eprintln!("arb: {}: {e}", cli.down[0]);
+                    std::process::exit(1);
+                }
+            }
+        };
+
         if needs_stdin {
-            // Tee stdin→stdout live only when piped onward, so a downstream
-            // consumer still receives the stream (`find / | arb | consumer`)
-            // without arb ever blocking the pipeline. When stdout is the terminal
-            // the TUI already owns it (via /dev/tty), so no tee. The tee is
-            // narrowed by the live filter — the megafilter reshapes what the
-            // consumer receives as you type.
-            spawn_reader(state.clone(), !io::stdout().is_terminal(), controls.clone());
+            // Feed the live filtered stream to stdout (only when piped onward, so
+            // arb never blocks or corrupts the terminal) AND to the downstream
+            // child's stdin. The filter narrows both in real time (the megafilter).
+            spawn_reader(
+                state.clone(),
+                !io::stdout().is_terminal(),
+                controls.clone(),
+                child_stdin,
+            );
         }
-        tui::run(&spec, state, controls)
+        tui::run(&spec, state, controls, down_pane)
     } else if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
@@ -356,7 +386,12 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// so `find / | arb | consumer` feeds `consumer` continuously while the TUI
 /// renders to /dev/tty — arb never blocks the pipeline. A closed consumer stops
 /// the passthrough but the TUI keeps updating.
-fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
+fn spawn_reader(
+    state: Arc<Mutex<StreamState>>,
+    tee: bool,
+    controls: Arc<Mutex<tui::Controls>>,
+    mut child_stdin: Option<std::process::ChildStdin>,
+) {
     thread::spawn(move || {
         let mut out = io::stdout().lock();
         let mut downstream_open = tee;
@@ -365,15 +400,70 @@ fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<t
                 Ok(l) => l,
                 Err(_) => break,
             };
-            if downstream_open {
-                // Megafilter: only tee lines matching the live filter, so what the
-                // user types reshapes the downstream consumer's input in real time.
-                let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
-                if pass && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
+            // Megafilter: only lines matching the live filter flow onward, so what
+            // the user types reshapes both stdout and the child's input live.
+            let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
+            if pass {
+                if downstream_open && writeln!(out, "{l}").and_then(|()| out.flush()).is_err() {
                     downstream_open = false;
+                }
+                if let Some(ci) = child_stdin.as_mut() {
+                    let _ = writeln!(ci, "{l}");
                 }
             }
             state.lock().unwrap().push(l);
+        }
+        // Close the child's stdin so it sees EOF and can finish.
+        drop(child_stdin);
+    });
+}
+
+/// Spawn `arb -- CMD`: run CMD with its stdout+stderr redirected to a temp file
+/// (never the terminal), start a tailer that streams that file into a fresh
+/// `StreamState` for the display pane, and hand back CMD's stdin so the reader
+/// can feed it the filtered stream. The temp file is left in place on exit.
+fn spawn_downstream(
+    cmd: &[String],
+) -> io::Result<(std::process::ChildStdin, Arc<Mutex<StreamState>>)> {
+    let tmp = std::env::temp_dir().join(format!("arb-{}.down", std::process::id()));
+    let out = File::create(&tmp)?;
+    let err = out.try_clone()?;
+    let mut child = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(err))
+        .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("no child stdin"))?;
+    // Detach: the child runs on its own; dropping the handle does not kill it.
+    drop(child);
+    let dstate = Arc::new(Mutex::new(StreamState::new()));
+    spawn_tailer(tmp, dstate.clone());
+    Ok((stdin, dstate))
+}
+
+/// Tail a growing file (the downstream child's captured output) into `dstate`,
+/// like `tail -f`: read new lines as they appear, sleeping at EOF.
+fn spawn_tailer(path: PathBuf, dstate: Arc<Mutex<StreamState>>) {
+    thread::spawn(move || {
+        let file = loop {
+            match File::open(&path) {
+                Ok(f) => break f,
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => thread::sleep(Duration::from_millis(100)),
+                Ok(_) => dstate.lock().unwrap().push(line.trim_end().to_string()),
+                Err(_) => break,
+            }
         }
     });
 }

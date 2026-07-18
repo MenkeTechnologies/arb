@@ -112,6 +112,7 @@ pub fn run(
     spec: &Spec,
     state: Arc<Mutex<StreamState>>,
     controls: Arc<Mutex<Controls>>,
+    down: Option<(Arc<Mutex<StreamState>>, String)>,
 ) -> io::Result<()> {
     let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     enable_raw_mode()?;
@@ -134,8 +135,19 @@ pub fn run(
         if quit {
             break Ok(());
         }
+        // Snapshot the downstream pane's recent output (tail) before drawing, so
+        // the render closure doesn't hold a second lock.
+        let down_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
+            let d = ds.lock().unwrap();
+            let n = d.lines.len();
+            let tail = d.lines.iter().skip(n.saturating_sub(1000)).cloned().collect();
+            (tail, label.clone())
+        });
         let st = state.lock().unwrap();
-        let draw = terminal.draw(|f| render(f, spec, &st, &filter));
+        let draw = terminal.draw(|f| {
+            let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
+            render(f, spec, &st, &filter, down_ref);
+        });
         drop(st);
         if let Err(e) = draw {
             break Err(e);
@@ -149,11 +161,26 @@ pub fn run(
     outcome
 }
 
-fn render(f: &mut Frame, spec: &Spec, st: &StreamState, filter: &str) {
+fn render(
+    f: &mut Frame,
+    spec: &Spec,
+    st: &StreamState,
+    filter: &str,
+    down: Option<(&[String], &str)>,
+) {
     // Reserve a one-row filter bar at the very bottom; widgets fill the rest.
     let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
-    let area = chunks[0];
+    let mut area = chunks[0];
     let bar = chunks[1];
+
+    // With a downstream command, split the main area: stream dashboard on the
+    // left, the captured `-- CMD` output pane on the right.
+    if let Some((dlines, label)) = down {
+        let cols =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
+        area = cols[0];
+        render_output_pane(f, cols[1], label, dlines);
+    }
 
     let matched = st.lines.iter().filter(|l| filter_matches(l, filter)).count();
     let hint = if filter.is_empty() {
@@ -190,6 +217,23 @@ fn render(f: &mut Frame, spec: &Spec, st: &StreamState, filter: &str) {
 /// One rect per widget. Auto vertical stack unless any widget has a grid cell,
 /// in which case a rows×cols grid is built and each widget placed in its cell
 /// (widgets sharing a cell overlap; last-drawn wins). Spans arrive later.
+/// Render the captured downstream output (`arb -- CMD`) as a tailed list pane —
+/// the child's stdout+stderr, hooked to a temp file and shown here so it never
+/// touches the terminal.
+fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
+    let title = format!(" -- {label} · {} ln ", lines.len());
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner_w = (area.width as usize).saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let skip = lines.len().saturating_sub(inner_h);
+    let items: Vec<ListItem> = lines
+        .iter()
+        .skip(skip)
+        .map(|l| ListItem::new(clip(l, inner_w)))
+        .collect();
+    f.render_widget(List::new(items).block(block), area);
+}
+
 fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
     let ws = &spec.widgets;
     let grid_mode = ws.iter().any(|w| w.grid.is_some());
