@@ -157,6 +157,28 @@ transform (`grep`/`reject`) drops lines downstream; a reducer (`count`) can't ma
 a single line and falls back to passthrough. The TUI stays up on `/dev/tty` while
 stdout carries the mapped data.
 
+### Key bindings — `bind C-<key> <action>`
+
+Drive the spec's own state from the keyboard. A `bind` maps a **control key** (so
+it never shadows filter typing) to an action: `set .name VALUE` writes an `input`
+value — with an `out { … apply .name }` map that reshapes the live pipe on a
+keystroke — or `quit`:
+
+```sh
+tail -f access.log | arb -e 'input .x
+                             tail .t
+                             source .t { in }
+                             out { in; apply .x }
+                             bind C-u set .x upper        # Ctrl-U: uppercase the pipe
+                             bind C-e set .x "grep /ERROR/"  # Ctrl-E: only errors
+                             bind C-r set .x ""           # Ctrl-R: reset to passthrough
+                             bind C-q quit' | downstream
+```
+
+Keys are `C-<letter>` (also `c-<letter>` or `^<letter>`). `set` binds turn the
+interactive map into a set of one-key presets; `quit` exits. This is the
+foundation for event-driven reactions (`expect`) coming later.
+
 ### fzf mode — `arb --fzf`
 
 A fuzzy select mode: filter a stream and pick line(s), printed to stdout on

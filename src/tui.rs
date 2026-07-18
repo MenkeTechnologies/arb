@@ -25,7 +25,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use rayon::prelude::*;
 
 use crate::query::{eval, is_line_streamable, QueryOp, QueryResult};
-use crate::spec::{Spec, Widget, WidgetKind};
+use crate::spec::{Bind, BindAction, Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
 
 /// Whether an interactive TUI can run: key events need a controlling terminal.
@@ -90,6 +90,9 @@ pub struct Controls {
     pub inputs: Vec<(String, String)>,
     /// Index of the focused input in `inputs`.
     pub focus: usize,
+    /// Key bindings (`bind C-<letter> …`): a matching control key runs its action
+    /// (set an input → drives the megafilter/map; quit).
+    pub binds: Vec<Bind>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -256,7 +259,28 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                                 c.cursor = 0;
                             }
                         }
-                        _ => {}
+                        // A declared `bind C-<letter> …` control key: run its action.
+                        // (Clone the action first so the immutable `binds` borrow
+                        // ends before we mutate `inputs`/`quit`.)
+                        _ => {
+                            if let Some(action) =
+                                c.binds.iter().find(|bd| bd.key == b).map(|bd| bd.action.clone())
+                            {
+                                match action {
+                                    BindAction::Quit => {
+                                        c.quit = true;
+                                        break 'read;
+                                    }
+                                    BindAction::SetInput { name, value } => {
+                                        if let Some(slot) =
+                                            c.inputs.iter_mut().find(|(n, _)| *n == name)
+                                        {
+                                            slot.1 = value;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     i += 1;
                 }

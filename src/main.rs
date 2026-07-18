@@ -336,6 +336,8 @@ fn main() -> io::Result<()> {
                 .filter(|w| w.kind == spec::WidgetKind::Input)
                 .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
                 .collect();
+            // Key bindings (`bind C-<letter> …`) drive the same input values.
+            c.binds = spec.binds.clone();
         }
         let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, fzf_mode, cli.height.clone());
         if fzf_mode {

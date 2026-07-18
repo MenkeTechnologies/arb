@@ -96,12 +96,47 @@ pub struct Widget {
     pub grid: Option<(usize, usize)>,
 }
 
+/// A key binding: a control key that triggers a [`BindAction`] in the TUI.
+/// Declared `bind C-<letter> <action>` — the arb-native way to drive the spec's
+/// own state from the keyboard (set a control, quit), foundation for reactions.
+#[derive(Debug, Clone)]
+pub struct Bind {
+    /// The raw control byte (e.g. Ctrl-U = 0x15).
+    pub key: u8,
+    pub action: BindAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindAction {
+    /// Set an `input .name` widget's value — with `out { … apply .name }` this
+    /// reshapes the live pipe on a keystroke (a keyboard-driven megafilter/map).
+    SetInput { name: String, value: String },
+    /// Quit the TUI.
+    Quit,
+}
+
+/// Parse a key spec (`C-u`, `c-u`, or `^u`) to its raw control byte. Only
+/// control-key binds are supported so a bind never shadows filter typing.
+pub fn parse_key(spec: &str) -> Option<u8> {
+    let letter = spec
+        .strip_prefix("C-")
+        .or_else(|| spec.strip_prefix("c-"))
+        .or_else(|| spec.strip_prefix('^'))?;
+    let ch = letter.chars().next()?;
+    if letter.chars().count() != 1 || !ch.is_ascii_alphabetic() {
+        return None;
+    }
+    Some((ch.to_ascii_uppercase() as u8) & 0x1f)
+}
+
 #[derive(Debug, Default)]
 pub struct Spec {
     pub widgets: Vec<Widget>,
     /// Downstream output pipeline (`out { … }`): applied to the stream and
     /// written to stdout, so arb can *modify* a pipe, not just visualize it.
     pub out: Option<Vec<QueryOp>>,
+    /// Key bindings (`bind C-<letter> <action>`).
+    pub binds: Vec<Bind>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -201,6 +236,39 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             };
             let pipeline = pipeline_from_body(body)?;
             set_search(spec, path, pipeline)?;
+        } else if c.name == "bind" {
+            // `bind C-<letter> set .name VALUE` | `bind C-<letter> quit`
+            let keyspec = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("bind: missing key (e.g. C-u)")?;
+            let key = parse_key(&keyspec)
+                .ok_or_else(|| format!("bind: `{keyspec}` is not a control key (use C-<letter>)"))?;
+            let verb = c
+                .args
+                .get(1)
+                .and_then(Arg::as_str)
+                .ok_or("bind: missing action (set | quit)")?;
+            let action = match verb {
+                "quit" => BindAction::Quit,
+                "set" => {
+                    let name = c
+                        .args
+                        .get(2)
+                        .and_then(Arg::as_str)
+                        .ok_or("bind set: missing input name (.name)")?;
+                    let name = name.strip_prefix('.').unwrap_or(name).to_string();
+                    let value = c.args[3..]
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    BindAction::SetInput { name, value }
+                }
+                other => return Err(format!("bind: unknown action `{other}` (set | quit)")),
+            };
+            spec.binds.push(Bind { key, action });
         } else if c.name == "out" {
             let body = match c.args.first() {
                 Some(Arg::Block(b)) => b,

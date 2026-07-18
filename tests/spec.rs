@@ -195,6 +195,50 @@ fn select_projection_maps_display_while_keeping_original() {
 }
 
 #[test]
+fn parse_key_control_specs() {
+    use arb::spec::parse_key;
+    assert_eq!(parse_key("C-u"), Some(0x15)); // Ctrl-U
+    assert_eq!(parse_key("c-r"), Some(0x12)); // Ctrl-R
+    assert_eq!(parse_key("^a"), Some(0x01)); // Ctrl-A
+    assert_eq!(parse_key("u"), None); // bare printable — not a control key
+    assert_eq!(parse_key("C-1"), None); // non-letter
+    assert_eq!(parse_key("C-uu"), None); // more than one letter
+}
+
+#[test]
+fn bind_parses_set_and_quit() {
+    use arb::spec::BindAction;
+    let s = build(
+        &parse("input .x\nbind C-u set .x upper\nbind C-q quit\nout { in; apply .x }").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.binds.len(), 2);
+    assert_eq!(s.binds[0].key, 0x15);
+    assert_eq!(
+        s.binds[0].action,
+        BindAction::SetInput { name: "x".into(), value: "upper".into() }
+    );
+    assert_eq!(s.binds[1].key, 0x11); // Ctrl-Q
+    assert_eq!(s.binds[1].action, BindAction::Quit);
+}
+
+#[test]
+fn bind_set_joins_multi_token_value() {
+    use arb::spec::BindAction;
+    let s = build(&parse("input .x\nbind C-f set .x field 2").unwrap()).unwrap();
+    assert_eq!(
+        s.binds[0].action,
+        BindAction::SetInput { name: "x".into(), value: "field 2".into() }
+    );
+}
+
+#[test]
+fn bind_rejects_non_control_key_and_unknown_action() {
+    assert!(build(&parse("bind u quit").unwrap()).is_err());
+    assert!(build(&parse("input .x\nbind C-u frobnicate .x").unwrap()).is_err());
+}
+
+#[test]
 fn interactive_out_maps_stream_with_live_input() {
     use std::collections::HashMap;
     // The megafilter/map: `out { in; apply .x }` resolved against a live input,
