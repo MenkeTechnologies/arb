@@ -170,16 +170,24 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
         match c.name.as_str() {
             "in" | "in.json" | "in.html" | "in.xml" => saw_in = true,
             "sel" => {
-                let css = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
+                let mut css_parts = Vec::new();
+                let mut attr = None;
+                let mut i = 0;
+                while i < words.len() {
+                    if words[i] == "-attr" {
+                        attr = words.get(i + 1).map(|s| s.to_string());
+                        i += 2;
+                    } else {
+                        css_parts.push(words[i]);
+                        i += 1;
+                    }
+                }
+                let css = css_parts.join(" ");
                 if css.trim().is_empty() {
                     return Err("sel: expected a CSS selector".into());
                 }
-                ops.push(QueryOp::Sel(css));
+                ops.push(QueryOp::Sel { css, attr });
             }
             "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
             "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),

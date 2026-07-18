@@ -70,6 +70,16 @@ fn sel_extracts_element_text() {
 }
 
 #[test]
+fn sel_attr_extracts_attribute() {
+    let ops = pipeline("tail .x\nsource .x { in.html; sel a -attr href }");
+    let html = lines(&[r#"<div><a href="/1">one</a><a href="/2">two</a><a>none</a></div>"#]);
+    assert_eq!(
+        eval(&ops, &html, 1.0),
+        QueryResult::Lines(lines(&["/1", "/2"]))
+    );
+}
+
+#[test]
 fn sel_class_then_tally() {
     let ops = pipeline("bars .x\nsource .x { in.html; sel .tag; tally }");
     let html = lines(&[

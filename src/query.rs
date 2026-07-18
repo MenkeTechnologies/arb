@@ -51,9 +51,10 @@ pub enum QueryOp {
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
     Vals,
-    /// Parse the accumulated stream as one HTML document and emit the text of
-    /// each element matching the CSS selector (one line per match).
-    Sel(String),
+    /// Parse the accumulated stream as one HTML document and emit, per element
+    /// matching the CSS selector, its text (or a named attribute if `attr` is
+    /// set; elements lacking that attribute are dropped).
+    Sel { css: String, attr: Option<String> },
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -163,12 +164,15 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
-            QueryOp::Sel(css) => {
+            QueryOp::Sel { css, attr } => {
                 let doc = Html::parse_document(&cur.join("\n"));
                 cur = match Selector::parse(css) {
                     Ok(sel) => doc
                         .select(&sel)
-                        .map(|el| el.text().collect::<String>().trim().to_string())
+                        .filter_map(|el| match attr {
+                            Some(a) => el.value().attr(a).map(str::to_string),
+                            None => Some(el.text().collect::<String>().trim().to_string()),
+                        })
                         .collect(),
                     Err(_) => Vec::new(),
                 };
