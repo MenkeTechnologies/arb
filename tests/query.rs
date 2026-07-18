@@ -60,6 +60,38 @@ fn field_then_tally_groups_sorted() {
 }
 
 #[test]
+fn numeric_aggregates() {
+    let data = lines(&["10", "20", "30", "40"]);
+    let run = |verb: &str| {
+        eval(
+            &pipeline(&format!("gauge .x\nsource .x {{ in; {verb} }}")),
+            &data,
+            1.0,
+        )
+    };
+    assert_eq!(run("sum"), QueryResult::Scalar(100.0));
+    assert_eq!(run("min"), QueryResult::Scalar(10.0));
+    assert_eq!(run("max"), QueryResult::Scalar(40.0));
+    assert_eq!(run("avg"), QueryResult::Scalar(25.0));
+}
+
+#[test]
+fn avg_over_json_field() {
+    let ops = pipeline("gauge .a\nsource .a { in.json; field ms; avg }");
+    let data = lines(&[r#"{"ms":100}"#, r#"{"ms":200}"#, r#"{"ms":300}"#]);
+    assert_eq!(eval(&ops, &data, 1.0), QueryResult::Scalar(200.0));
+}
+
+#[test]
+fn keys_flattens_object_keys() {
+    let ops = pipeline("tail .x\nsource .x { in.json; keys }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"a":1,"b":2}"#]), 1.0),
+        QueryResult::Lines(lines(&["a", "b"]))
+    );
+}
+
+#[test]
 fn each_flattens_json_array_jq_style() {
     // jq `.items[].name`  ==  field items; each; field name
     let ops = pipeline("tail .x\nsource .x { in.json; field items; each; field name }");

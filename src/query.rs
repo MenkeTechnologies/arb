@@ -42,6 +42,14 @@ pub enum QueryOp {
     Rate,
     /// Group identical values and count them, sorted by count desc then key asc.
     Tally,
+    /// Numeric reductions over lines parsed as numbers (non-numeric ignored).
+    Sum,
+    Min,
+    Max,
+    Avg,
+    /// Flatten a JSON object's keys / values into one line each.
+    Keys,
+    Vals,
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -113,6 +121,44 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let x = cur.len() as f64;
                 return QueryResult::Scalar(crate::expr::eval(e, x).unwrap_or(0.0));
             }
+            QueryOp::Sum => return QueryResult::Scalar(nums(&cur).iter().sum()),
+            QueryOp::Min => {
+                let m = nums(&cur).into_iter().fold(f64::INFINITY, f64::min);
+                return QueryResult::Scalar(if m.is_finite() { m } else { 0.0 });
+            }
+            QueryOp::Max => {
+                let m = nums(&cur).into_iter().fold(f64::NEG_INFINITY, f64::max);
+                return QueryResult::Scalar(if m.is_finite() { m } else { 0.0 });
+            }
+            QueryOp::Avg => {
+                let ns = nums(&cur);
+                let a = if ns.is_empty() {
+                    0.0
+                } else {
+                    ns.iter().sum::<f64>() / ns.len() as f64
+                };
+                return QueryResult::Scalar(a);
+            }
+            QueryOp::Keys => {
+                let mut out = Vec::new();
+                for l in &cur {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => out.extend(m.keys().cloned()),
+                        _ => out.push(l.clone()),
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::Vals => {
+                let mut out = Vec::new();
+                for l in &cur {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => out.extend(m.values().map(json_to_string)),
+                        _ => out.push(l.clone()),
+                    }
+                }
+                cur = out;
+            }
         }
     }
     QueryResult::Lines(cur)
@@ -155,6 +201,14 @@ fn walk(mut cur: Value, path: &[String]) -> Option<Value> {
         };
     }
     Some(cur)
+}
+
+/// Parse the numeric lines of a slice, ignoring non-numeric ones.
+fn nums(lines: &[String]) -> Vec<f64> {
+    lines
+        .iter()
+        .filter_map(|l| l.trim().parse::<f64>().ok())
+        .collect()
 }
 
 /// Format a computed number: integers without a decimal point, else default.

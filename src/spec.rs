@@ -176,6 +176,12 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "count" => ops.push(QueryOp::Count),
             "rate" => ops.push(QueryOp::Rate),
             "tally" => ops.push(QueryOp::Tally),
+            "sum" => ops.push(QueryOp::Sum),
+            "min" => ops.push(QueryOp::Min),
+            "max" => ops.push(QueryOp::Max),
+            "avg" => ops.push(QueryOp::Avg),
+            "keys" => ops.push(QueryOp::Keys),
+            "vals" => ops.push(QueryOp::Vals),
             "calc" => {
                 let src = c
                     .args
