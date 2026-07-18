@@ -92,6 +92,26 @@ fn sel_class_then_tally() {
 }
 
 #[test]
+fn string_transforms_upper_lower_trim() {
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; upper }"),
+            &lines(&["abc", "De"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["ABC", "DE"]))
+    );
+    assert_eq!(
+        eval(
+            &pipeline("tail .x\nsource .x { in; trim }"),
+            &lines(&["  hi  ", " yo"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["hi", "yo"]))
+    );
+}
+
+#[test]
 fn sort_then_uniq() {
     let ops = pipeline("tail .x\nsource .x { in; sort; uniq }");
     assert_eq!(

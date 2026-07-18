@@ -62,6 +62,10 @@ pub enum QueryOp {
     Last,
     Take(usize),
     Drop(usize),
+    /// Per-line string transforms.
+    Upper,
+    Lower,
+    Trim,
     /// Parse the accumulated stream as one HTML document and emit, per element
     /// matching the CSS selector, its text (or a named attribute if `attr` is
     /// set; elements lacking that attribute are dropped).
@@ -224,6 +228,21 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Take(n) => cur.truncate(*n),
             QueryOp::Drop(n) => {
                 cur.drain(0..(*n).min(cur.len()));
+            }
+            QueryOp::Upper => {
+                for l in cur.iter_mut() {
+                    *l = l.to_uppercase();
+                }
+            }
+            QueryOp::Lower => {
+                for l in cur.iter_mut() {
+                    *l = l.to_lowercase();
+                }
+            }
+            QueryOp::Trim => {
+                for l in cur.iter_mut() {
+                    *l = l.trim().to_string();
+                }
             }
             QueryOp::Sel { css, attr } => {
                 let doc = Html::parse_document(&cur.join("\n"));

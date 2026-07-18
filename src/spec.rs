@@ -311,6 +311,9 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
             "rev" => ops.push(QueryOp::Rev),
             "first" => ops.push(QueryOp::First),
             "last" => ops.push(QueryOp::Last),
+            "upper" => ops.push(QueryOp::Upper),
+            "lower" => ops.push(QueryOp::Lower),
+            "trim" => ops.push(QueryOp::Trim),
             "take" => ops.push(QueryOp::Take(count_arg(c, "take")?)),
             "drop" => ops.push(QueryOp::Drop(count_arg(c, "drop")?)),
             "calc" => {
