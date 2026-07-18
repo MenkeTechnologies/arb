@@ -36,6 +36,10 @@ struct Cli {
     /// List available presets (bundled stdlib + `~/.arb/lib`) and exit.
     #[arg(short = 'l', long = "list")]
     list: bool,
+    /// Save a spec as a named user preset in `~/.arb/lib`, then exit.
+    /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
+    #[arg(long = "save", value_name = "NAME")]
+    save: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -47,6 +51,10 @@ fn main() -> io::Result<()> {
             writeln!(out, "{name:<10} {desc}")?;
         }
         return Ok(());
+    }
+
+    if let Some(name) = cli.save.clone() {
+        return save_preset(&name, &cli);
     }
 
     let spec = match load_spec(&cli) {
@@ -76,6 +84,32 @@ fn main() -> io::Result<()> {
         }
         dump(&spec, &state)
     }
+}
+
+/// Validate a spec and copy it into `~/.arb/lib/NAME.arb` so it can later be run
+/// with `arb -p NAME` from anywhere.
+fn save_preset(name: &str, cli: &Cli) -> io::Result<()> {
+    let src = if let Some(e) = &cli.eval {
+        e.clone()
+    } else if let Some(f) = &cli.spec {
+        std::fs::read_to_string(f)?
+    } else {
+        eprintln!("arb: --save needs a spec — a FILE argument or -e SRC");
+        std::process::exit(2);
+    };
+    if let Err(e) = parser::parse(&src).and_then(|c| spec::build(&c)) {
+        eprintln!("arb: --save: invalid spec: {e}");
+        std::process::exit(1);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME not set"))?;
+    let dir = home.join(".arb/lib");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.arb"));
+    std::fs::write(&path, src)?;
+    eprintln!("arb: saved preset `{name}` -> {}", path.display());
+    Ok(())
 }
 
 fn load_spec(cli: &Cli) -> Result<Spec, String> {
