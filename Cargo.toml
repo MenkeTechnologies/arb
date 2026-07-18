@@ -1,0 +1,22 @@
+[package]
+name = "arb"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Visualize and modify Unix pipelines: pipe a stream in, arb spawns a dynamic TUI."
+repository = "https://github.com/MenkeTechnologies/arb"
+readme = "README.md"
+keywords = ["tui", "pipeline", "unix", "dashboard", "stream"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "arb"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+clap = { version = "4.5", features = ["derive"] }
+
+[profile.release]
+lto = true
+strip = true
