@@ -638,6 +638,23 @@ fn first_comment(src: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Canonical accent color for a widget's `-color NAME` opt, as a `#rrggbb` hex —
+/// the single source of truth shared by the TUI (parsed to an RGB color) and the
+/// web dashboard (used directly in CSS/SVG). Unknown/absent names default to cyan.
+pub fn color_hex(name: Option<&str>) -> &'static str {
+    match name.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("green") => "#00e676",
+        Some("red") => "#ff5252",
+        Some("yellow") => "#ffd740",
+        Some("orange") => "#ffab40",
+        Some("magenta") | Some("pink") => "#e040fb",
+        Some("blue") => "#40c4ff",
+        Some("white") => "#e0e0e0",
+        Some("gray") | Some("grey") => "#9e9e9e",
+        _ => "#00e5ff", // cyan (default)
+    }
+}
+
 /// The user preset library directory: `$ARB_LIB` when set (used by tests and for
 /// relocating the library), else `$HOME/.arb/lib`. `None` if neither is set.
 pub fn lib_dir() -> Option<std::path::PathBuf> {

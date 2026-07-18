@@ -221,8 +221,9 @@ fn data_json(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> String {
 /// text rather than a flat string.
 fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
     use serde_json::json;
+    let color = crate::spec::color_hex(w.opts.get("color").map(String::as_str));
     let base = |extra: serde_json::Value| {
-        let mut m = json!({ "path": w.path, "kind": w.kind.label() });
+        let mut m = json!({ "path": w.path, "kind": w.kind.label(), "color": color });
         if let (Some(obj), Some(ex)) = (m.as_object_mut(), extra.as_object()) {
             for (k, v) in ex {
                 obj.insert(k.clone(), v.clone());
@@ -360,22 +361,25 @@ const WIDGET_CSS: &str = "<style>\n\
 /// can never inject markup (no `innerHTML` with data).
 const POLLER: &str = "\
 const stat = document.getElementById('stat');\n\
-function bar(label, pct) {\n\
+function bar(label, pct, color) {\n\
   const row = document.createElement('div'); row.className = 'row';\n\
   const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;\n\
   const track = document.createElement('div'); track.className = 'track';\n\
   const fill = document.createElement('div'); fill.className = 'fill';\n\
   fill.style.width = Math.max(0, Math.min(100, pct)) + '%';\n\
+  if (color) fill.style.background = color;\n\
   track.appendChild(fill); row.appendChild(lab); row.appendChild(track);\n\
   return row;\n\
 }\n\
 function render(el, it) {\n\
   el.replaceChildren();\n\
+  const color = it.color || '#00e5ff';\n\
   if (it.kind === 'gauge') {\n\
     const max = it.max || 100, v = it.scalar || 0;\n\
-    el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0));\n\
+    el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0, color));\n\
   } else if (it.spark !== undefined) {\n\
     const s = document.createElement('div'); s.className = 'spark';\n\
+    s.style.color = color;\n\
     s.textContent = it.spark || '\\u2014'; el.appendChild(s);\n\
   } else if (it.series) {\n\
     const NS = 'http://www.w3.org/2000/svg', W = 100, H = 40;\n\
@@ -388,7 +392,7 @@ function render(el, it) {\n\
       const pts = s.map((v, i) => (i / (s.length - 1) * W) + ',' + (H - (v - mn) / rng * H)).join(' ');\n\
       const pl = document.createElementNS(NS, 'polyline');\n\
       pl.setAttribute('points', pts); pl.setAttribute('fill', 'none');\n\
-      pl.setAttribute('stroke', '#00e5ff'); pl.setAttribute('stroke-width', '1');\n\
+      pl.setAttribute('stroke', color); pl.setAttribute('stroke-width', '1');\n\
       pl.setAttribute('vector-effect', 'non-scaling-stroke'); svg.appendChild(pl);\n\
     }\n\
     el.appendChild(svg);\n\
@@ -396,7 +400,7 @@ function render(el, it) {\n\
     const t = document.createElement('table'); t.className = 'tbl';\n\
     if (it.headers && it.headers.length) {\n\
       const tr = document.createElement('tr');\n\
-      it.headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });\n\
+      it.headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; th.style.color = color; tr.appendChild(th); });\n\
       const thead = document.createElement('thead'); thead.appendChild(tr); t.appendChild(thead);\n\
     }\n\
     const tb = document.createElement('tbody');\n\
@@ -409,7 +413,7 @@ function render(el, it) {\n\
   } else if (it.pairs) {\n\
     const rows = it.pairs.slice(0, it.top || 20);\n\
     const maxv = Math.max(1, ...rows.map(p => p[1]));\n\
-    rows.forEach(([k, v]) => el.appendChild(bar(k + '  ' + v, v / maxv * 100)));\n\
+    rows.forEach(([k, v]) => el.appendChild(bar(k + '  ' + v, v / maxv * 100, color)));\n\
   } else {\n\
     const pre = document.createElement('pre'); pre.className = 'txt';\n\
     pre.textContent = it.text || ''; el.appendChild(pre);\n\

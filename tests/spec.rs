@@ -361,3 +361,14 @@ fn select_widget_parses_with_opts() {
     assert_eq!(s.widgets[0].opts.get("header").map(String::as_str), Some("files"));
     assert!(s.widgets[0].source.is_some());
 }
+
+#[test]
+fn color_hex_maps_names_case_insensitively() {
+    use arb::spec::color_hex;
+    assert_eq!(color_hex(Some("green")), "#00e676");
+    assert_eq!(color_hex(Some("RED")), "#ff5252");
+    assert_eq!(color_hex(Some(" Yellow ")), "#ffd740");
+    assert_eq!(color_hex(Some("grey")), "#9e9e9e");
+    assert_eq!(color_hex(None), "#00e5ff"); // default cyan
+    assert_eq!(color_hex(Some("bogus")), "#00e5ff"); // unknown → default
+}

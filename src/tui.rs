@@ -956,6 +956,22 @@ fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
         .collect()
 }
 
+/// Parse a `#rrggbb` hex string (from [`crate::spec::color_hex`]) into a ratatui
+/// RGB color; falls back to cyan on any malformed input.
+fn hex_color(hex: &str) -> Color {
+    let h = hex.trim_start_matches('#');
+    if h.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        ) {
+            return Color::Rgb(r, g, b);
+        }
+    }
+    Color::Cyan
+}
+
 fn render_widget(
     f: &mut Frame,
     area: Rect,
@@ -971,7 +987,13 @@ fn render_widget(
         st.total,
         st.rate()
     );
-    let block = Block::default().borders(Borders::ALL).title(title);
+    // Per-widget accent (`-color NAME`): tints the border and each kind's accent
+    // element (gauge/bar fill, spark, chart line, table header). Default cyan.
+    let accent = hex_color(crate::spec::color_hex(w.opts.get("color").map(String::as_str)));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(title);
     // Inner width for clipping long lines so they never overflow the box.
     let inner_w = (area.width as usize).saturating_sub(2);
     match w.kind {
@@ -1018,6 +1040,7 @@ fn render_widget(
             let ratio = if max > 0.0 { (val / max).clamp(0.0, 1.0) } else { 0.0 };
             let g = Gauge::default()
                 .block(block)
+                .gauge_style(Style::default().fg(accent))
                 .ratio(ratio)
                 .label(format!("{val:.0}/{max:.0}"));
             f.render_widget(g, area);
@@ -1039,6 +1062,7 @@ fn render_widget(
             let bw = ((inner_w / n).saturating_sub(1)).clamp(1, 12) as u16;
             let chart = BarChart::default()
                 .block(block)
+                .bar_style(Style::default().fg(accent))
                 .bar_width(bw)
                 .bar_gap(1)
                 .data(&shown[..]);
@@ -1065,7 +1089,7 @@ fn render_widget(
             let datasets = vec![Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Cyan))
+                .style(Style::default().fg(accent))
                 .data(&points)];
             let chart = Chart::new(datasets)
                 .block(block)
@@ -1085,7 +1109,7 @@ fn render_widget(
             let start = series.len().saturating_sub(cap);
             let spark = crate::query::sparkline(&series[start..]);
             f.render_widget(
-                Paragraph::new(spark).style(Style::default().fg(Color::Cyan)).block(block),
+                Paragraph::new(spark).style(Style::default().fg(accent)).block(block),
                 area,
             );
         }
@@ -1121,7 +1145,7 @@ fn render_widget(
             if !headers.is_empty() {
                 table = table.header(
                     Row::new(headers.iter().map(|h| Cell::from(h.clone())).collect::<Vec<_>>())
-                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
                 );
             }
             f.render_widget(table, area);
