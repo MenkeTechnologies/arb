@@ -211,6 +211,23 @@ fn each_passes_non_array_through() {
 }
 
 #[test]
+fn csv_field_by_header_name_tally() {
+    let ops = pipeline("bars .x\nsource .x { in.csv; field status; tally }");
+    let data = lines(&["name,status", "a,ok", "b,err", "c,ok"]);
+    assert_eq!(
+        eval(&ops, &data, 1.0),
+        QueryResult::Pairs(vec![("ok".into(), 2), ("err".into(), 1)])
+    );
+}
+
+#[test]
+fn csv_where_numeric_column_count() {
+    let ops = pipeline("gauge .x\nsource .x { in.csv; where ms > 100; count }");
+    let data = lines(&["path,ms", "/a,50", "/b,150", "/c,200"]);
+    assert_eq!(eval(&ops, &data, 1.0), QueryResult::Scalar(2.0));
+}
+
+#[test]
 fn logfmt_field_by_name_tally() {
     let ops = pipeline("bars .x\nsource .x { in.logfmt; field level; tally }");
     let data = lines(&["level=INFO msg=a", "level=ERROR msg=b", "level=INFO msg=c"]);

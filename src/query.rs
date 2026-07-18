@@ -66,6 +66,9 @@ pub enum QueryOp {
     /// matching the CSS selector, its text (or a named attribute if `attr` is
     /// set; elements lacking that attribute are dropped).
     Sel { css: String, attr: Option<String> },
+    /// Treat the stream as CSV: the first line is the header; each data row
+    /// becomes a JSON object keyed by the header, so `field NAME` works.
+    Csv,
     /// Reduce to a scalar computed by an arithmetic expression over the current
     /// line count (`x`), evaluated on the fusevm VM.
     Calc(Expr),
@@ -175,6 +178,22 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
+            QueryOp::Csv => {
+                if !cur.is_empty() {
+                    let header = split_csv(&cur[0]);
+                    let mut out = Vec::with_capacity(cur.len() - 1);
+                    for row in &cur[1..] {
+                        let vals = split_csv(row);
+                        let mut obj = serde_json::Map::new();
+                        for (i, name) in header.iter().enumerate() {
+                            let v = vals.get(i).cloned().unwrap_or_default();
+                            obj.insert(name.clone(), Value::String(v));
+                        }
+                        out.push(Value::Object(obj).to_string());
+                    }
+                    cur = out;
+                }
+            }
             QueryOp::Sort { numeric, reverse } => {
                 if *numeric {
                     cur.sort_by(|a, b| {
@@ -241,6 +260,12 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
             })
             .unwrap_or_default(),
     }
+}
+
+/// Split a CSV line on commas, trimming each field. (Quoted fields containing
+/// commas are not yet handled.)
+fn split_csv(line: &str) -> Vec<String> {
+    line.split(',').map(|s| s.trim().to_string()).collect()
 }
 
 /// Extract a `key=value` (logfmt) field from a line; strips surrounding quotes.
