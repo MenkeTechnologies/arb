@@ -398,21 +398,27 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// the passthrough but the TUI keeps updating.
 fn spawn_reader(state: Arc<Mutex<StreamState>>, tee: bool, controls: Arc<Mutex<tui::Controls>>) {
     thread::spawn(move || {
-        let mut out = io::stdout().lock();
+        // Only hold the stdout lock when actually teeing. Otherwise (e.g. --fzf,
+        // which emits its selection from `main` after the TUI exits) this thread
+        // would keep stdout locked for its whole life and deadlock `main`'s final
+        // `println!` — the process would never terminate after selection.
+        let mut out = if tee { Some(io::stdout().lock()) } else { None };
         let mut downstream_open = tee;
         for line in io::stdin().lock().lines() {
             let l = match line {
                 Ok(l) => l,
                 Err(_) => break,
             };
-            // Megafilter: only lines matching the live filter flow to stdout, so
-            // what the user types reshapes the downstream pipe in real time.
-            let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
-            if pass
-                && downstream_open
-                && writeln!(out, "{l}").and_then(|()| out.flush()).is_err()
-            {
-                downstream_open = false;
+            if let Some(o) = out.as_mut() {
+                // Megafilter: only lines matching the live filter flow to stdout,
+                // so what the user types reshapes the downstream pipe in real time.
+                let pass = tui::filter_matches(&l, &controls.lock().unwrap().filter);
+                if pass
+                    && downstream_open
+                    && writeln!(o, "{l}").and_then(|()| o.flush()).is_err()
+                {
+                    downstream_open = false;
+                }
             }
             state.lock().unwrap().push(l);
         }
