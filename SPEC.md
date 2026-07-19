@@ -360,6 +360,8 @@ today) and native/cdylib packages remain future work.
 
 Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream command (or data shape) → resolves the matching package → renders. Every common pipeline (docker/kubectl/psql/nginx/git/systemctl/…) gets a shared, installable dashboard. No registry of shareable pipeline TUIs exists today — this is the world-first ecosystem leg.
 
+**Ships today** — zero-config **data-shape sniffing**: `cmd | arb` (no spec, piped) peeks the first stream lines (via a non-blocking `poll`, so it never delays startup or hangs on an idle producer) and auto-selects the matching stdlib preset — JSON object streams → `json`/`logs`/`nginx`, tool headers → `docker`/`top`/`k8s`, git-log → `git`, CSV/TSV → `table` — replaying the peeked lines so nothing is lost, and falling back to the plain tail on no match. The **upstream-command** leg (identifying the producer process by argv) is deferred: the data-shape leg dominates it cross-platform (macOS pipe-peer matching needs fragile FFI), and covers every motivating producer via its header/shape.
+
 ## 20. Architecture (fusevm frontend, original — mechanics ported, semantics fresh)
 
 Deps (rubyrs-lean): `fusevm{jit}`, `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json`/`serde_yaml`/`toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.

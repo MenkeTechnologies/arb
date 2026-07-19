@@ -515,12 +515,16 @@ the terminal or the browser) is complete:
   `~/.arb/pkg`; `arb publish` validates + prints PR steps).
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
+- **Zero-config sniffing** — `cmd | arb` (no spec) peeks the stream and
+  auto-picks a preset by data shape (JSON→`json`/`logs`, `docker`/`top`/`k8s`
+  headers, git-log, CSV→`table`); a non-blocking `poll` peek never hangs, and
+  the peeked lines are replayed so nothing is lost.
 
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — the hosted
 registry index behind `arb publish` (the client validates + prints PR steps
-today) with native/cdylib packages and semver resolution, and upstream-command
-sniffing for the shareable-dashboard ecosystem. Akka-style actors and
-mouse/resize events are
+today) with native/cdylib packages and multi-version semver resolution, and the
+upstream-**command** sniffing leg (producer argv) — zero-config **data-shape**
+sniffing already ships. Akka-style actors and mouse/resize events are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
 bytes with no mouse event stream.
 

@@ -360,10 +360,30 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    // Zero-config sniffing: with no spec and a piped stream (not fzf), peek the
+    // first lines and auto-pick the matching stdlib preset. The peeked lines are
+    // replayed into the stream so nothing is lost.
+    let sniff_ok =
+        no_spec_args && run_pipeline.is_none() && !cli.fzf && !io::stdin().is_terminal();
+    let mut prelude: Vec<String> = Vec::new();
+    let sniffed: Option<&'static str> = if sniff_ok {
+        prelude = peek_lines(SNIFF_LINES, SNIFF_DEADLINE_MS);
+        let refs: Vec<&str> = prelude.iter().map(String::as_str).collect();
+        arb::sniff::sniff(&refs)
+    } else {
+        None
+    };
+
     let spec = if positional_pipeline {
         // The positional was a pipeline, not a spec file — use the zero-config
         // default (a select list under `--fzf`, otherwise a stream tail).
         spec::build(&parser::parse(default_spec_src(cli.fzf)).unwrap()).unwrap()
+    } else if let Some(name) = sniffed {
+        // Sniffed a producer/data shape -> its preset; fall back to the tail if
+        // the preset fails to build for any reason (never break zero-config).
+        parser::parse(&format!("import {name}"))
+            .and_then(|c| spec::build(&c))
+            .unwrap_or_else(|_| spec::build(&parser::parse(default_spec_src(false)).unwrap()).unwrap())
     } else {
         match load_spec(&cli) {
             Ok(s) => s,
@@ -439,7 +459,7 @@ fn main() -> io::Result<()> {
             }
         } else if needs_stdin {
             let controls = Arc::new(Mutex::new(tui::Controls::default()));
-            spawn_reader(state.clone(), false, controls, None);
+            spawn_reader(state.clone(), false, controls, None, prelude.clone());
         }
         return arb::serve::serve(spec, state, cli.port);
     }
@@ -480,7 +500,7 @@ fn main() -> io::Result<()> {
                 // resolving `apply .name` against live `input` values — so typing
                 // in a control reshapes the downstream pipe in real time.
                 let tee = !fzf_mode && !io::stdout().is_terminal();
-                spawn_reader(state.clone(), tee, controls.clone(), spec.out.clone());
+                spawn_reader(state.clone(), tee, controls.clone(), spec.out.clone(), prelude.clone());
             }
             None
         };
@@ -576,7 +596,7 @@ fn main() -> io::Result<()> {
             stream_out(out_ops)
         } else {
             if needs_stdin {
-                read_stdin_sync(&state);
+                read_stdin_sync(&state, &prelude);
             }
             emit_out(out_ops, &state, cli.json)
         }
@@ -585,7 +605,7 @@ fn main() -> io::Result<()> {
         // passive tap: forward the stream through untouched so the downstream
         // consumer still receives it (`find / | arb dash.arb | stryke`). Only an
         // explicit `out { … }` changes what flows downstream.
-        passthrough()
+        passthrough(&prelude)
     } else {
         dump(&spec, &state)
     }
@@ -594,10 +614,12 @@ fn main() -> io::Result<()> {
 /// arb as a transparent tap: copy every stdin line to stdout unchanged, flushing
 /// per line so a live upstream (`tail -f`) reaches the downstream consumer
 /// promptly. Used when a dashboard spec is piped onward with no `out { … }`.
-fn passthrough() -> io::Result<()> {
+fn passthrough(prelude: &[String]) -> io::Result<()> {
     let stdin = io::stdin();
     let mut out = io::stdout().lock();
-    for line in stdin.lock().lines() {
+    // Replay any sniff-peeked lines first, then the rest of stdin.
+    let feed = prelude.iter().cloned().map(Ok::<_, io::Error>).chain(stdin.lock().lines());
+    for line in feed {
         let l = match line {
             Ok(l) => l,
             Err(_) => break,
@@ -756,6 +778,41 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
 /// The synthesized spec source when the user gave no spec/`-e`/`-p`. `--fzf`
 /// yields a one-widget `select` list (fzf as a DSL spec); otherwise a full-screen
 /// tail of stdin. Both bind `in` so the shared stream feeds the widget.
+/// How many lines to peek for zero-config sniffing, and how long to wait for
+/// them — sniffing must never delay startup or hang on an idle producer.
+const SNIFF_LINES: usize = 8;
+const SNIFF_DEADLINE_MS: i32 = 150;
+
+/// True if stdin (fd 0) has data ready to read within `timeout_ms` — so peeking
+/// never blocks on an idle producer (e.g. `tail -f empty.log | arb`).
+fn stdin_ready(timeout_ms: i32) -> bool {
+    let mut pfd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+    // SAFETY: single valid pollfd, count 1.
+    unsafe { libc::poll(&mut pfd, 1, timeout_ms) > 0 && (pfd.revents & libc::POLLIN) != 0 }
+}
+
+/// Peek up to `max` lines from stdin for sniffing, without ever blocking on an
+/// idle producer. Consumed lines are returned so the caller replays them into
+/// the stream (the rest stay buffered in the global stdin for the feed thread).
+fn peek_lines(max: usize, deadline_ms: i32) -> Vec<String> {
+    use std::io::BufRead;
+    let mut out = Vec::new();
+    let stdin = io::stdin();
+    let mut lock = stdin.lock();
+    for _ in 0..max {
+        if !stdin_ready(deadline_ms) {
+            break; // no data ready — don't block
+        }
+        let mut line = String::new();
+        match lock.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => out.push(line.trim_end_matches(['\n', '\r']).to_string()),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
 fn default_spec_src(fzf: bool) -> &'static str {
     if fzf {
         "select .sel\nsource .sel { in }"
@@ -839,6 +896,7 @@ fn spawn_reader(
     tee: bool,
     controls: Arc<Mutex<tui::Controls>>,
     out_ops: Option<Vec<QueryOp>>,
+    prelude: Vec<String>,
 ) {
     thread::spawn(move || {
         // Only hold the stdout lock when actually teeing. Otherwise (e.g. --fzf,
@@ -856,7 +914,9 @@ fn spawn_reader(
         let mut last_inputs: Option<Vec<(String, String)>> = None;
         let mut resolved: Vec<QueryOp> = Vec::new();
         let mut resolved_ok = false;
-        for line in io::stdin().lock().lines() {
+        // Replay any sniff-peeked lines first, then the rest of stdin.
+        let feed = prelude.into_iter().map(Ok::<_, io::Error>).chain(io::stdin().lock().lines());
+        for line in feed {
             let l = match line {
                 Ok(l) => l,
                 Err(_) => break,
@@ -1024,7 +1084,10 @@ fn run_capture(cmd: &[String], input: &[String]) -> Vec<String> {
     }
 }
 
-fn read_stdin_sync(state: &Arc<Mutex<StreamState>>) {
+fn read_stdin_sync(state: &Arc<Mutex<StreamState>>, prelude: &[String]) {
+    for l in prelude {
+        state.lock().unwrap().push(l.clone());
+    }
     for line in io::stdin().lock().lines() {
         match line {
             Ok(l) => state.lock().unwrap().push(l),
