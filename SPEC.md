@@ -182,7 +182,7 @@ list .t                   gauge .t -label L -max N spark .t
 bars .t -label L          histo .t                chart .t
 select .s -prompt P -header H     input .i -placeholder P    # interactive
 tabs .t -tabs {a b}       block .t -title T -border  frame .f
-.t configure -max 200     # live reconfigure
+.t configure -max 200     # reconfigure (merge opts into a declared widget)
 ```
 
 Any widget takes `-color NAME` (green/red/yellow/orange/magenta/blue/white/gray,
@@ -363,7 +363,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 0. ✅ **Walking skeleton** — `echo hi | arb -e 'text .t <- in'`: lex→parse→lower→fusevm→one ratatui widget from stdin.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics). *(module namespacing `import X as Y`: 🟡)*
-3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(control-path predicates `where(lat < .th)`: ⬜)*
+3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(numeric control-path predicates `where lat < .th` ✅; string/set predicates `match(.q)`, `level in .lv` ⬜ — need dedicated `filter`/`facet` widgets + a string/set expr layer)*
 4. 🟡 Expect reactions + events/bind — `expect /re/ set|quit`, `bind C-<key> set|quit` ship; full action vocab (`alert`/`flash`/`beep`/`exec`) + block form: ⬜.
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard; `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).

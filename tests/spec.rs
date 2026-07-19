@@ -174,6 +174,37 @@ fn import_absolute_arb_path_resolves() {
 }
 
 #[test]
+fn configure_merges_widget_opts() {
+    // `.g configure -max 200` retunes an already-declared widget (later wins).
+    let s = build(&parse("gauge .g -max 100\n.g configure -max 200 -color red").unwrap()).unwrap();
+    let w = s.widgets.iter().find(|w| w.path == ".g").unwrap();
+    assert_eq!(w.opts.get("max").map(String::as_str), Some("200"));
+    assert_eq!(w.opts.get("color").map(String::as_str), Some("red"));
+    // configure on an unknown widget errors; a `<- in` bind still works.
+    assert!(build(&parse(".nope configure -max 1").unwrap()).is_err());
+    assert!(build(&parse("tail .x\n.x <- in").unwrap()).is_ok());
+}
+
+#[test]
+fn import_as_alias_rejected_clearly() {
+    // `import X as Y` namespacing is unbuilt; reject instead of silently dropping.
+    let e = build(&parse("import nums as g").unwrap()).unwrap_err();
+    assert!(e.contains("as"), "error should mention `as`: {e}");
+    assert!(build(&parse("import nums").unwrap()).is_ok());
+}
+
+#[test]
+fn parse_key_tk_named_keys() {
+    use arb::spec::parse_key;
+    assert_eq!(parse_key("<Enter>"), Some(0x0d));
+    assert_eq!(parse_key("<Esc>"), Some(0x1b));
+    assert_eq!(parse_key("<Tab>"), Some(0x09));
+    assert_eq!(parse_key("<Key-q>"), Some(b'q'));
+    assert_eq!(parse_key("<Key-qq>"), None); // must be a single letter
+    assert_eq!(parse_key("C-u"), Some(0x15)); // control forms still parse
+}
+
+#[test]
 fn tabs_widget_captures_labels_from_block() {
     // `-tabs {a b}` -> the widget's opts carry a comma-joined word list.
     let s = build(&parse("tabs .t -tabs {alpha beta}").unwrap()).unwrap();
@@ -233,6 +264,37 @@ fn apply_resolves_input_pipeline() {
         arb::query::QueryResult::Lines(ls) => assert_eq!(ls, lines),
         other => panic!("got {other:?}"),
     }
+}
+
+#[test]
+fn control_path_numeric_predicate_filters_by_live_value() {
+    use std::collections::HashMap;
+    // SPEC §12: a control path used as a value = its live state. `where lat < .th`
+    // filters the passthrough by the `.th` control's current number.
+    let s = build(&parse("input .th\nout { in; where lat < .th }").unwrap()).unwrap();
+    let ops = s.out.as_ref().unwrap();
+    let data = vec![r#"{"lat":2}"#.to_string(), r#"{"lat":9}"#.to_string()];
+
+    // th = 5 -> keep only lat < 5.
+    let mut inputs = HashMap::new();
+    inputs.insert("th".to_string(), "5".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![r#"{"lat":2}"#]),
+        other => panic!("got {other:?}"),
+    }
+    // th unset -> the filter is dropped entirely (unset threshold = no filter).
+    let empty: HashMap<String, String> = HashMap::new();
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &empty), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, data),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn control_ref_parses_but_plain_field_predicate_still_works() {
+    // `.th` is a control ref; a bareword field predicate must be unaffected.
+    assert!(build(&parse("input .th\nout { in; where lat < .th }").unwrap()).is_ok());
+    assert!(build(&parse("out { in; where price > 10 }").unwrap()).is_ok());
 }
 
 #[test]

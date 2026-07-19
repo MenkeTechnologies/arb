@@ -118,9 +118,24 @@ pub enum BindAction {
     Quit,
 }
 
-/// Parse a key spec (`C-u`, `c-u`, or `^u`) to its raw control byte. Only
-/// control-key binds are supported so a bind never shadows filter typing.
+/// Parse a key spec to its raw byte. Accepts control-key forms (`C-u`, `c-u`,
+/// `^u`) and the Tk named keys `<Enter>`/`<Esc>`/`<Tab>` and `<Key-X>` (a single
+/// letter). Only these forms bind, so a bind never shadows plain filter typing.
 pub fn parse_key(spec: &str) -> Option<u8> {
+    match spec {
+        "<Enter>" | "<Return>" => return Some(0x0d),
+        "<Esc>" | "<Escape>" => return Some(0x1b),
+        "<Tab>" => return Some(0x09),
+        _ => {}
+    }
+    // `<Key-x>` -> the literal letter byte.
+    if let Some(inner) = spec.strip_prefix("<Key-").and_then(|s| s.strip_suffix('>')) {
+        let ch = inner.chars().next()?;
+        if inner.chars().count() == 1 && ch.is_ascii_alphabetic() {
+            return Some(ch as u8);
+        }
+        return None;
+    }
     let letter = spec
         .strip_prefix("C-")
         .or_else(|| spec.strip_prefix("c-"))
@@ -190,6 +205,10 @@ pub fn resolve_pipeline(
     ops: &[QueryOp],
     inputs: &std::collections::HashMap<String, String>,
 ) -> Vec<QueryOp> {
+    // Resolve a control name to its live numeric value (empty/non-numeric -> None).
+    let num = |n: &str| -> Option<f64> {
+        inputs.get(n).and_then(|v| v.trim().parse::<f64>().ok())
+    };
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
         match op {
@@ -203,6 +222,24 @@ pub fn resolve_pipeline(
                         }
                     }
                 }
+            }
+            // `where(lat < .th)`: substitute each control-ref with its live value.
+            // If any referenced control is unset/non-numeric, drop the filter
+            // entirely (an unset threshold means "no filter", not "reject all").
+            QueryOp::Where(e) => {
+                let mut names = Vec::new();
+                crate::expr::control_names(e, &mut names);
+                if names.is_empty() {
+                    out.push(op.clone());
+                } else if names.iter().all(|n| num(n).is_some()) {
+                    out.push(QueryOp::Where(crate::expr::substitute_controls(e, &num)));
+                }
+                // else: a referenced control is unset -> drop this `where`.
+            }
+            // `map(x * .k)`: substitute resolvable controls; an unresolved one
+            // stays a control (-> NaN) rather than dropping the transform.
+            QueryOp::Map(e) => {
+                out.push(QueryOp::Map(crate::expr::substitute_controls(e, &num)));
             }
             other => out.push(other.clone()),
         }
@@ -223,6 +260,14 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .first()
                 .and_then(Arg::as_str)
                 .ok_or("import: missing module name")?;
+            // `import X as Y` namespacing is not built yet; the alias was
+            // silently dropped before (module inlined under bare paths, so a
+            // later `.Y.foo` failed confusingly). Reject it honestly.
+            if c.args.get(1).and_then(Arg::as_str) == Some("as") {
+                return Err(
+                    "import: `as` namespace alias not yet supported — import without `as`".into(),
+                );
+            }
             let src = resolve_module(name)?;
             let sub = crate::parser::parse(&src)?;
             build_into(spec, &sub, depth + 1)?;
@@ -320,12 +365,18 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             let rowspan = opt("rowspan", 1).max(1);
             set_grid(spec, path, (opt("row", 0), opt("col", 0)), (rowspan, colspan))?;
         } else if c.name.starts_with('.') {
-            // `.path <- in` bind shorthand (empty pipeline). `configure` etc. later.
             if c.args.first().and_then(Arg::as_str) == Some("<-")
                 && c.args.get(1).and_then(Arg::as_str) == Some("in")
             {
+                // `.path <- in` bind shorthand (empty pipeline).
                 let path = c.name.clone();
                 set_source(spec, &path, Source { pipeline: vec![] })?;
+            } else if c.args.first().and_then(Arg::as_str) == Some("configure") {
+                // `.path configure -max 200`: merge new opts into the target
+                // widget (build-time; later keys win). Runtime reconfigure via a
+                // bind/expect mutating live opts is a separate, larger feature.
+                let opts = parse_opts(&c.args[1..]);
+                configure_widget(spec, &c.name, opts)?;
             }
         }
         // Unknown verbs are ignored.
@@ -1259,6 +1310,22 @@ fn set_source(spec: &mut Spec, path: &str, src: Source) -> Result<(), String> {
         }
     }
     Err(format!("source: no widget named `{path}`"))
+}
+
+/// `.path configure -k v …`: merge `opts` into the named widget's options
+/// (later keys win), so a spec can retune a widget after declaring it.
+fn configure_widget(
+    spec: &mut Spec,
+    path: &str,
+    opts: BTreeMap<String, String>,
+) -> Result<(), String> {
+    for w in &mut spec.widgets {
+        if w.path == path {
+            w.opts.extend(opts);
+            return Ok(());
+        }
+    }
+    Err(format!("configure: no widget named `{path}`"))
 }
 
 fn set_search(spec: &mut Spec, path: &str, pipeline: Vec<QueryOp>) -> Result<(), String> {

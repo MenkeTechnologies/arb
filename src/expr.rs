@@ -38,6 +38,10 @@ pub enum Expr {
     Var,
     /// A named field of the current record, resolved at eval time.
     Field(String),
+    /// A live control reference (`.th` — an `input`/control widget's value),
+    /// written `.name` in a predicate. `resolve_pipeline` substitutes it with a
+    /// `Num` before eval when the control holds a number; unresolved -> NaN.
+    Control(String),
     Neg(Box<Expr>),
     /// Logical negation: truthy input -> 0, falsy -> 1.
     Not(Box<Expr>),
@@ -69,6 +73,56 @@ pub fn parse(src: &str) -> Result<Expr, String> {
 /// Evaluate as a number with no field resolver (field refs -> NaN).
 pub fn eval(e: &Expr, x: f64) -> Result<f64, String> {
     eval_ctx(e, x, &|_| f64::NAN)
+}
+
+/// Collect the names of every `Control` reference in `e` (e.g. `.th` -> "th").
+pub fn control_names(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Control(n) => out.push(n.clone()),
+        Expr::Num(_) | Expr::Var | Expr::Field(_) => {}
+        Expr::Neg(a) | Expr::Not(a) => control_names(a, out),
+        Expr::InList(l, items) => {
+            control_names(l, out);
+            items.iter().for_each(|it| control_names(it, out));
+        }
+        Expr::InRange(l, lo, hi) => {
+            control_names(l, out);
+            control_names(lo, out);
+            control_names(hi, out);
+        }
+        Expr::Cond(a, b, c) => {
+            control_names(a, out);
+            control_names(b, out);
+            control_names(c, out);
+        }
+        Expr::Bin(_, a, b) => {
+            control_names(a, out);
+            control_names(b, out);
+        }
+    }
+}
+
+/// Return a copy of `e` with each `Control(name)` replaced by `Num(v)` when
+/// `lookup(name)` yields a value; unresolved controls are left as-is (-> NaN at
+/// emit time).
+pub fn substitute_controls(e: &Expr, lookup: &dyn Fn(&str) -> Option<f64>) -> Expr {
+    let sub = |b: &Expr| Box::new(substitute_controls(b, lookup));
+    match e {
+        Expr::Control(n) => match lookup(n) {
+            Some(v) => Expr::Num(v),
+            None => Expr::Control(n.clone()),
+        },
+        Expr::Num(_) | Expr::Var | Expr::Field(_) => e.clone(),
+        Expr::Neg(a) => Expr::Neg(sub(a)),
+        Expr::Not(a) => Expr::Not(sub(a)),
+        Expr::InList(l, items) => Expr::InList(
+            sub(l),
+            items.iter().map(|it| substitute_controls(it, lookup)).collect(),
+        ),
+        Expr::InRange(l, lo, hi) => Expr::InRange(sub(l), sub(lo), sub(hi)),
+        Expr::Cond(a, b, c) => Expr::Cond(sub(a), sub(b), sub(c)),
+        Expr::Bin(op, a, b) => Expr::Bin(*op, sub(a), sub(b)),
+    }
 }
 
 /// Lower `e` to a fusevm chunk (with `x` and resolved fields baked in), run it on
@@ -113,6 +167,12 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
         }
         Expr::Field(name) => {
             b.emit(Op::LoadFloat(resolve(name)), 0);
+        }
+        // An unsubstituted control (its value was empty/non-numeric) -> NaN, so
+        // comparisons against it are false. Normally resolve_pipeline replaces it
+        // with a Num, or drops the whole `where` op, before we get here.
+        Expr::Control(_) => {
+            b.emit(Op::LoadFloat(f64::NAN), 0);
         }
         Expr::Neg(a) => {
             emit(a, x, resolve, b);
@@ -407,6 +467,14 @@ impl Parser {
                 } else {
                     Expr::Field(name)
                 })
+            }
+            // `.name` is a control reference (a live widget value); `.5` stays a
+            // number. Distinguish by whether the char after `.` is a letter.
+            Some('.')
+                if matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_') =>
+            {
+                self.i += 1; // consume the leading `.`
+                Ok(Expr::Control(self.ident()))
             }
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
             Some(c) => Err(format!("calc: unexpected `{c}`")),
