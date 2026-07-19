@@ -386,13 +386,18 @@ are resolved recursively from the same index, with each dep's version-constraint
 **checked** against the index version (`semver`), a visited-set cycle guard,
 skip-already-installed, and full rollback of the run if any dep fails or a
 constraint is unsatisfiable. The module resolver reads `~/.arb/pkg` as the §17
-`pkg` tier, so `import NAME` finds an installed package. **`arb publish` is
-client-only**: it validates the package and prints the manual PR-registration
-steps — the hosted index repo and its merge flow don't exist yet, so it never
-claims a package was registered. A package declaring `[exports.native]` is
-rejected (native/cdylib loading isn't built — never installed with an inert
-native half). Full multi-version semver *resolution* (one index ref per name
-today) and native/cdylib packages remain future work.
+`pkg` tier, so `import NAME` finds an installed package. **`arb publish
+[GIT_URL]`** registers the package for real: it validates it, fast-forward-pulls
+the index clone, upserts the package's `{repo, version, desc}` entry into
+`index.json`, commits, and pushes to the index remote (default
+[`github.com/MenkeTechnologies/arb-registry`](https://github.com/MenkeTechnologies/arb-registry)).
+With write access the entry lands directly; without it the commit stays local and
+arb prints the fork+PR flow — it never falsely claims a push succeeded.
+`GIT_URL` defaults to the package repo's `origin` remote. A package declaring
+`[exports.native]` is rejected (native/cdylib loading isn't built — never
+installed with an inert native half). Full multi-version semver *resolution*
+(one index ref per name today, like the crates.io index tip) and native/cdylib
+packages remain future work.
 
 ## 19. Ecosystem — "a TUI for every pipeline"
 
@@ -448,5 +453,5 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source. *(interactive `send`/PTY react + `.ps.sel`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
-7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry client over a git index (`arb update`/`search`/`install`/`add`/`uninstall`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking) ship. *(`arb publish` is client-only pending the hosted index; native/cdylib packages + multi-version semver resolution: ⬜)*
+7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*
 8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). Diagnostics anchor to the offending verb even when nested inside a `source`/`out` body (not the enclosing directive). *(per-token argument precision — squiggle the `/re/` itself, not its verb — ⬜)*

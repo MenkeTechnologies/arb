@@ -9,9 +9,12 @@
 //! `arb.toml` + entry module before keeping it. The module resolver
 //! (`spec::resolve_module`) reads `~/.arb/pkg` as the SPEC §17 `pkg` tier.
 //!
-//! `publish` is **client-only**: the hosted index repo and its merge flow are not
-//! built, so it validates the package and prints the manual PR steps — it never
-//! claims a package was registered.
+//! `arb publish [REPO_URL]` validates the package, then registers it for real:
+//! it fast-forward-pulls the index clone, upserts the package's
+//! `{repo, version, desc}` entry into `index.json`, commits, and pushes to the
+//! index remote (the same `git` transport). With write access the entry lands
+//! directly; without it the commit stays local and arb prints the fork+PR flow —
+//! it never falsely claims a push succeeded.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -319,18 +322,22 @@ pub fn list_installed() -> Vec<(String, String)> {
     out
 }
 
-/// `arb publish`: CLIENT-ONLY. Validate the package here, then print the manual
-/// registration steps. The hosted index repo + merge flow do not exist yet, so
-/// this never claims a package was published — it tells the user what to do.
-pub fn publish(dir: &Path) -> Result<(), String> {
+/// Validate a package directory for publishing: `arb.toml` parses, has a name +
+/// version, isn't a (still-unsupported) native package, and every exported module
+/// (entry + listed modules) builds. Returns the manifest.
+pub fn validate_publish(dir: &Path) -> Result<Manifest, String> {
     let manifest_src = std::fs::read_to_string(dir.join("arb.toml"))
         .map_err(|_| "publish: no arb.toml in the current directory".to_string())?;
     let m = parse_manifest(&manifest_src)?;
     if m.name.is_empty() || m.version.is_empty() {
         return Err("publish: arb.toml [package] needs name and version".into());
     }
-    // Validate every exported module builds (entry + any listed modules).
-    let mut checked = 0;
+    if !m.native_widgets.is_empty() || !m.native_formats.is_empty() {
+        return Err(format!(
+            "publish: `{}` declares native exports ([exports.native]) — not yet supported (script packages only)",
+            m.name
+        ));
+    }
     let mut names: Vec<String> = m.modules.clone();
     if names.is_empty() {
         names.push(m.name.clone());
@@ -341,15 +348,114 @@ pub fn publish(dir: &Path) -> Result<(), String> {
             .map_err(|_| format!("publish: exported module `{module}.arb` not found"))?;
         let cmds = crate::parser::parse(&src)?;
         crate::spec::build(&cmds)?;
-        checked += 1;
     }
-    eprintln!("arb: validated `{}` v{} ({checked} module(s) build)", m.name, m.version);
-    eprintln!("arb: publishing is not automated — the registry index is community-hosted.");
-    eprintln!("arb: to register, open a PR adding this entry to {}/index.json:", registry_url());
-    eprintln!(
-        "arb:   \"{}\": {{ \"repo\": \"<your git url>\", \"version\": \"{}\", \"desc\": \"{}\" }}",
-        m.name, m.version, m.desc
+    Ok(m)
+}
+
+/// Serialize an `Index` back to the `index.json` on-disk form (pretty, sorted by
+/// name via the `BTreeMap`, trailing newline).
+pub fn serialize_index(idx: &Index) -> String {
+    let map: serde_json::Map<String, serde_json::Value> = idx
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.clone(),
+                serde_json::json!({ "repo": e.repo, "version": e.version, "desc": e.desc }),
+            )
+        })
+        .collect();
+    let mut s = serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default();
+    s.push('\n');
+    s
+}
+
+/// The result of a publish: the entry was pushed to the index remote, or the
+/// commit was made locally but the push was denied (no write access → PR flow).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Published {
+    Pushed,
+    CommittedLocally,
+}
+
+/// Env-free publish core (the unit-test seam): validate the package in `pkg_dir`,
+/// upsert its `{repo, version, desc}` entry into the registry clone at `reg_dir`
+/// (cloning from `reg_url` if absent, else fast-forward pulling first), commit,
+/// and — when `push` — push to the index remote. Returns the outcome + manifest.
+pub fn publish_with(
+    pkg_dir: &Path,
+    repo: &str,
+    reg_dir: &Path,
+    reg_url: &str,
+    push: bool,
+) -> Result<(Published, Manifest), String> {
+    let m = validate_publish(pkg_dir)?;
+    if repo.trim().is_empty() {
+        return Err("publish: the package's git repo URL is empty".into());
+    }
+    // Ensure the registry index is present and current before editing it.
+    if reg_dir.join(".git").is_dir() {
+        run_git(&["pull", "--ff-only"], Some(reg_dir))?;
+    } else {
+        run_git(&["clone", reg_url, &reg_dir.to_string_lossy()], None)?;
+    }
+    // Upsert the entry (latest-version-per-name, like the crates.io index tip).
+    let idx_path = reg_dir.join("index.json");
+    let mut idx = match std::fs::read_to_string(&idx_path) {
+        Ok(s) => parse_index(&s)?,
+        Err(_) => Index::new(),
+    };
+    idx.insert(
+        m.name.clone(),
+        IndexEntry { repo: repo.to_string(), version: m.version.clone(), desc: m.desc.clone() },
     );
+    std::fs::write(&idx_path, serialize_index(&idx)).map_err(|e| format!("publish: write index: {e}"))?;
+    run_git(&["add", "index.json"], Some(reg_dir))?;
+    run_git(
+        &["commit", "-m", &format!("publish {} v{}", m.name, m.version)],
+        Some(reg_dir),
+    )?;
+    if push {
+        match run_git(&["push"], Some(reg_dir)) {
+            Ok(_) => Ok((Published::Pushed, m)),
+            // No write access — the commit stays local for a fork+PR.
+            Err(_) => Ok((Published::CommittedLocally, m)),
+        }
+    } else {
+        Ok((Published::CommittedLocally, m))
+    }
+}
+
+/// `arb publish [REPO_URL]`: validate the package in `dir`, then register it in
+/// the community index by committing + pushing its entry (real git over the
+/// GitHub-hosted index). REPO_URL defaults to the package's `origin` remote.
+pub fn publish(dir: &Path, repo: Option<&str>) -> Result<(), String> {
+    let repo = match repo {
+        Some(r) => r.to_string(),
+        None => run_git(&["-C", &dir.to_string_lossy(), "remote", "get-url", "origin"], None)
+            .map_err(|_| {
+                "publish: no `origin` git remote in the package dir — pass the repo URL: `arb publish <git-url>`"
+                    .to_string()
+            })?
+            .trim()
+            .to_string(),
+    };
+    let reg = registry_dir().ok_or("no HOME for the registry")?;
+    let url = registry_url();
+    let (outcome, m) = publish_with(dir, &repo, &reg, &url, true)?;
+    match outcome {
+        Published::Pushed => {
+            eprintln!("arb: published `{}` v{} to {url}", m.name, m.version);
+        }
+        Published::CommittedLocally => {
+            eprintln!(
+                "arb: validated + committed `{}` v{} to the local index, but the push to {url} was denied.",
+                m.name, m.version
+            );
+            eprintln!("arb: you likely lack write access — fork the index and open a PR:");
+            eprintln!("arb:   gh repo fork {url} --clone && cd arb-registry \\");
+            eprintln!("arb:     && git fetch {} && git cherry-pick FETCH_HEAD && git push && gh pr create", reg.display());
+        }
+    }
     Ok(())
 }
 
@@ -433,7 +539,7 @@ pub fn dispatch(args: &[String]) -> Option<i32> {
                 1
             }
         }),
-        "publish" => Some(match publish(Path::new(".")) {
+        "publish" => Some(match publish(Path::new("."), args.get(1).map(String::as_str)) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("arb: {e}");

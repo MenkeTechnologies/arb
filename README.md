@@ -522,9 +522,11 @@ the terminal or the browser) is complete:
   as the stack, `evaluate` over the paused line) — both over stdio JSON-RPC.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution
   (with `import X as Y` namespacing), a local preset library
-  (`--save`/`--install`/`--uninstall`/`--installed`), and a registry client over
-  a git index (`arb update`/`search`/`install`/`add`/`uninstall`, resolved from
-  `~/.arb/pkg`; `arb publish` validates + prints PR steps).
+  (`--save`/`--install`/`--uninstall`/`--installed`), and a registry over a
+  GitHub-hosted git index (`arb update`/`search`/`install`/`add`/`uninstall`,
+  resolved from `~/.arb/pkg`; `arb publish [GIT_URL]` upserts the package's entry
+  into the index and pushes it — default registry
+  [`MenkeTechnologies/arb-registry`](https://github.com/MenkeTechnologies/arb-registry)).
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 - **Self-sourcing specs** — a spec can declare its own stream source: `spawn CMD`
@@ -542,12 +544,11 @@ the terminal or the browser) is complete:
   format change misses cleanly and a corrupt shard resets on its own. Same
   architecture every sibling lang ships.
 
-**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — the hosted
-registry index behind `arb publish` (the client validates + prints PR steps
-today) with native/cdylib packages and multi-version semver resolution, and the
-upstream-**command** sniffing leg (producer argv) — zero-config **data-shape**
-sniffing already ships. Akka-style actors are **out of scope** — dataflow /
-pub-sub belong to `stryke`.
+**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — native/cdylib
+packages and multi-version semver resolution for the registry (the git index,
+`arb publish`, install/search/update all ship), and the upstream-**command**
+sniffing leg (producer argv) — zero-config **data-shape** sniffing already ships.
+Akka-style actors are **out of scope** — dataflow / pub-sub belong to `stryke`.
 
 Nothing is faked: unrecognized widget verbs are ignored so specs stay
 forward-compatible, and unbuilt features are absent, not stubbed.

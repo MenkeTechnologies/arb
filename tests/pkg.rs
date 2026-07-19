@@ -300,3 +300,94 @@ fn install_with_index_cycle_terminates() {
     assert!(pkgdir.join("arb-a2").exists() && pkgdir.join("arb-b2").exists());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Run `git args` in `cwd`, asserting success (test helper).
+fn git_ok(cwd: &Path, args: &[&str]) {
+    assert!(
+        Command::new("git").args(args).current_dir(cwd).output().unwrap().status.success(),
+        "git {args:?} failed in {}",
+        cwd.display()
+    );
+}
+
+/// Create a bare git repo seeded with `index.json` on `main`, returning its
+/// `file://` URL (stands in for the GitHub-hosted registry index).
+fn make_bare_registry(root: &Path, seed_index: &str) -> String {
+    let bare = root.join("registry.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    git_ok(&bare, &["-c", "init.defaultBranch=main", "init", "-q", "--bare"]);
+    // Seed via a throwaway clone.
+    let seed = root.join("seed");
+    git_ok(root, &["clone", "-q", &bare.to_string_lossy(), &seed.to_string_lossy()]);
+    std::fs::write(seed.join("index.json"), seed_index).unwrap();
+    for a in [
+        &["config", "user.email", "t@e"][..],
+        &["config", "user.name", "t"],
+        &["add", "-A"],
+        &["commit", "-qm", "seed"],
+        &["push", "-q", "origin", "main"],
+    ] {
+        git_ok(&seed, a);
+    }
+    format!("file://{}", bare.display())
+}
+
+#[test]
+fn publish_upserts_entry_and_pushes_to_the_index() {
+    use arb::pkg::{publish_with, Published};
+    if !have_git() {
+        return;
+    }
+    let root = tmp("publish");
+    let reg_url = make_bare_registry(&root, "{}\n");
+    // A valid package repo (arb.toml + entry module that builds).
+    let pkg = root.join("mypkg");
+    make_pkg_repo(
+        &pkg,
+        "mypkg",
+        "[package]\nname = \"mypkg\"\nversion = \"0.2.0\"\ndescription = \"a demo\"\n",
+        "tail .t\nsource .t { in; count }\n",
+    );
+    // Pre-clone the registry so the commit uses a known git identity (CI has none
+    // globally); publish_with then fast-forward-pulls this clone.
+    let reg = root.join("regclone");
+    git_ok(&root, &["clone", "-q", &reg_url, &reg.to_string_lossy()]);
+    git_ok(&reg, &["config", "user.email", "pub@e"]);
+    git_ok(&reg, &["config", "user.name", "pub"]);
+
+    let (outcome, m) =
+        publish_with(&pkg, "https://example.com/mypkg.git", &reg, &reg_url, true).unwrap();
+    assert_eq!(outcome, Published::Pushed);
+    assert_eq!(m.name, "mypkg");
+
+    // The entry is on the REMOTE now: a fresh clone sees it.
+    let verify = root.join("verify");
+    git_ok(&root, &["clone", "-q", &reg_url, &verify.to_string_lossy()]);
+    let idx = parse_index(&std::fs::read_to_string(verify.join("index.json")).unwrap()).unwrap();
+    let e = idx.get("mypkg").expect("mypkg registered");
+    assert_eq!(e.version, "0.2.0");
+    assert_eq!(e.repo, "https://example.com/mypkg.git");
+    assert_eq!(e.desc, "a demo");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn publish_rejects_invalid_package() {
+    use arb::pkg::publish_with;
+    if !have_git() {
+        return;
+    }
+    let root = tmp("publish-bad");
+    let reg_url = make_bare_registry(&root, "{}\n");
+    let reg = root.join("regclone");
+    // A package whose entry module does not build.
+    let pkg = root.join("badpkg");
+    make_pkg_repo(
+        &pkg,
+        "badpkg",
+        "[package]\nname = \"badpkg\"\nversion = \"0.1.0\"\n",
+        "gauge .g {\n", // unterminated block -> build error
+    );
+    assert!(publish_with(&pkg, "https://example.com/badpkg.git", &reg, &reg_url, true).is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}
