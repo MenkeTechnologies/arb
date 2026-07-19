@@ -24,6 +24,12 @@ path = "src/lib.rs"
 name = "arb"
 path = "src/main.rs"
 
+# Offline generator for docs/reference.html from the LSP corpus. Not shipped;
+# run manually before publishing GitHub Pages: `cargo run --bin gen-docs`.
+[[bin]]
+name = "gen-docs"
+path = "src/bin/gen_docs.rs"
+
 [dependencies]
 # arb's computational core executes on fusevm: expressions lower to a
 # fusevm::Chunk and run on the VM, with the three-tier Cranelift JIT for hot
