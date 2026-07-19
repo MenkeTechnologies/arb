@@ -58,6 +58,16 @@ rayon = "1.12.0"
 # transitively; a dtolnay zero-runtime-dep crate, same durability tier as serde.
 semver = "1"
 
+# rkyv-backed script cache (`~/.arb/scripts.rkyv`) — same architecture every
+# sibling lang ships (zshrs/rubylang/elisprs/vimlrs/awkrs): the outer shard is a
+# zero-copy rkyv archive, each inner per-spec blob is a bincode-encoded parsed
+# AST (`Vec<ast::Command>`), keyed by an FxHash of the source + a schema version
+# so a source/format change misses cleanly. Pins match the siblings.
+rkyv = { version = "0.7", features = ["validation", "archive_le", "size_32"] }
+bincode = "1"
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+
 [profile.release]
 lto = true
 strip = true

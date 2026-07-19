@@ -70,8 +70,9 @@ displays it. Highlights:
   moves onto fusevm as the expression layer grows.
 - **Original, not a port** — an original language in stryke's class, deliberately
   lean (rubylang-scale, not stryke-scale). It reuses mechanics from its siblings
-  (fusevm embedding, the LSP/DAP stdio shape, the package-manager ABI) but the
-  lexer, parser, AST, lowering, and semantics are arb's own.
+  (fusevm embedding, the rkyv script cache, the LSP/DAP stdio shape, the
+  package-manager ABI) but the lexer, parser, AST, lowering, and semantics are
+  arb's own.
 - **World-first = synthesis + ecosystem** — no single leg is new (Tcl/Tk, Expect,
   dasel, ratatui, `textual serve` are all prior art); the combination is: a
   pipe-native, dual-target, component-generating UI language with a shareable
@@ -471,8 +472,8 @@ stdin  →  lexer  →  parser (AST)  →  Spec interp  →  ratatui TUI  (or se
                               (calc / expressions lower to fusevm bytecode)
 ```
 
-Transfers from siblings are **mechanics only** — fusevm embedding, the LSP/DAP
-stdio shape, the package-manager ABI. The language design
+Transfers from siblings are **mechanics only** — fusevm embedding, the rkyv
+script cache, the LSP/DAP stdio shape, the package-manager ABI. The language design
 (lexer / parser / AST / compiler / semantics) is arb-original. The compute core
 already lowers to a `fusevm::Chunk` and runs on the VM; declarative widget and
 layout construction is plain Rust construction and needs no VM.
@@ -530,6 +531,11 @@ the terminal or the browser) is complete:
   auto-picks a preset by data shape (JSON→`json`/`logs`, `docker`/`top`/`k8s`
   headers, git-log, CSV→`table`); a non-blocking `poll` peek never hangs, and
   the peeked lines are replayed so nothing is lost.
+- **rkyv script cache** — a re-run of the same spec skips lex+parse: the parsed
+  AST is cached at `~/.arb/scripts.rkyv` (or `$ARB_CACHE`) as a zero-copy rkyv
+  shard keyed by an FxHash of the source + a schema version, so a source or
+  format change misses cleanly and a corrupt shard resets on its own. Same
+  architecture every sibling lang ships.
 
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — the hosted
 registry index behind `arb publish` (the client validates + prints PR steps

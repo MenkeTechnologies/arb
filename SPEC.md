@@ -401,6 +401,7 @@ src/repl.rs      interactive REPL (--repl)
 src/pkg.rs       registry client (install/search/update/publish) over a git index
 src/lsp.rs       Language Server over stdio (--lsp): diagnostics/symbols/hover/completion/signatureHelp/definition/references/highlight/rename/folding/formatting/semanticTokens
 src/dap.rs       Debug Adapter over stdio (--dap): step the stream, regex breakpoints, inspect the paused line/stats/controls
+src/cache.rs     rkyv script cache (~/.arb/scripts.rkyv): outer zero-copy rkyv shard, inner bincode AST blob, FxHash+schema key — skips lex+parse for a seen spec
 src/banner.rs    startup/help art
 src/main.rs      CLI (clap) + dispatch
 src/lib.rs       crate root

@@ -11,6 +11,7 @@
 
 pub mod ast;
 pub mod banner;
+pub mod cache;
 pub mod dap;
 pub mod err;
 pub mod expr;

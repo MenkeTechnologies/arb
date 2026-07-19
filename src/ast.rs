@@ -1,7 +1,7 @@
 //! Parsed command tree: a spec is a list of commands, each a verb plus args;
 //! an arg may itself be a nested block of commands (e.g. a `source { … }` body).
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Command {
     pub name: String,
     pub args: Vec<Arg>,
@@ -9,7 +9,7 @@ pub struct Command {
     pub pos: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Arg {
     Word(String),
     Str(String),
