@@ -186,10 +186,66 @@ fn configure_merges_widget_opts() {
 }
 
 #[test]
-fn import_as_alias_rejected_clearly() {
-    // `import X as Y` namespacing is unbuilt; reject instead of silently dropping.
-    let e = build(&parse("import nums as g").unwrap()).unwrap_err();
-    assert!(e.contains("as"), "error should mention `as`: {e}");
+fn import_as_namespaces_widget_paths() {
+    // `import X as g` prefixes every imported widget path with `.g.`.
+    let dir = temp_lib("ns-paths");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mod.arb");
+    std::fs::write(&file, "gauge .cpu -max 100\ntail .stream").unwrap();
+    let s = build(&parse(&format!("import \"{}\" as g", file.display())).unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".g.cpu"));
+    assert!(s.widgets.iter().any(|w| w.path == ".g.stream"));
+    assert!(!s.widgets.iter().any(|w| w.path == ".cpu"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_as_prefixes_control_predicate_end_to_end() {
+    use std::collections::HashMap;
+    // A module's `where lat < .th` control ref is namespaced to `.g.th`, so it
+    // resolves against the `g.th` input, not the bare `th`.
+    let dir = temp_lib("ns-pred");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mod.arb");
+    std::fs::write(&file, "input .th\nout { in; where lat < .th }").unwrap();
+    let s = build(&parse(&format!("import \"{}\" as g", file.display())).unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".g.th"));
+    let ops = s.out.as_ref().unwrap();
+    let data = vec![r#"{"lat":2}"#.to_string(), r#"{"lat":9}"#.to_string()];
+    // Namespaced key `g.th` drives the filter.
+    let mut inputs = HashMap::new();
+    inputs.insert("g.th".to_string(), "5".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![r#"{"lat":2}"#]),
+        other => panic!("got {other:?}"),
+    }
+    // The un-prefixed key `th` no longer matches -> control unset -> filter dropped.
+    let mut bare = HashMap::new();
+    bare.insert("th".to_string(), "5".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &bare), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, data),
+        other => panic!("got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_as_nested_namespaces_compose() {
+    let dir = temp_lib("ns-nest");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("b.arb"), "gauge .x -max 1").unwrap();
+    let a = dir.join("a.arb");
+    std::fs::write(&a, format!("import \"{}\" as b", dir.join("b.arb").display())).unwrap();
+    let s = build(&parse(&format!("import \"{}\" as a", a.display())).unwrap()).unwrap();
+    assert!(s.widgets.iter().any(|w| w.path == ".a.b.x"), "paths: {:?}", s.widgets.iter().map(|w| &w.path).collect::<Vec<_>>());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_as_alias_errors() {
+    // Missing / invalid alias are rejected; plain import still works.
+    assert!(build(&parse("import nums as").unwrap()).is_err());
+    assert!(build(&parse("import nums as bad.name").unwrap()).is_err());
     assert!(build(&parse("import nums").unwrap()).is_ok());
 }
 

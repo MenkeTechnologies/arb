@@ -370,9 +370,8 @@ The compute core (expressions, `calc`, `where`) lowers to a `fusevm::Chunk` and
 runs on the VM; declarative widget/layout construction is plain Rust and needs no
 VM. Language design (lexer/parser/ast/interp/semantics) is arb-original.
 
-Planned files (see §21 — specified, not yet in the tree): module namespacing,
-networked package registry, LSP/DAP stdio frontends. (Actors are out of scope —
-§21.)
+Planned files (see §21 — specified, not yet in the tree): networked package
+registry, LSP/DAP stdio frontends. (Actors are out of scope — §21.)
 
 ## 21. Milestones
 
@@ -380,7 +379,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 
 0. ✅ **Walking skeleton** — `echo hi | arb -e 'text .t <- in'`: lex→parse→lower→fusevm→one ratatui widget from stdin.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
-2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics). *(module namespacing `import X as Y`: 🟡)*
+2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(numeric control-path predicates `where lat < .th` ✅; string/set predicates `match(.q)`, `level in .lv` ⬜ — need dedicated `filter`/`facet` widgets + a string/set expr layer)*
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION`, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions. *(multi-clause `expect { }`, `spawn`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.

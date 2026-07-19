@@ -505,7 +505,7 @@ the terminal or the browser) is complete:
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — LSP/DAP
 frontends, dedicated `filter`/`facet`/`slider` control widgets and string/set
 control predicates (`match(.q)`, `level in .lv`), `expect` `timeout` reactions,
-module namespacing (`import X as Y`), a networked package registry
+a networked package registry
 (`publish`/`search`/native ABI), and upstream-command sniffing for the
 shareable-dashboard ecosystem. Akka-style actors and mouse/resize events are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty

@@ -102,6 +102,34 @@ pub fn control_names(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
+/// Rewrite every `Control(name)` in `e` to `Control("{ns}.{name}")`, in place —
+/// used by `import X as Y` to namespace a module's control references.
+pub fn prefix_controls(e: &mut Expr, ns: &str) {
+    match e {
+        Expr::Control(n) => *n = format!("{ns}.{n}"),
+        Expr::Num(_) | Expr::Var | Expr::Field(_) => {}
+        Expr::Neg(a) | Expr::Not(a) => prefix_controls(a, ns),
+        Expr::InList(l, items) => {
+            prefix_controls(l, ns);
+            items.iter_mut().for_each(|it| prefix_controls(it, ns));
+        }
+        Expr::InRange(l, lo, hi) => {
+            prefix_controls(l, ns);
+            prefix_controls(lo, ns);
+            prefix_controls(hi, ns);
+        }
+        Expr::Cond(a, b, c) => {
+            prefix_controls(a, ns);
+            prefix_controls(b, ns);
+            prefix_controls(c, ns);
+        }
+        Expr::Bin(_, a, b) => {
+            prefix_controls(a, ns);
+            prefix_controls(b, ns);
+        }
+    }
+}
+
 /// Return a copy of `e` with each `Control(name)` replaced by `Num(v)` when
 /// `lookup(name)` yields a value; unresolved controls are left as-is (-> NaN at
 /// emit time).

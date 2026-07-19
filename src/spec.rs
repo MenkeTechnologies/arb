@@ -341,6 +341,80 @@ pub fn resolve_pipeline(
     out
 }
 
+// ---- `import X as Y` namespacing ------------------------------------------
+// A module built into a fresh sub-Spec has its render-time NAME references
+// (widget paths, `apply`, control refs, `set`/`flash` targets) prefixed with the
+// alias, then merged in. Intra-module by-path refs (source/search/grid/configure)
+// already resolved during the fresh build, so only these string names remain.
+
+/// Namespace a control/input name: `cpu` -> `g.cpu`.
+fn prefix_name(name: &str, ns: &str) -> String {
+    format!("{ns}.{name}")
+}
+
+/// Namespace `apply`/`where`/`map`/`calc` references in a query pipeline.
+fn prefix_pipeline(ops: &mut [QueryOp], ns: &str) {
+    for op in ops {
+        match op {
+            QueryOp::Apply(n) => *n = prefix_name(n, ns),
+            QueryOp::Where(e) | QueryOp::Map(e) | QueryOp::Calc(e) => {
+                crate::expr::prefix_controls(e, ns)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Namespace the widget/control names an action targets.
+fn prefix_action(a: &mut BindAction, ns: &str) {
+    match a {
+        BindAction::SetInput { name, .. } => *name = prefix_name(name, ns),
+        BindAction::Flash { widget, .. } => *widget = prefix_name(widget, ns),
+        BindAction::Seq(v) => v.iter_mut().for_each(|x| prefix_action(x, ns)),
+        _ => {}
+    }
+}
+
+/// Prefix every render-time name in a freshly-built module Spec with `ns`.
+fn prefix_spec(sub: &mut Spec, ns: &str) {
+    for w in &mut sub.widgets {
+        w.path = format!(".{ns}.{}", w.path.trim_start_matches('.'));
+        if let Some(s) = &mut w.source {
+            prefix_pipeline(&mut s.pipeline, ns);
+        }
+        if let Some(p) = &mut w.search {
+            prefix_pipeline(p, ns);
+        }
+    }
+    for b in &mut sub.binds {
+        prefix_action(&mut b.action, ns);
+    }
+    for e in &mut sub.expects {
+        prefix_action(&mut e.action, ns);
+    }
+    for t in &mut sub.timeouts {
+        prefix_action(&mut t.action, ns);
+    }
+    if let Some(out) = &mut sub.out {
+        prefix_pipeline(out, ns);
+    }
+}
+
+/// Merge a namespaced module Spec into `dst`.
+fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
+    dst.widgets.extend(src.widgets);
+    dst.binds.extend(src.binds);
+    dst.expects.extend(src.expects);
+    dst.timeouts.extend(src.timeouts);
+    if let Some(out) = src.out {
+        if dst.out.is_some() {
+            return Err(format!("import: `{ns}` defines `out`, but one is already set"));
+        }
+        dst.out = Some(out);
+    }
+    Ok(())
+}
+
 /// Process `cmds` into `spec`. `import NAME` resolves and inlines a module
 /// (stdlib preset or user file); `depth` guards against import cycles.
 fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), String> {
@@ -354,17 +428,29 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 .first()
                 .and_then(Arg::as_str)
                 .ok_or("import: missing module name")?;
-            // `import X as Y` namespacing is not built yet; the alias was
-            // silently dropped before (module inlined under bare paths, so a
-            // later `.Y.foo` failed confusingly). Reject it honestly.
+            // `import X as Y`: build the module into a fresh sub-Spec (so its
+            // intra-module by-path refs resolve), namespace every render-time
+            // name with `Y`, then merge — so `.Y.foo` and its controls resolve.
             if c.args.get(1).and_then(Arg::as_str) == Some("as") {
-                return Err(
-                    "import: `as` namespace alias not yet supported — import without `as`".into(),
-                );
+                let alias = c
+                    .args
+                    .get(2)
+                    .and_then(Arg::as_str)
+                    .ok_or("import: `as` requires an alias (import X as Y)")?;
+                if alias.is_empty() || alias.contains(['.', '/', ' ']) {
+                    return Err(format!("import: invalid namespace alias `{alias}`"));
+                }
+                let src = resolve_module(name)?;
+                let sub_cmds = crate::parser::parse(&src)?;
+                let mut sub = Spec::default();
+                build_into(&mut sub, &sub_cmds, depth + 1)?;
+                prefix_spec(&mut sub, alias);
+                merge_spec(spec, sub, alias)?;
+            } else {
+                let src = resolve_module(name)?;
+                let sub = crate::parser::parse(&src)?;
+                build_into(spec, &sub, depth + 1)?;
             }
-            let src = resolve_module(name)?;
-            let sub = crate::parser::parse(&src)?;
-            build_into(spec, &sub, depth + 1)?;
         } else if let Some(kind) = WidgetKind::from(&c.name) {
             let path = c
                 .args
