@@ -853,3 +853,55 @@ fn file_from_import_merges() {
     assert_eq!(s.source_file.as_deref(), Some("data.log"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn poll_sets_source() {
+    use std::time::Duration;
+    let s = build(&parse("tail .t\n! vmstat 1 every 1s").unwrap()).unwrap();
+    assert_eq!(s.poll.as_ref().unwrap(), &("vmstat 1".to_string(), Duration::from_secs(1)));
+}
+
+#[test]
+fn poll_block_form() {
+    use std::time::Duration;
+    let s = build(&parse("tail .t\n! { ps aux } every 2s").unwrap()).unwrap();
+    assert_eq!(s.poll.as_ref().unwrap(), &("ps aux".to_string(), Duration::from_secs(2)));
+}
+
+#[test]
+fn poll_ms_interval() {
+    use std::time::Duration;
+    let s = build(&parse("tail .t\n! date every 500ms").unwrap()).unwrap();
+    assert_eq!(s.poll.as_ref().unwrap().1, Duration::from_millis(500));
+}
+
+#[test]
+fn poll_missing_every_errors() {
+    assert!(build(&parse("! vmstat 1").unwrap()).is_err());
+}
+
+#[test]
+fn poll_bad_duration_errors() {
+    assert!(build(&parse("! date every soon").unwrap()).is_err());
+}
+
+#[test]
+fn poll_empty_cmd_errors() {
+    assert!(build(&parse("! every 1s").unwrap()).is_err());
+}
+
+#[test]
+fn poll_conflicts_with_spawn() {
+    assert!(build(&parse("spawn seq 1 3\n! date every 1s").unwrap()).is_err());
+    assert!(build(&parse("! date every 1s\nspawn seq 1 3").unwrap()).is_err());
+}
+
+#[test]
+fn poll_conflicts_with_file() {
+    assert!(build(&parse("< a.log\n! date every 1s").unwrap()).is_err());
+}
+
+#[test]
+fn poll_double_errors() {
+    assert!(build(&parse("! a every 1s\n! b every 2s").unwrap()).is_err());
+}

@@ -332,12 +332,17 @@ pub struct Spec {
     /// of stdin. Folded into the producer as `cat -- FILE` in main. Mutually
     /// exclusive with `spawn` (and `--run`). `None` = read stdin.
     pub source_file: Option<String>,
+    /// Poll source (`! CMD every Ns`, SPEC §7): re-run CMD via `sh -c` every
+    /// interval, feeding each run's stdout into the stream. The interactive/serve
+    /// loop runs in a background thread; the headless path runs CMD once (a
+    /// reducer over an endless source can't terminate). `None` = read stdin.
+    pub poll: Option<(String, Duration)>,
 }
 
-/// True if any single-stream input source (`spawn`/`< file`) is already set —
-/// only one may feed the stream.
+/// True if any single-stream input source (`spawn`/`< file`/`! poll`) is already
+/// set — only one may feed the stream.
 fn stream_source_set(s: &Spec) -> bool {
-    s.spawn.is_some() || s.source_file.is_some()
+    s.spawn.is_some() || s.source_file.is_some() || s.poll.is_some()
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -490,6 +495,12 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
             return Err(format!("import: `{ns}` defines a `<` file source, but one is already set"));
         }
         dst.source_file = Some(f);
+    }
+    if let Some(p) = src.poll {
+        if stream_source_set(dst) {
+            return Err(format!("import: `{ns}` defines a `!` poll source, but one is already set"));
+        }
+        dst.poll = Some(p);
     }
     Ok(())
 }
@@ -671,6 +682,33 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
                 return Err("`<`: a stream source is already declared".into());
             }
             spec.source_file = Some(file.to_string());
+        } else if c.name == "!" {
+            // `! CMD every Ns`: re-run CMD every interval. CMD may be bare words
+            // or a `{ … }` block; the interval follows the `every` keyword.
+            let evy = c
+                .args
+                .iter()
+                .position(|a| a.as_str() == Some("every"))
+                .ok_or("`!` source: expected `CMD every Ns`")?;
+            let dspec = c
+                .args
+                .get(evy + 1)
+                .and_then(Arg::as_str)
+                .ok_or("`!` source: `every` needs a duration (e.g. 1s, 500ms)")?;
+            let dur = parse_duration(dspec).ok_or_else(|| {
+                format!("`!` source: `{dspec}` is not a duration (use Ns/Nms/Nm)")
+            })?;
+            let cmd = match c.args.first() {
+                Some(Arg::Block(b)) => block_to_shell(b),
+                _ => c.args[..evy].iter().filter_map(Arg::as_str).collect::<Vec<_>>().join(" "),
+            };
+            if cmd.trim().is_empty() {
+                return Err("`!` source: missing command".into());
+            }
+            if stream_source_set(spec) {
+                return Err("`!`: a stream source is already declared".into());
+            }
+            spec.poll = Some((cmd, dur));
         } else if c.name == "grid" {
             let path = c
                 .args

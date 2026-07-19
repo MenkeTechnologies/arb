@@ -82,7 +82,7 @@ in                       stdin (lines)
 in.json in.xml in.html in.yaml in.toml in.csv   parsed stream
 spawn ps aux             arb launches a process; its stdout is the stream ✅
 spawn { tail -f a.log; grep err }   block form → one `sh -c` string ✅
-! vmstat 1 every 1s      repeated command source ⬜
+! vmstat 1 every 1s      re-run a command on a timer ✅ (headless runs it once)
 < file.log               read a file as the stream ✅ (quote absolute paths: `< "/var/log/x"`)
 out { … }                downstream emission (to | next), shaped by controls
 send "text"              send input to spawned process (Expect) ⬜
@@ -91,10 +91,13 @@ send "text"              send input to spawned process (Expect) ⬜
 `spawn CMD` (or `spawn { CMD }`) makes a spec self-sourcing: arb runs CMD via
 `sh -c` and feeds its stdout into the stream in place of stdin (fire-and-forget;
 the child dies with arb). `< FILE` reads a file as the stream instead (folded to
-`cat -- FILE`). At most one stream source may be declared (`spawn`/`< FILE`); a
-CLI `--run 'PROD | _ | CONS'` producer wins over all of them. The interactive
-`send`/PTY react leg + the `.ps.sel` selection widget (§14) remain ⬜ (no PTY
-substrate yet).
+`cat -- FILE`). `! CMD every Ns` re-runs CMD on a timer, feeding each run's
+output into the stream — in the TUI/served dashboard it loops in the background;
+headless (piped onward) it runs CMD **once**, because a reducer/emit over an
+endless timer source could never terminate. At most one stream source may be
+declared (`spawn`/`< FILE`/`! …`); a CLI `--run 'PROD | _ | CONS'` producer wins
+over all of them. The interactive `send`/PTY react leg + the `.ps.sel` selection
+widget (§14) remain ⬜ (no PTY substrate yet).
 
 ## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 

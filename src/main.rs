@@ -441,11 +441,17 @@ fn main() -> io::Result<()> {
         .or_else(|| spec.spawn.clone())
         .or_else(|| spec.source_file.as_deref().map(|f| format!("cat -- {}", shell_quote(f))));
 
+    // A `! CMD every Ns` poll source (§7) feeds the stream on a timer. `--run`
+    // and spec `spawn`/`< file` all populate `producer` and are mutually
+    // exclusive with `poll` at the spec level, so `poll` only matters when no
+    // producer took over (lets CLI `--run` win, mirroring `spawn`).
+    let poll = if producer.is_some() { None } else { spec.poll.clone() };
+
     let needs_stdin =
         fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
-    // A producer (from `--run` or a spec `spawn`) supplies the stream itself, so
-    // stdin is not required even on an interactive tty.
-    if needs_stdin && producer.is_none() && io::stdin().is_terminal() {
+    // A producer (`--run`/`spawn`/`< file`) or a `poll` source supplies the
+    // stream itself, so stdin is not required even on an interactive tty.
+    if needs_stdin && producer.is_none() && poll.is_none() && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
     }
@@ -466,6 +472,8 @@ fn main() -> io::Result<()> {
                 eprintln!("arb: run: {e}");
                 std::process::exit(1);
             }
+        } else if let Some((cmd, dur)) = &poll {
+            poll_producer(cmd, *dur, state.clone());
         } else if needs_stdin {
             let controls = Arc::new(Mutex::new(tui::Controls::default()));
             spawn_reader(state.clone(), false, controls, None, prelude.clone());
@@ -491,7 +499,8 @@ fn main() -> io::Result<()> {
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
-        // Feed the stream: from a spawned producer (`--run`) or from stdin.
+        // Feed the stream: a spawned producer (`--run`/`spawn`/`< file`), a
+        // `! CMD every Ns` poll loop, or stdin.
         let err_pane = if let Some(prod) = &producer {
             match spawn_producer(prod, state.clone()) {
                 Ok(es) => Some((es, "stderr".to_string())),
@@ -500,6 +509,8 @@ fn main() -> io::Result<()> {
                     std::process::exit(1);
                 }
             }
+        } else if let Some((cmd, dur)) = &poll {
+            Some((poll_producer(cmd, *dur, state.clone()), "stderr".to_string()))
         } else {
             if needs_stdin {
                 // Tee the live filtered stream to stdout (only when piped onward,
@@ -604,10 +615,15 @@ fn main() -> io::Result<()> {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
         if let Some(prod) = &producer {
-            // A spec `spawn CMD` feeds the stream here (no tty); drain it, then
-            // apply `out { … }` — without this the headless path would read an
-            // empty stdin and emit nothing.
+            // A spec `spawn CMD`/`< file` feeds the stream here (no tty); drain
+            // it, then apply `out { … }` — without this the headless path would
+            // read an empty stdin and emit nothing.
             read_producer_sync(prod, &state)?;
+            emit_out(out_ops, &state, cli.json)
+        } else if let Some((cmd, _)) = &poll {
+            // Headless `! CMD every Ns`: run CMD once and reshape it (an endless
+            // poll into a reducer/emit could never terminate).
+            read_producer_sync(cmd, &state)?;
             emit_out(out_ops, &state, cli.json)
         } else if needs_stdin && !cli.json && query::is_line_streamable(out_ops) {
             stream_out(out_ops)
@@ -618,9 +634,12 @@ fn main() -> io::Result<()> {
             emit_out(out_ops, &state, cli.json)
         }
     } else if let Some(prod) = &producer {
-        // `spawn CMD` with no `out { … }`, piped onward: forward the producer's
-        // output through untouched (the passthrough twin for a spawned source).
+        // `spawn CMD`/`< file` with no `out { … }`, piped onward: forward the
+        // producer's output through untouched (the passthrough twin).
         stream_producer(prod)
+    } else if let Some((cmd, _)) = &poll {
+        // Headless `! CMD every Ns` with no `out { … }`: forward one run.
+        stream_producer(cmd)
     } else if needs_stdin {
         // A dashboard spec piped onward with no `out { … }` reshape — arb is a
         // passive tap: forward the stream through untouched so the downstream
@@ -965,6 +984,54 @@ fn spawn_producer(
     let err_state = Arc::new(Mutex::new(StreamState::new()));
     spawn_source_reader(err, err_state.clone());
     Ok(err_state)
+}
+
+/// Background poll source (`! CMD every Ns`, §7): re-run CMD via `sh -c` every
+/// `interval`, draining each run's stdout into `state` and stderr into the
+/// returned error-pane state. Per-cycle reader threads join before the sleep so
+/// a chatty command's stderr can't deadlock on a full pipe buffer. Loops until
+/// arb exits; the one-shot headless twin is `read_producer_sync`.
+fn poll_producer(
+    cmd: &str,
+    interval: Duration,
+    state: Arc<Mutex<StreamState>>,
+) -> Arc<Mutex<StreamState>> {
+    let err_state = Arc::new(Mutex::new(StreamState::new()));
+    let (cmd, es) = (cmd.to_string(), err_state.clone());
+    thread::spawn(move || loop {
+        if let Ok(mut child) = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            let (st, et) = (state.clone(), es.clone());
+            let ho = child.stdout.take().map(|o| {
+                thread::spawn(move || {
+                    for l in BufReader::new(o).lines().map_while(Result::ok) {
+                        st.lock().unwrap().push(l);
+                    }
+                })
+            });
+            let he = child.stderr.take().map(|e| {
+                thread::spawn(move || {
+                    for l in BufReader::new(e).lines().map_while(Result::ok) {
+                        et.lock().unwrap().push(l);
+                    }
+                })
+            });
+            if let Some(h) = ho {
+                let _ = h.join();
+            }
+            if let Some(h) = he {
+                let _ = h.join();
+            }
+            let _ = child.wait();
+        }
+        thread::sleep(interval);
+    });
+    err_state
 }
 
 fn spawn_reader(
