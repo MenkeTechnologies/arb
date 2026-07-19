@@ -4,13 +4,14 @@
 //! `Text`) — no new op. This is the xpath twin of [`crate::jq`].
 //!
 //! PRACTICAL subset (maps onto scraper's CSS engine): descendant `//tag`, child
-//! `/a/b`, descendant chain `//a//b`, the `[@attr]` existence predicate, and the
-//! trailing `/@attr` and `/text()` accessors; a standalone `@attr` step. That is
-//! the slice of xpath with a faithful CSS equivalent. Everything richer — axes
-//! (`..`, `ancestor::`, `following-sibling::`), positional/value predicates
-//! (`[1]`, `[@a='b']`, `[last()]`), functions other than a trailing `text()`,
-//! union `|`, `@*`, namespaced `ns:tag` — is a **hard error**, never a silent
-//! mis-translation.
+//! `/a/b`, descendant chain `//a//b`; the `[@attr]` existence, `[@attr='v']`
+//! equality, and `[contains(@attr,'v')]` substring predicates; the trailing
+//! `/@attr` and `/text()` accessors; a standalone `@attr` step; and union
+//! `//a | //b` (→ a CSS selector list). Value predicates use SINGLE quotes — a
+//! double quote splits the token at command position in the lexer. Everything
+//! richer — axes (`..`, `ancestor::`, `following-sibling::`), positional/text
+//! predicates (`[1]`, `[last()]`, `[text()='x']`), other functions, `@*`,
+//! namespaced `ns:tag` — is a **hard error**, never a silent mis-translation.
 
 use crate::query::QueryOp;
 
@@ -31,8 +32,24 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
             "xpath: expression must start with `/`, `//`, or `@`: `{src}`"
         ));
     }
-    if s.contains('|') {
-        return Err(format!("xpath: union `|` is not supported: `{src}`"));
+    // Union `//a | //b` → a CSS selector list `a, b` in one `Find`. Each branch
+    // is a pure location path (no trailing `/@attr` or `/text()` accessor — a CSS
+    // list can't carry one; compose it as a following step instead).
+    if let Some(branches) = split_union(s) {
+        let mut sels = Vec::new();
+        for b in &branches {
+            let b = b.trim();
+            if !b.starts_with('/') {
+                return Err(format!("xpath: a union branch must start with `/`: `{b}`"));
+            }
+            if b.ends_with("/text()") || b.contains("/@") {
+                return Err(format!(
+                    "xpath: a union branch cannot carry an accessor: `{b}`"
+                ));
+            }
+            sels.push(path_to_css(b, s)?);
+        }
+        return Ok(vec![QueryOp::Find(sels.join(", "))]);
     }
     // Peel a trailing accessor (`/text()` or `/@attr`) off the location path.
     let (path, trailer) = if let Some(p) = s.strip_suffix("/text()") {
@@ -134,21 +151,110 @@ fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
     } else {
         return Err(format!("xpath: unsupported step `{step}` in `{whole}`"));
     };
-    let Some(pred) = pred else {
-        return Ok(tag_css);
-    };
-    // The only supported predicate is `[@attr]` (attribute exists). Positional
-    // (`[1]`), value (`[@a='b']`), and function (`[last()]`, `[text()=…]`)
-    // predicates are out of subset.
-    let attr = pred.strip_prefix('@').ok_or_else(|| {
-        format!("xpath: only the `[@attr]` existence predicate is supported, not `[{pred}]`")
-    })?;
-    if !is_ident(attr) {
-        return Err(format!(
-            "xpath: unsupported predicate `[{pred}]` (only `[@attr]`)"
-        ));
+    match pred {
+        None => Ok(tag_css),
+        Some(p) => Ok(format!("{tag_css}{}", predicate_to_css(p, step)?)),
     }
-    Ok(format!("{tag_css}[{attr}]"))
+}
+
+/// Translate a single step predicate into a CSS attribute selector:
+///   `[@attr]`               → `[attr]`      (attribute exists)
+///   `[@attr='v']`           → `[attr="v"]`  (equals — use single quotes; the
+///                             lexer splits a double quote at command position)
+///   `[contains(@attr,'v')]` → `[attr*="v"]` (substring)
+/// Positional (`[1]`), text (`[text()='x']`), and other functions stay errors.
+fn predicate_to_css(pred: &str, step: &str) -> Result<String, String> {
+    // contains(@attr, 'value') → substring match.
+    if let Some(inner) = pred
+        .strip_prefix("contains(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let (a, v) = inner
+            .split_once(',')
+            .ok_or_else(|| format!("xpath: `contains()` needs `(@attr, 'value')` in `[{pred}]`"))?;
+        let attr = a
+            .trim()
+            .strip_prefix('@')
+            .filter(|a| is_ident(a))
+            .ok_or_else(|| {
+                format!("xpath: `contains()` first arg must be `@attr` in `[{pred}]`")
+            })?;
+        let val = unquote(v.trim())
+            .ok_or_else(|| format!("xpath: `contains()` value must be quoted in `[{pred}]`"))?;
+        return Ok(format!("[{attr}*=\"{}\"]", css_escape(&val)));
+    }
+    // @attr  or  @attr='value'
+    let attr_part = pred.strip_prefix('@').ok_or_else(|| {
+        format!(
+            "xpath: unsupported predicate `[{pred}]` in step `{step}` \
+             (use `[@attr]`, `[@attr='v']`, or `[contains(@attr,'v')]`)"
+        )
+    })?;
+    match attr_part.split_once('=') {
+        None => {
+            if !is_ident(attr_part) {
+                return Err(format!("xpath: unsupported predicate `[{pred}]`"));
+            }
+            Ok(format!("[{attr_part}]"))
+        }
+        Some((name, val)) => {
+            let name = name.trim();
+            if !is_ident(name) {
+                return Err(format!("xpath: unsupported attribute in `[{pred}]`"));
+            }
+            let val = unquote(val.trim()).ok_or_else(|| {
+                format!("xpath: value in `[{pred}]` must be quoted (`[@{name}='v']`)")
+            })?;
+            Ok(format!("[{name}=\"{}\"]", css_escape(&val)))
+        }
+    }
+}
+
+/// Split on a top-level `|` (not inside `[…]` or a quoted value). `None` when
+/// there is no top-level `|` (i.e. not a union).
+fn split_union(s: &str) -> Option<Vec<&str>> {
+    let (mut depth, mut quote) = (0i32, 0u8);
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (i, &c) in s.as_bytes().iter().enumerate() {
+        if quote != 0 {
+            if c == quote {
+                quote = 0;
+            }
+        } else {
+            match c {
+                b'\'' | b'"' => quote = c,
+                b'[' => depth += 1,
+                b']' => depth -= 1,
+                b'|' if depth == 0 => {
+                    parts.push(&s[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        parts.push(&s[start..]);
+        Some(parts)
+    }
+}
+
+/// Strip matching single/double quotes; `None` if the string isn't quoted.
+fn unquote(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    if b.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[b.len() - 1] == b[0] {
+        Some(s[1..s.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+/// Escape `\` and `"` for a CSS double-quoted attribute value.
+fn css_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// An attribute/tag name: a non-empty run of `[A-Za-z0-9_-]`, no namespace colon,
@@ -224,19 +330,53 @@ mod tests {
     }
 
     #[test]
+    fn union_value_predicate_and_contains() {
+        // Union → a CSS selector list in one Find.
+        assert!(matches!(ops("//a|//b").as_slice(), [QueryOp::Find(s)] if s == "a, b"));
+        assert!(
+            matches!(ops("//div//span | //p").as_slice(), [QueryOp::Find(s)] if s == "div span, p")
+        );
+        // Value predicate (single-quoted) → a CSS `[attr="v"]`.
+        assert!(
+            matches!(ops("//a[@class='btn']").as_slice(), [QueryOp::Find(s)] if s == "a[class=\"btn\"]")
+        );
+        assert!(
+            matches!(ops("//input[@type='text']").as_slice(), [QueryOp::Find(s)] if s == "input[type=\"text\"]")
+        );
+        // contains() → CSS substring `[attr*="v"]`.
+        assert!(
+            matches!(ops("//a[contains(@href,'x')]").as_slice(), [QueryOp::Find(s)] if s == "a[href*=\"x\"]")
+        );
+        // Existence predicate still works.
+        assert!(matches!(ops("//a[@href]").as_slice(), [QueryOp::Find(s)] if s == "a[href]"));
+        // A `|` inside a predicate value is NOT a union split.
+        assert!(
+            matches!(ops("//a[@class='x|y']").as_slice(), [QueryOp::Find(s)] if s == "a[class=\"x|y\"]")
+        );
+        // e2e: value predicate + contains select the right elements.
+        assert_eq!(
+            run(
+                "//a[@class='x']/text()",
+                "<a class='x'>1</a><a class='y'>2</a>"
+            ),
+            vec!["1"]
+        );
+    }
+
+    #[test]
     fn unsupported_constructs_error_not_mishandle() {
         for bad in [
             "//a[1]",                 // positional predicate
-            "//a[@href='x']",         // value predicate
             "//a[last()]",            // function predicate
+            "//a[text()='x']",        // text predicate
+            "//a[@class=btn]",        // unquoted value
             "//following-sibling::b", // axis
             "//..",                   // parent axis
             ".",                      // relative/context (jq territory, not xpath here)
-            "//a|//b",                // union
+            "//a/@href|//b",          // union branch with an accessor
             "count(//a)",             // function
             "//ns:a",                 // namespace
             "@*",                     // wildcard attribute
-            "//a[text()='x']",        // text predicate
             "foo",                    // not an xpath literal at all
         ] {
             assert!(translate(bad).is_err(), "expected `{bad}` to error");

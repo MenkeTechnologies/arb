@@ -1584,8 +1584,10 @@ fn jq_xpath_and_native_verbs_coexist_in_one_body() {
 
 #[test]
 fn unsupported_xpath_errors_at_build_not_silently() {
-    // A positional predicate is out of subset — it must fail the build, never
-    // silently mis-handle (the `|`-swallow bug class).
+    // A positional / text predicate is out of subset — it must fail the build,
+    // never silently mis-handle (the `|`-swallow bug class).
     assert!(build(&parse("tail .x\nsource .x { in.html; //a[1] }").unwrap()).is_err());
-    assert!(build(&parse("tail .x\nsource .x { in.html; //a[@c='d'] }").unwrap()).is_err());
+    assert!(build(&parse("tail .x\nsource .x { in.html; //a[text()='d'] }").unwrap()).is_err());
+    // A value predicate now BUILDS (single-quoted equality → CSS attr selector).
+    assert!(build(&parse("tail .x\nsource .x { in.html; //a[@c='d'] }").unwrap()).is_ok());
 }
