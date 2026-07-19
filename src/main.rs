@@ -270,6 +270,13 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
 }
 
 fn main() -> io::Result<()> {
+    // Registry verbs (`arb install|add|search|update|publish|uninstall NAME`) are
+    // handled before clap so a bare verb isn't mistaken for a spec file.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = arb::pkg::dispatch(&raw) {
+        std::process::exit(code);
+    }
+
     let cli = Cli::parse_from(fzf_compat_args(std::env::args()));
 
     if cli.repl {

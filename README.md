@@ -505,16 +505,20 @@ the terminal or the browser) is complete:
   reactions; `.w configure -k v` retune.
 - **Editor tooling** — `arb --lsp` (diagnostics via parse+build, `documentSymbol`,
   `hover`) and `arb --dap` (handshake stub) over stdio JSON-RPC.
-- **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution,
-  and a local preset library (`--save`/`--install`/`--uninstall`/`--installed`).
+- **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution
+  (with `import X as Y` namespacing), a local preset library
+  (`--save`/`--install`/`--uninstall`/`--installed`), and a registry client over
+  a git index (`arb update`/`search`/`install`/`add`/`uninstall`, resolved from
+  `~/.arb/pkg`; `arb publish` validates + prints PR steps).
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — dedicated
 `filter`/`facet`/`slider` control widgets and string/set control predicates
-(`match(.q)`, `level in .lv`), a networked package registry
-(`publish`/`search`/native ABI), and upstream-command sniffing for the
-shareable-dashboard ecosystem. Akka-style actors and mouse/resize events are
+(`match(.q)`, `level in .lv`), the hosted registry index behind `arb publish`
+(the client validates + prints PR steps today) with native/cdylib packages, and
+upstream-command sniffing for the shareable-dashboard ecosystem. Akka-style
+actors and mouse/resize events are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
 bytes with no mouse event stream.
 

@@ -588,6 +588,12 @@ fn resolve_module(name: &str) -> Result<String, String> {
             return Ok(s);
         }
     }
+    // Installed registry packages (`~/.arb/pkg`) — the SPEC §17 `pkg` tier.
+    if let Some(dir) = crate::pkg::pkg_dir() {
+        if let Some(s) = crate::pkg::read_pkg_module(&dir, name) {
+            return Ok(s);
+        }
+    }
     bundled_module(name)
         .map(str::to_string)
         .ok_or_else(|| format!("import: module `{name}` not found"))
