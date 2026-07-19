@@ -506,9 +506,13 @@ the terminal or the browser) is complete:
   actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk
   named keys (`<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`); `timeout Ns ACTION` idle
   reactions; `.w configure -k v` retune.
-- **Mouse** (SGR, in the TUI) — click a control to focus/toggle it, drag a
-  `slider`, click a `tabs` label or an fzf row, wheel to scroll; `bind <Click>` /
-  `bind <Resize>` reactions. Hold **Shift** and drag for native text selection.
+- **Mouse** (SGR, in the TUI) — **left-click** to focus/toggle a control, drag a
+  `slider`, click a `tabs` label or an fzf row (**double-click** to pick it);
+  **right-click** resets a control to its default; **middle-click** focuses only.
+  The **wheel** scrolls back through a `tail`/`list`/`table`/`text`/`block`/`frame`
+  and returns to the live tail. Shift/Alt/Ctrl modifier bits are decoded too;
+  `bind <Click>` / `bind <Resize>` reactions fire on press/resize. Hold **Shift**
+  and drag for native text selection.
 - **Editor tooling** — `arb --lsp` (diagnostics via parse+build, `documentSymbol`,
   `hover`) and `arb --dap` (handshake stub) over stdio JSON-RPC.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution

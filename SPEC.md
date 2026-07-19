@@ -250,12 +250,20 @@ bind <Resize> { alert resized }     # terminal size change → an action
 bind C-r { alert reloaded; beep }   # block form
 ```
 
-**Mouse** (SGR reporting, enabled on the TUI's `/dev/tty`): click a control to
-focus/toggle it (checkbox, facet option), click-drag a `slider`, click a `tabs`
-label to select it, click an fzf row to move the cursor, and the wheel scrolls —
-decoded from the raw tty byte stream, hit-tested against the rendered widget
-rects. To copy text, hold **Shift** and drag for your terminal's native
-char-precise selection (arb captures the mouse for its widgets). ⬜ Planned:
+**Mouse** (SGR reporting, enabled on the TUI's `/dev/tty`): **left-click** a
+control to focus/toggle it (checkbox, facet option), click-drag a `slider`,
+click a `tabs` label to select it, click an fzf row to move the cursor
+(**double-click** a row to pick it, like Enter). **Right-click** a control
+resets it to its empty/default (slider→min, checkbox→off, text/facet→cleared).
+**Middle-click** focuses without acting. The **wheel** scrolls: over a
+scrollable widget (`tail`, `list`, `text`, `table`, `block`, `frame`) it banks
+older rows and walks back toward the live tail; elsewhere it moves the focused
+`facet` cursor; in fzf mode it moves the selection. The raw button byte also
+carries **Shift/Alt/Ctrl** modifier bits (`mouse_shift`/`mouse_alt`/`mouse_ctrl`).
+Everything is decoded from the raw tty byte stream and hit-tested against the
+rendered widget rects. To copy text, hold **Shift** and drag for your terminal's
+native char-precise selection (arb captures the mouse for its widgets).
+⬜ Planned:
 `spawn` + a widget's selection (`.ps.sel`); OSC-52 whole-widget copy is
 deferred (line-granular, terminal-gated — Shift+drag is the better copy path).
 

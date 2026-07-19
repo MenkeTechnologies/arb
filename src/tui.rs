@@ -123,6 +123,11 @@ pub struct Controls {
     /// `tabs` widget selection: widget name (no dot) -> selected tab index, set by
     /// a tab-bar click and read by the Tabs render arm.
     pub tab_sel: HashMap<String, usize>,
+    /// Per-widget history scrollback: widget name -> rows scrolled back from the
+    /// live bottom (0 = live tail; wheel-up increments, wheel-down decrements).
+    pub scroll: HashMap<String, usize>,
+    /// Previous mouse-down (time, col, row) for double-click detection.
+    pub last_click: Option<(Instant, u16, u16)>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -321,7 +326,7 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                     // hit-tested + dispatched; a truncated report re-syncs on `i+=1`.
                     if b == 0x1b && buf.get(i + 1) == Some(&b'[') && buf.get(i + 2) == Some(&b'<') {
                         if let Some((ev, used)) = parse_sgr_mouse(&buf[..n], i) {
-                            dispatch_mouse(&mut c, ev, fzf);
+                            dispatch_mouse(&mut c, ev, fzf, Instant::now());
                             if c.quit {
                                 break 'read;
                             }
@@ -792,6 +797,7 @@ pub fn run(
         let flash_snap: HashMap<String, String> =
             c.flashes.iter().map(|(k, (col, _))| (k.clone(), col.clone())).collect();
         let tab_sel_snap: HashMap<String, usize> = c.tab_sel.clone();
+        let scroll_snap: HashMap<String, usize> = c.scroll.clone();
         let beep = std::mem::take(&mut c.beep_pending);
         // Control names (index-aligned to inputs) so the hitmap can point a click
         // at the right control_meta slot.
@@ -804,6 +810,7 @@ pub fn run(
             render(
                 f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
                 alert_msg.as_deref(), &flash_snap, &cmeta, &mut hitmap, &control_names, &tab_sel_snap,
+                &scroll_snap,
             );
         });
         drop(st);
@@ -852,6 +859,7 @@ fn render(
     hitmap: &mut Vec<HitTarget>,
     control_names: &[String],
     tab_sel: &HashMap<String, usize>,
+    scroll: &HashMap<String, usize>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -955,7 +963,8 @@ fn render(
         // A live `flash` action tints this widget's border/accent.
         let flash = flashes.get(w.path.trim_start_matches('.')).map(String::as_str);
         let tsel = tab_sel.get(w.path.trim_start_matches('.')).copied().unwrap_or(0);
-        render_widget(f, rects[i], w, st, &raw, result, flash, tsel);
+        let wsc = scroll.get(w.path.trim_start_matches('.')).copied().unwrap_or(0);
+        render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc);
     }
 }
 
@@ -970,11 +979,12 @@ pub enum MouseKind {
     Drag,
     ScrollUp,
     ScrollDown,
-    Other,
 }
 
 /// One decoded SGR mouse event. `col`/`row` are 0-based (converted from the
-/// 1-based wire coords) so they index a ratatui `Rect` directly.
+/// 1-based wire coords) so they index a ratatui `Rect` directly. `button` is the
+/// raw SGR button byte (button number in the low 2 bits, modifiers in the high
+/// bits) — decode with `mouse_button`/`mouse_shift`/`mouse_ctrl`/`mouse_alt`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MouseEvent {
     pub kind: MouseKind,
@@ -982,6 +992,38 @@ pub struct MouseEvent {
     pub row: u16,
     pub button: u8,
     pub press: bool,
+}
+
+/// Which physical button an SGR byte encodes (low 2 bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    Other,
+}
+
+/// Decode the physical button from an SGR button byte (0=left, 1=middle,
+/// 2=right; modifier/motion/wheel bits live higher). Pure.
+pub fn mouse_button(b: u8) -> MouseButton {
+    match b & 0b11 {
+        0 => MouseButton::Left,
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        _ => MouseButton::Other,
+    }
+}
+
+/// SGR modifier predicates over the raw button byte (Shift=0x04, Alt=0x08,
+/// Ctrl=0x10). Pure.
+pub fn mouse_shift(b: u8) -> bool {
+    b & 0x04 != 0
+}
+pub fn mouse_alt(b: u8) -> bool {
+    b & 0x08 != 0
+}
+pub fn mouse_ctrl(b: u8) -> bool {
+    b & 0x10 != 0
 }
 
 /// A rendered widget's screen rect + identity, so the key-handler thread can
@@ -1047,10 +1089,10 @@ pub fn parse_sgr_mouse(bytes: &[u8], i: usize) -> Option<(MouseEvent, usize)> {
         MouseKind::Up
     } else if b & 0x20 != 0 {
         MouseKind::Drag
-    } else if b & 0b11 == 0 {
-        MouseKind::Down
     } else {
-        MouseKind::Other
+        // Any non-wheel, non-drag press is a button-down (left/middle/right);
+        // the specific button is carried in `button` (read via `mouse_button`).
+        MouseKind::Down
     };
     let ev = MouseEvent {
         kind,
@@ -1087,6 +1129,40 @@ pub fn fzf_row_to_cursor(list_top: u16, start: usize, row: u16) -> usize {
     start + row.saturating_sub(list_top) as usize
 }
 
+/// Which widget kinds honor wheel history-scroll when the wheel is over them.
+fn is_scrollable(k: WidgetKind) -> bool {
+    matches!(
+        k,
+        WidgetKind::Tail
+            | WidgetKind::List
+            | WidgetKind::Text
+            | WidgetKind::Table
+            | WidgetKind::Block
+            | WidgetKind::Frame
+    )
+}
+
+/// The `skip` for a tail/list/table window ending `scroll` rows above the live
+/// bottom: `len-cap` shifted up by `scroll`, clamped so over-scroll parks at the
+/// oldest row. `scroll == 0` reproduces the pre-scroll `len.saturating_sub(cap)`.
+pub fn scroll_skip(len: usize, cap: usize, scroll: usize) -> usize {
+    len.saturating_sub(cap).saturating_sub(scroll)
+}
+
+/// Double-click window (a second press this soon after the first, on the same
+/// row, is a double-click — the common ~400ms terminal default).
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Whether a press at `row` at time `now` double-clicks the prior press `last`
+/// (within the window, same row — the column may drift within a list row). Takes
+/// two `Instant`s so it is unit-testable off a synthetic base.
+pub fn is_double_click(last: Option<(Instant, u16, u16)>, now: Instant, row: u16) -> bool {
+    match last {
+        Some((t, _c, r)) => r == row && now.saturating_duration_since(t) <= DOUBLE_CLICK,
+        None => false,
+    }
+}
+
 /// Which tab a click at `col` landed on. ratatui `Tabs` render each label as
 /// ` label ` (a space each side) joined by a `|` divider, inside the block's
 /// left border — so tab `i` spans `label.len()+2` cols, `+1` for the divider
@@ -1119,14 +1195,21 @@ pub fn slider_value_from_x(rect_x: u16, rect_w: u16, col: u16, min: f64, max: f6
     crate::query::fmt_scalar(snapped)
 }
 
-/// Apply a decoded mouse event to `Controls`: scroll moves a cursor; a press/drag
-/// hit-tests to a widget and focuses/toggles/sets it; then any `bind <Click>`
-/// reactions fire. Pure over `Controls` — unit-testable without a tty.
-fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
+/// Apply a decoded mouse event to `Controls`: the wheel moves a cursor or scrolls
+/// a widget's history; a left press hit-tests to a widget and focuses/toggles/sets
+/// it (double-click on an fzf row picks it); a right press resets the hit control;
+/// then any `bind <Click>` reactions fire. Pure over `Controls` — `now` is passed
+/// in (from the key handler) so double-click stays unit-testable.
+fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
     match ev.kind {
         MouseKind::ScrollUp => {
             if fzf {
                 c.cursor = c.cursor.saturating_sub(1);
+            } else if let Some(name) = hit(&c.hitmap, ev.col, ev.row)
+                .filter(|t| is_scrollable(t.kind))
+                .map(|t| t.control_name.clone())
+            {
+                *c.scroll.entry(name).or_insert(0) += 1; // older rows
             } else if let Some(m) = c.control_meta.get_mut(c.focus) {
                 if m.kind == ControlKind::Facet {
                     m.cursor = m.cursor.saturating_sub(1);
@@ -1136,6 +1219,13 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
         MouseKind::ScrollDown => {
             if fzf {
                 c.cursor = c.cursor.saturating_add(1);
+            } else if let Some(name) = hit(&c.hitmap, ev.col, ev.row)
+                .filter(|t| is_scrollable(t.kind))
+                .map(|t| t.control_name.clone())
+            {
+                if let Some(s) = c.scroll.get_mut(&name) {
+                    *s = s.saturating_sub(1); // toward the live tail
+                }
             } else if let Some(m) = c.control_meta.get_mut(c.focus) {
                 if m.kind == ControlKind::Facet {
                     m.cursor = m.cursor.saturating_add(1);
@@ -1144,47 +1234,68 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
         }
         MouseKind::Down | MouseKind::Drag => {
             let down = ev.kind == MouseKind::Down;
+            let button = mouse_button(ev.button);
+            let dbl = down && is_double_click(c.last_click, now, ev.row);
+            if down {
+                c.last_click = Some((now, ev.col, ev.row));
+            }
             if let Some(t) = hit(&c.hitmap, ev.col, ev.row).cloned() {
                 let mi = t.meta_index.or_else(|| c.inputs.iter().position(|(n, _)| *n == t.control_name));
                 if let Some(mi) = mi {
                     c.focus = mi; // focus only ever indexes a real control
                 }
-                match t.kind {
-                    WidgetKind::Check if down => {
-                        if let Some(mi) = mi {
-                            c.inputs[mi].1 = toggle_check(&c.inputs[mi].1);
-                        }
+                if down && button == MouseButton::Right {
+                    // Right-click resets the hit control to its empty/default.
+                    if let Some(mi) = mi {
+                        let kind = c.control_meta.get(mi).map(|m| m.kind).unwrap_or(ControlKind::Text);
+                        c.inputs[mi].1 = match kind {
+                            ControlKind::Slider => crate::query::fmt_scalar(c.control_meta[mi].min),
+                            ControlKind::Check => "0".to_string(),
+                            ControlKind::Text | ControlKind::Facet => String::new(),
+                        };
                     }
-                    WidgetKind::Slider => {
-                        if let Some(mi) = mi {
-                            let m = &c.control_meta[mi];
-                            let (mn, mx, sp) = (m.min, m.max, m.step);
-                            c.inputs[mi].1 = slider_value_from_x(t.rect.x, t.rect.width, ev.col, mn, mx, sp);
+                } else if button == MouseButton::Left {
+                    match t.kind {
+                        WidgetKind::Check if down => {
+                            if let Some(mi) = mi {
+                                c.inputs[mi].1 = toggle_check(&c.inputs[mi].1);
+                            }
                         }
-                    }
-                    WidgetKind::Facet if down => {
-                        if let Some(mi) = mi {
-                            if let Some(idx) = facet_row_to_index(t.rect.y, ev.row) {
-                                if let Some(item) = c.control_meta[mi].opts.get(idx).cloned() {
-                                    c.inputs[mi].1 = toggle_set_member(&c.inputs[mi].1, &item);
-                                    c.control_meta[mi].cursor = idx;
+                        WidgetKind::Slider => {
+                            if let Some(mi) = mi {
+                                let m = &c.control_meta[mi];
+                                let (mn, mx, sp) = (m.min, m.max, m.step);
+                                c.inputs[mi].1 = slider_value_from_x(t.rect.x, t.rect.width, ev.col, mn, mx, sp);
+                            }
+                        }
+                        WidgetKind::Facet if down => {
+                            if let Some(mi) = mi {
+                                if let Some(idx) = facet_row_to_index(t.rect.y, ev.row) {
+                                    if let Some(item) = c.control_meta[mi].opts.get(idx).cloned() {
+                                        c.inputs[mi].1 = toggle_set_member(&c.inputs[mi].1, &item);
+                                        c.control_meta[mi].cursor = idx;
+                                    }
                                 }
                             }
                         }
-                    }
-                    WidgetKind::Select if down && ev.row >= t.rect.y => {
-                        c.cursor = fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row);
-                    }
-                    WidgetKind::Tabs if down => {
-                        let labels: Vec<&str> = t.tabs.iter().map(String::as_str).collect();
-                        if let Some(idx) = tab_index_from_x(&labels, t.rect.x, ev.col) {
-                            c.tab_sel.insert(t.control_name.clone(), idx);
+                        WidgetKind::Select if down && ev.row >= t.rect.y => {
+                            c.cursor = fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row);
+                            if dbl {
+                                c.submit = true; // double-click picks the row, like Enter
+                            }
                         }
+                        WidgetKind::Tabs if down => {
+                            let labels: Vec<&str> = t.tabs.iter().map(String::as_str).collect();
+                            if let Some(idx) = tab_index_from_x(&labels, t.rect.x, ev.col) {
+                                c.tab_sel.insert(t.control_name.clone(), idx);
+                            }
+                        }
+                        _ => {} // input/filter focus set above; view widgets no-op
                     }
-                    _ => {} // input/filter focus set above; view widgets no-op
                 }
+                // Middle button: focus only (set above), no widget action.
             }
-            // `bind <Click>` reactions fire on a press (not a drag).
+            // `bind <Click>` reactions fire on any button press (not a drag).
             if down {
                 let actions: Vec<BindAction> = c.mouse_binds.iter().map(|(_, a)| a.clone()).collect();
                 for a in &actions {
@@ -1192,7 +1303,7 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
                 }
             }
         }
-        MouseKind::Up | MouseKind::Other => {}
+        MouseKind::Up => {}
     }
 }
 
@@ -1691,6 +1802,7 @@ fn render_widget(
     result: Option<QueryResult>,
     flash: Option<&str>,
     tab_sel: usize,
+    scroll: usize,
 ) {
     // `-label`/`-title` overrides the widget's display name (the dot-path).
     let name = w
@@ -1743,10 +1855,12 @@ fn render_widget(
             // even when more would fit; unset fills the pane.
             let inner_h = area.height.saturating_sub(2) as usize;
             let cap = widget_limit(w).map_or(inner_h, |n| inner_h.min(n));
-            let skip = owned.len().saturating_sub(cap);
+            // Wheel scrollback shifts the window up from the live tail.
+            let skip = scroll_skip(owned.len(), cap, scroll);
             let items: Vec<ListItem> = owned
                 .iter()
                 .skip(skip)
+                .take(cap)
                 .map(|l| ListItem::new(ansi_line(l)))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
@@ -1853,10 +1967,11 @@ fn render_widget(
             // Keep the newest rows that fit (leave room for borders + header).
             let reserve = if headers.is_empty() { 2 } else { 3 };
             let inner_h = area.height.saturating_sub(reserve) as usize;
-            let skip = rows.len().saturating_sub(inner_h);
+            let skip = scroll_skip(rows.len(), inner_h, scroll);
             let body: Vec<Row> = rows
                 .iter()
                 .skip(skip)
+                .take(inner_h)
                 .map(|r| {
                     Row::new(
                         (0..ncols)
@@ -1909,9 +2024,9 @@ fn render_widget(
                 None => lines.to_vec(),
             };
             let inner_h = area.height.saturating_sub(2) as usize;
-            let skip = owned.len().saturating_sub(inner_h);
+            let skip = scroll_skip(owned.len(), inner_h, scroll);
             let items: Vec<ListItem> =
-                owned.iter().skip(skip).map(|l| ListItem::new(ansi_line(l))).collect();
+                owned.iter().skip(skip).take(inner_h).map(|l| ListItem::new(ansi_line(l))).collect();
             f.render_widget(List::new(items).block(block), area);
         }
     }
@@ -1978,7 +2093,7 @@ mod tests {
         let st = StreamState::new();
         let data = vec!["one".to_string(), "two".to_string()];
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
-        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0)).unwrap();
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0, 0)).unwrap();
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
     }
 
@@ -2080,16 +2195,16 @@ mod tests {
         };
         let ev = |kind, col, row| MouseEvent { kind, col, row, button: 0, press: kind == MouseKind::Down };
         // Click the checkbox -> toggles + focuses it.
-        dispatch_mouse(&mut c, ev(MouseKind::Down, 2, 1), false);
+        dispatch_mouse(&mut c, ev(MouseKind::Down, 2, 1), false, std::time::Instant::now());
         assert_eq!(c.inputs[0].1, "1");
         assert_eq!(c.focus, 0);
         // Click mid the slider (inner width 10, x=6 -> ~mid).
-        dispatch_mouse(&mut c, ev(MouseKind::Down, 6, 4), false);
+        dispatch_mouse(&mut c, ev(MouseKind::Down, 6, 4), false, std::time::Instant::now());
         assert_eq!(c.inputs[1].1, "5");
         assert_eq!(c.focus, 1);
         // Scroll in fzf mode moves the cursor.
         c.cursor = 5;
-        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 0, 0), true);
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 0, 0), true, std::time::Instant::now());
         assert_eq!(c.cursor, 4);
     }
 
@@ -2127,7 +2242,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, true);
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, true, std::time::Instant::now());
         assert_eq!(c.cursor, 12); // 10 + (4 - 2)
         // tabs: clicking a label selects it.
         let mut c = Controls {
@@ -2140,7 +2255,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 5, row: 0, button: 0, press: true }, false);
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 5, row: 0, button: 0, press: true }, false, std::time::Instant::now());
         assert_eq!(c.tab_sel.get("t"), Some(&1));
     }
 
@@ -2158,6 +2273,117 @@ mod tests {
         assert_eq!(toggle_set_member("", "warn"), "warn");
         assert_eq!(toggle_set_member("warn", "error"), "warn,error");
         assert_eq!(toggle_set_member("warn,error", "warn"), "error");
+    }
+
+    #[test]
+    fn mouse_button_and_modifiers() {
+        use super::{mouse_alt, mouse_button, mouse_ctrl, mouse_shift, MouseButton};
+        // Low two bits pick the button; wheel codes (64/65) keep bits 0/1 clear.
+        assert_eq!(mouse_button(0), MouseButton::Left);
+        assert_eq!(mouse_button(1), MouseButton::Middle);
+        assert_eq!(mouse_button(2), MouseButton::Right);
+        // Modifiers ride the high bits and don't disturb the button decode.
+        assert_eq!(mouse_button(0 | 0x04 | 0x10), MouseButton::Left);
+        assert_eq!(mouse_button(2 | 0x08), MouseButton::Right);
+        assert!(mouse_shift(0x04) && !mouse_alt(0x04) && !mouse_ctrl(0x04));
+        assert!(mouse_alt(0x08) && !mouse_shift(0x08));
+        assert!(mouse_ctrl(0x10) && !mouse_alt(0x10));
+        assert!(!mouse_shift(0) && !mouse_alt(0) && !mouse_ctrl(0));
+    }
+
+    #[test]
+    fn scroll_skip_windows_the_tail() {
+        use super::scroll_skip;
+        // No scrollback: skip everything above the last `cap` rows.
+        assert_eq!(scroll_skip(100, 10, 0), 90);
+        // Scroll back N: window ends N rows above the live tail.
+        assert_eq!(scroll_skip(100, 10, 5), 85);
+        // Clamp: can't skip past the top of the buffer.
+        assert_eq!(scroll_skip(100, 10, 200), 0);
+        // Buffer fits the pane: nothing to skip regardless of scroll.
+        assert_eq!(scroll_skip(5, 10, 3), 0);
+    }
+
+    #[test]
+    fn double_click_window() {
+        use super::{is_double_click, DOUBLE_CLICK};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        // No prior click -> never a double-click.
+        assert!(!is_double_click(None, t0, 4));
+        // Same row, inside the window -> double-click.
+        let last = Some((t0, 3u16, 4u16));
+        assert!(is_double_click(last, t0 + Duration::from_millis(100), 4));
+        // Same row but past the window -> single click.
+        assert!(!is_double_click(last, t0 + DOUBLE_CLICK + Duration::from_millis(1), 4));
+        // Different row inside the window -> not a double-click.
+        assert!(!is_double_click(last, t0 + Duration::from_millis(100), 5));
+    }
+
+    #[test]
+    fn dispatch_mouse_right_click_resets_and_double_click_submits() {
+        use super::{dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind};
+        use crate::spec::WidgetKind;
+        use ratatui::layout::Rect;
+        use std::time::{Duration, Instant};
+        let mk = |button, row| MouseEvent { kind: MouseKind::Down, col: 2, row, button, press: true };
+        let mut c = Controls {
+            inputs: vec![("chk".into(), "1".into()), ("sl".into(), "7".into()), ("txt".into(), "hi".into())],
+            control_meta: vec![
+                ControlMeta { kind: ControlKind::Check, ..Default::default() },
+                ControlMeta { kind: ControlKind::Slider, min: 2.0, max: 10.0, step: 1.0, ..Default::default() },
+                ControlMeta { kind: ControlKind::Text, ..Default::default() },
+            ],
+            hitmap: vec![
+                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0), tabs: Vec::new() },
+                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1), tabs: Vec::new() },
+                HitTarget { rect: Rect { x: 0, y: 6, width: 12, height: 3 }, kind: WidgetKind::Filter, control_name: "txt".into(), meta_index: Some(2), tabs: Vec::new() },
+            ],
+            ..Default::default()
+        };
+        let now = Instant::now();
+        // Right-click (button 2) resets each control to its empty/default.
+        dispatch_mouse(&mut c, mk(2, 1), false, now); // Check -> "0"
+        assert_eq!(c.inputs[0].1, "0");
+        dispatch_mouse(&mut c, mk(2, 4), false, now); // Slider -> min (2)
+        assert_eq!(c.inputs[1].1, "2");
+        dispatch_mouse(&mut c, mk(2, 7), false, now); // Text -> ""
+        assert_eq!(c.inputs[2].1, "");
+
+        // Double-click a Select row within the window sets submit.
+        let mut c = Controls {
+            fzf_list_start: 0,
+            hitmap: vec![HitTarget { rect: Rect { x: 0, y: 0, width: 20, height: 10 }, kind: WidgetKind::Select, control_name: String::new(), meta_index: None, tabs: Vec::new() }],
+            ..Default::default()
+        };
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, false, now);
+        assert!(!c.submit); // first click only positions the cursor
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, false, now + Duration::from_millis(100));
+        assert!(c.submit); // second click on the same row within the window submits
+    }
+
+    #[test]
+    fn dispatch_mouse_wheel_scrolls_widget() {
+        use super::{dispatch_mouse, Controls, HitTarget, MouseEvent, MouseKind};
+        use crate::spec::WidgetKind;
+        use ratatui::layout::Rect;
+        use std::time::Instant;
+        let mut c = Controls {
+            hitmap: vec![HitTarget { rect: Rect { x: 0, y: 0, width: 20, height: 10 }, kind: WidgetKind::Tail, control_name: "log".into(), meta_index: None, tabs: Vec::new() }],
+            ..Default::default()
+        };
+        let ev = |kind| MouseEvent { kind, col: 5, row: 5, button: 0, press: false };
+        let now = Instant::now();
+        // Wheel up over a scrollable widget banks older rows.
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp), false, now);
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp), false, now);
+        assert_eq!(c.scroll.get("log"), Some(&2));
+        // Wheel down walks back toward the live tail, saturating at 0.
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollDown), false, now);
+        assert_eq!(c.scroll.get("log"), Some(&1));
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollDown), false, now);
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollDown), false, now);
+        assert_eq!(c.scroll.get("log"), Some(&0));
     }
 
     #[test]
