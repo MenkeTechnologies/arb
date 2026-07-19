@@ -9,7 +9,7 @@
 //! frame, so a typed field reshapes the dashboard like the TUI megafilter.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,9 +83,17 @@ fn handle(
     page: &str,
     inputs: &Inputs,
 ) -> std::io::Result<()> {
+    // A read timeout so a client that opens a socket and stalls mid-request (a
+    // slowloris) cannot pin this connection's thread forever — the blocked
+    // read_line below returns an error and the thread unwinds, closing the conn.
+    let _ = conn.set_read_timeout(Some(Duration::from_secs(15)));
     // Read the request line + headers (needed for the WebSocket upgrade key).
+    // Cap the total bytes buffered for the request line + headers: an attacker
+    // streaming megabytes with no newline would otherwise grow `read_line`'s
+    // String without bound (memory DoS). 64 KiB is far above any real header set.
+    const MAX_REQ_BYTES: u64 = 64 * 1024;
     let (path, headers) = {
-        let mut reader = BufReader::new(&conn);
+        let mut reader = BufReader::new((&conn).take(MAX_REQ_BYTES));
         let mut req = String::new();
         reader.read_line(&mut req)?;
         let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();

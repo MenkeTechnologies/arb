@@ -96,9 +96,21 @@ fn shard_get(shard: &Shard, key: u64) -> Option<&[u8]> {
         .map(|e| e.blob.as_slice())
 }
 
+/// Largest number of cached specs kept in the shard. Every run reads and
+/// deserializes the whole shard, so an unbounded cache would slow every startup
+/// as it accreted distinct specs over time; cap it and evict oldest-first.
+const MAX_ENTRIES: usize = 1024;
+
 /// Insert/replace `key`'s blob in `shard` (pure; testable without the FS).
 fn shard_put(shard: &mut Shard, key: u64, blob: Vec<u8>) {
     shard.entries.retain(|e| e.key != key);
+    // Bound the shard: drop the oldest entries (FIFO) so the on-disk file — and
+    // the per-run read+deserialize cost — stay bounded no matter how many
+    // distinct specs are ever cached.
+    if shard.entries.len() >= MAX_ENTRIES {
+        let overflow = shard.entries.len() + 1 - MAX_ENTRIES;
+        shard.entries.drain(..overflow);
+    }
     shard.entries.push(Entry { key, blob });
 }
 
@@ -175,6 +187,21 @@ mod tests {
         assert_eq!(s.entries.len(), 2);
         assert_eq!(shard_get(&s, 7), Some(&[8, 8][..]));
         assert_eq!(shard_get(&s, 1), None);
+    }
+
+    #[test]
+    fn shard_put_evicts_oldest_at_capacity() {
+        let mut s = Shard::default();
+        // Fill past capacity with distinct keys.
+        for k in 0..(MAX_ENTRIES as u64 + 50) {
+            shard_put(&mut s, k, vec![k as u8]);
+        }
+        assert_eq!(s.entries.len(), MAX_ENTRIES, "shard is capped");
+        // The 50 oldest keys were evicted; the newest survive.
+        assert_eq!(shard_get(&s, 0), None);
+        assert_eq!(shard_get(&s, 49), None);
+        assert!(shard_get(&s, 50).is_some());
+        assert!(shard_get(&s, MAX_ENTRIES as u64 + 49).is_some());
     }
 
     #[test]

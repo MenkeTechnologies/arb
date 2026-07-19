@@ -1601,3 +1601,27 @@ fn unsupported_xpath_errors_at_build_not_silently() {
     // A value predicate now BUILDS (single-quoted equality → CSS attr selector).
     assert!(build(&parse("tail .x\nsource .x { in.html; //a[@c='d'] }").unwrap()).is_ok());
 }
+
+// Adversarial-audit regression: fmt_num used `v as i64`, which SATURATES for
+// values outside i64's range, so map/floor/etc. silently corrupted large whole
+// numbers to 9223372036854775807. They must now print the full value, matching
+// the Scalar (sum) path.
+#[test]
+fn map_does_not_saturate_large_whole_numbers() {
+    let ops = pipeline("tail .x\nsource .x { in; map x }");
+    assert_eq!(
+        eval(&ops, &lines(&["1e19"]), 1.0),
+        QueryResult::Lines(lines(&["10000000000000000000"]))
+    );
+    let floor = pipeline("tail .x\nsource .x { in; floor }");
+    assert_eq!(
+        eval(&floor, &lines(&["1e19"]), 1.0),
+        QueryResult::Lines(lines(&["10000000000000000000"]))
+    );
+    // In-range whole numbers still print without a decimal point.
+    let ops2 = pipeline("tail .x\nsource .x { in; map x + 1 }");
+    assert_eq!(
+        eval(&ops2, &lines(&["5"]), 1.0),
+        QueryResult::Lines(lines(&["6"]))
+    );
+}

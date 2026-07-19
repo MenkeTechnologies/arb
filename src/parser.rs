@@ -6,14 +6,28 @@ use crate::ast::{Arg, Command};
 use crate::err::SpecError;
 use crate::lexer::{lex, Tok};
 
+/// Deepest `{ … }` nesting the parser will recurse into before failing closed.
+/// Real specs nest a handful deep; this only stops a pathological input from
+/// overflowing the stack and aborting the process (mirrors the expr parser's
+/// depth guard). 256 is far above any legitimate spec.
+const MAX_BLOCK_DEPTH: usize = 256;
+
 /// Parse spec source into a command tree.
 pub fn parse(src: &str) -> Result<Vec<Command>, SpecError> {
-    parse_at(src, 0)
+    parse_at(src, 0, 0)
 }
 
 /// Parse `src`, treating its offsets as `base`-relative in the whole document
 /// (so a nested `{ … }` block's commands still point at absolute source spans).
-fn parse_at(src: &str, base: usize) -> Result<Vec<Command>, SpecError> {
+/// `depth` bounds recursion so a deeply nested block errors instead of blowing
+/// the stack.
+fn parse_at(src: &str, base: usize, depth: usize) -> Result<Vec<Command>, SpecError> {
+    if depth > MAX_BLOCK_DEPTH {
+        return Err(SpecError {
+            msg: "spec: blocks too deeply nested".into(),
+            span: Some((base, base + 1)),
+        });
+    }
     let toks = lex(src)?;
     let mut cmds = Vec::new();
     let mut cur: Vec<Arg> = Vec::new();
@@ -39,7 +53,7 @@ fn parse_at(src: &str, base: usize) -> Result<Vec<Command>, SpecError> {
             Tok::Block(raw) => {
                 cur_pos.get_or_insert(base + off);
                 // The block's inner text starts one char after the `{`.
-                cur.push(Arg::Block(parse_at(raw, base + off + 1)?));
+                cur.push(Arg::Block(parse_at(raw, base + off + 1, depth + 1)?));
             }
         }
     }

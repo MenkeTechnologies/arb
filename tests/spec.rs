@@ -1036,3 +1036,37 @@ fn spawn_pty_flag_and_send_action() {
     assert!(matches!(&s3.binds[0].action, BindAction::Send(t) if t == "yes\n"));
     assert!(build(&parse("bind C-y send").unwrap()).is_err());
 }
+
+// Adversarial-audit regression: the block parser recursed once per nested `{ }`
+// with no depth guard, so a pathologically nested spec overflowed the stack and
+// SIGABRT'd the process. It must now fail closed with an error (a passing run is
+// the proof — an abort would kill the whole test binary).
+#[test]
+fn deeply_nested_blocks_error_not_abort() {
+    let deep = format!("bind C-a {}quit{}", "{ ".repeat(6000), " }".repeat(6000));
+    let err = parse(&deep).expect_err("deep block nesting must be rejected");
+    assert!(
+        err.msg.contains("too deeply nested"),
+        "expected a depth-limit error, got: {}",
+        err.msg
+    );
+}
+
+// Adversarial-audit regression: the block lexer counted raw `{`/`}` without
+// honoring string/regex literals, so a `}` inside a `/regex/` or `"string"` in a
+// block body closed the block early and silently dropped the rest of the body.
+#[test]
+fn brace_inside_regex_or_string_does_not_truncate_block() {
+    // `/x}/` — the `}` is inside a regex literal; the block must stay intact so
+    // the `grep` op keeps the FULL pattern (a truncated block would either error
+    // or drop to a shorter regex). `grep` compiles to a Match op.
+    let s = build(&parse("tail .x\nsource .x { in; grep /x}/ }").unwrap()).unwrap();
+    let ops = &s.widgets[0].source.as_ref().unwrap().pipeline;
+    let dbg = format!("{ops:?}");
+    assert!(dbg.contains("x}"), "regex brace survived: {dbg}");
+    // `}` inside a "string" likewise must not truncate the block: the prepend op
+    // must carry the whole `a}b`, brace included.
+    let s2 = build(&parse("tail .x\nsource .x { in; prepend \"a}b\" }").unwrap()).unwrap();
+    let dbg2 = format!("{:?}", s2.widgets[0].source.as_ref().unwrap().pipeline);
+    assert!(dbg2.contains("a}b"), "string brace survived: {dbg2}");
+}

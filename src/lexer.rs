@@ -75,14 +75,50 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
                 let mut depth = 1;
                 i += 1;
                 let start = i;
-                while i < n && depth > 0 {
+                while i < n {
                     match cs[i] {
                         '{' => depth += 1,
-                        '}' => depth -= 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        // Skip a "..." string so a `{`/`}` inside it does not
+                        // miscount block depth (honoring the `\"` escape). An
+                        // unterminated string runs to EOF -> unterminated block.
+                        '"' => {
+                            i += 1;
+                            while i < n && cs[i] != '"' {
+                                if cs[i] == '\\' && i + 1 < n {
+                                    i += 1;
+                                }
+                                i += 1;
+                            }
+                        }
+                        // Skip a /regex/ literal so a `{`/`}` in the pattern does
+                        // not miscount depth — but only when it actually closes
+                        // before end-of-line. A non-closing `/` (division, a path)
+                        // is treated as an ordinary char, matching the main lexer.
+                        '/' => {
+                            let mut j = i + 1;
+                            let mut closed = false;
+                            while j < n {
+                                match cs[j] {
+                                    '\\' if j + 1 < n => j += 2,
+                                    '/' => {
+                                        closed = true;
+                                        break;
+                                    }
+                                    '\n' => break,
+                                    _ => j += 1,
+                                }
+                            }
+                            if closed {
+                                i = j; // land on the closing `/`; the `i += 1` below steps past it
+                            }
+                        }
                         _ => {}
-                    }
-                    if depth == 0 {
-                        break;
                     }
                     i += 1;
                 }

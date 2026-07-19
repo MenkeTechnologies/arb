@@ -56,7 +56,11 @@ pub enum QueryOp {
     Avg,
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
+    /// Native `vals` verb: expand a JSON object's values, one per line.
     Vals,
+    /// jq `values` == `select(. != null)`: drop JSON-null lines, pass every other
+    /// line through unchanged. (NOT object-value iteration — that is `vals`/`.[]`.)
+    NonNull,
     /// Project a JSON object down to the named keys (jq `{a,b,c}` /
     /// `pick(.a,.b,.c)`), preserving the listed order. Non-object lines pass
     /// through unchanged; missing keys are dropped.
@@ -121,13 +125,17 @@ pub enum QueryOp {
     MinBy(String),
     /// Reducer: emit the single record whose numeric FIELD is the largest.
     MaxBy(String),
-    /// Retain only JSON-object lines that contain KEY; all other lines (missing key, non-object, unparseable) are dropped.
+    /// Native `has KEY` verb: retain only JSON-object lines that contain KEY; all
+    /// other lines (missing key, non-object, unparseable) are dropped.
     Has(String),
+    /// jq `has(KEY)`: emit `true`/`false` per input line — `true` iff the line is a
+    /// JSON object containing KEY, else `false`. A per-input boolean, not a filter.
+    HasKey(String),
     /// jq to_entries: expand each JSON object line into one `{"key":<k>,"value":<v>}` line per key (BTreeMap key order); non-object lines pass through.
     Entries,
-    /// For each JSON-array line, emit each element (via json_to_string); if an
-    /// element is itself a JSON array, emit ITS elements instead (one level
-    /// deeper than `each`). Non-array lines pass through unchanged.
+    /// jq `flatten`: recursively flatten a JSON-array line to its non-array leaves,
+    /// emitting one leaf per line (matching jq's full-depth flatten, unlike `each`
+    /// which descends a single level). Non-array lines pass through unchanged.
     Flatten,
     /// jq `add`: reduce a JSON array line to a single value — sum numeric
     /// arrays (fmt_num), concatenate non-numeric arrays via their string
@@ -416,6 +424,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
+            QueryOp::NonNull => {
+                // jq `values` == `select(. != null)`: keep every non-null input
+                // unchanged, drop only the lines that parse to JSON `null`.
+                cur.retain(|l| !matches!(serde_json::from_str::<Value>(l), Ok(Value::Null)));
+            }
             QueryOp::Pick(keys) => {
                 for l in cur.iter_mut() {
                     if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
@@ -653,6 +666,17 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     )
                 });
             }
+            QueryOp::HasKey(key) => {
+                // jq `has`: a per-input boolean test, NOT a filter — every input
+                // yields exactly one `true`/`false` line.
+                for l in cur.iter_mut() {
+                    let present = matches!(
+                        serde_json::from_str::<Value>(l),
+                        Ok(Value::Object(ref m)) if m.contains_key(key)
+                    );
+                    *l = if present { "true" } else { "false" }.to_string();
+                }
+            }
             QueryOp::Entries => {
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
@@ -672,19 +696,18 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 cur = out;
             }
             QueryOp::Flatten => {
+                // jq `flatten` fully flattens all nesting levels; recurse into
+                // every sub-array and emit only the non-array leaves.
+                fn push_leaves(v: &Value, out: &mut Vec<String>) {
+                    match v {
+                        Value::Array(a) => a.iter().for_each(|e| push_leaves(e, out)),
+                        other => out.push(json_to_string(other)),
+                    }
+                }
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
                     match serde_json::from_str::<Value>(l) {
-                        Ok(Value::Array(arr)) => {
-                            for el in &arr {
-                                match el {
-                                    Value::Array(inner) => {
-                                        out.extend(inner.iter().map(json_to_string));
-                                    }
-                                    other => out.push(json_to_string(other)),
-                                }
-                            }
-                        }
+                        Ok(Value::Array(arr)) => arr.iter().for_each(|e| push_leaves(e, &mut out)),
                         _ => out.push(l.clone()),
                     }
                 }
@@ -1306,6 +1329,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Each
                 | QueryOp::Keys
                 | QueryOp::Vals
+                | QueryOp::NonNull
                 | QueryOp::Pick(_)
                 | QueryOp::Where(_)
                 | QueryOp::Map(_)
@@ -1345,6 +1369,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Ceil
                 | QueryOp::Clamp(_, _)
                 | QueryOp::Has(_)
+                | QueryOp::HasKey(_)
                 | QueryOp::Entries
                 | QueryOp::Add
                 | QueryOp::Over(_)
@@ -1530,7 +1555,11 @@ fn nums(lines: &[String]) -> Vec<f64> {
 
 /// Format a computed number: integers without a decimal point, else default.
 fn fmt_num(v: f64) -> String {
-    if v.is_finite() && v.fract() == 0.0 {
+    // The fast `as i64` path is exact only inside i64's range; outside it an
+    // `as` cast SATURATES to i64::MAX/MIN and silently corrupts the value
+    // (1e19 -> 9.22e18). Beyond ~9.2e18 fall back to the float formatter, which
+    // prints the full integer without scientific notation and without a `.0`.
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.2e18 {
         format!("{}", v as i64)
     } else {
         format!("{v}")

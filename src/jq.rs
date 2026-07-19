@@ -69,7 +69,7 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "values" => {
-            ops.push(QueryOp::Vals);
+            ops.push(QueryOp::NonNull);
             return Ok(());
         }
         "length" => {
@@ -106,7 +106,7 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
         if key.is_empty() {
             return Err(format!("jq: has() expects a key: `{s}`"));
         }
-        ops.push(QueryOp::Has(key));
+        ops.push(QueryOp::HasKey(key));
         return Ok(());
     }
     if s.starts_with('.') {
@@ -404,8 +404,27 @@ mod tests {
 
     #[test]
     fn has_key() {
+        // jq `has(k)` is a per-input BOOLEAN test, not a filter (real jq prints
+        // `true` then `false` for these two inputs).
         let out = run(r#"has("id")"#, &[r#"{"id":1}"#, r#"{"x":2}"#]);
-        assert_eq!(out, vec![r#"{"id":1}"#]);
+        assert_eq!(out, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn values_is_select_non_null() {
+        // jq `values` == `select(. != null)`: drop nulls, pass the rest through
+        // unchanged — NOT object-value iteration.
+        let out = run("values", &[r#"{"a":1,"b":2}"#, "null", "5"]);
+        assert_eq!(out, vec![r#"{"a":1,"b":2}"#, "5"]);
+    }
+
+    #[test]
+    fn flatten_is_recursive() {
+        // jq `flatten` flattens ALL nesting levels (real jq: [1,2,3,4]).
+        assert_eq!(
+            run("flatten", &["[1,[2,[3,[4]]]]"]),
+            vec!["1", "2", "3", "4"]
+        );
     }
 
     #[test]
