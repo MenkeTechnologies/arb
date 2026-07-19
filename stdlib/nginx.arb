@@ -1,10 +1,10 @@
 # nginx — access-log dashboard from JSON access logs
 #   tail -f access.json | arb -p nginx
 bars .status
-source .status { in.json | field status | tally }
+source .status { in.json; field status; tally }
 
 bars .top_requests
-source .top_requests { in.json | field request | tally | sort | take 10 }
+source .top_requests { in.json; field request; tally; sort; take 10 }
 
 tail .requests
-source .requests { in.json | field request }
+source .requests { in.json; field request }

@@ -1,7 +1,7 @@
 # systemd — journal priority breakdown from journalctl JSON
 #   journalctl -o json | arb -p systemd
 bars .priority
-source .priority { in.json | field PRIORITY | tally }
+source .priority { in.json; field PRIORITY; tally }
 
 tail .messages
-source .messages { in.json | field MESSAGE }
+source .messages { in.json; field MESSAGE }

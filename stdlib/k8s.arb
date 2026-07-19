@@ -1,7 +1,7 @@
 # k8s — pod status breakdown from kubectl get pods
 #   kubectl get pods | arb -p k8s
 bars .status
-source .status { in | reject /^NAME/ | field 3 | tally }
+source .status { in; reject /^NAME/; field 3; tally }
 
 tail .pods
-source .pods { in | reject /^NAME/ }
+source .pods { in; reject /^NAME/ }

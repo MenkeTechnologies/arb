@@ -1,7 +1,7 @@
 # docker — container CPU/memory dashboard from live docker stats
 #   docker stats --no-stream | arb -p docker
 bars .containers
-source .containers { in | reject /^CONTAINER/ | field 2 | tally }
+source .containers { in; reject /^CONTAINER/; field 2; tally }
 
 gauge .running -max 100
-source .running { in | reject /^CONTAINER/ | count }
+source .running { in; reject /^CONTAINER/; count }
