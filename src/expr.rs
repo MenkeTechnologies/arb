@@ -70,6 +70,7 @@ pub fn parse(src: &str) -> Result<Expr, String> {
     let mut p = Parser {
         c: src.chars().collect(),
         i: 0,
+        depth: 0,
     };
     let e = p.ternary()?;
     if p.peek().is_some() {
@@ -380,7 +381,14 @@ fn emit_bool(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuild
 struct Parser {
     c: Vec<char>,
     i: usize,
+    /// Recursion depth of `primary()`, so a pathologically nested expression
+    /// (`(((…x…)))`) fails closed instead of overflowing the stack.
+    depth: usize,
 }
+
+/// Cap on `(`-nesting in `map`/`where`/`calc` expressions — well past any real
+/// expression, but bounded so a malicious input can't abort the process.
+const MAX_EXPR_DEPTH: usize = 256;
 
 impl Parser {
     /// Peek the next non-whitespace char (consuming leading whitespace).
@@ -586,7 +594,21 @@ impl Parser {
         self.primary()
     }
 
+    /// Depth-guarded wrapper: a `(`-nested expression recurses through
+    /// `primary → additive → … → primary`, so cap the recursion here to fail
+    /// closed rather than overflow the stack on adversarial input.
     fn primary(&mut self) -> Result<Expr, String> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            self.depth -= 1;
+            return Err("calc: expression too deeply nested".into());
+        }
+        let r = self.primary_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn primary_inner(&mut self) -> Result<Expr, String> {
         match self.peek() {
             Some('(') => {
                 self.i += 1;

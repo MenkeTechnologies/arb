@@ -306,7 +306,9 @@ fn spawn_feed(program: Option<String>, input: Option<String>) {
                 &[],
                 &labels,
             );
-            if !transformed.is_empty() {
+            // Skip the output write once terminated, so a disconnect stops the
+            // feed thread reaching the (potentially blocking) stdout write again.
+            if !transformed.is_empty() && !shared().state.lock().unwrap().terminated {
                 send_event(
                     "output",
                     json!({ "category": "stdout", "output": format!("{transformed}\n") }),
@@ -425,9 +427,21 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
                 st.resume = Some(Resume::Continue);
             }
             shared().cv.notify_all();
-            if let Some(h) = executor_slot().lock().unwrap().take() {
-                let _ = h.join();
-            }
+            // Detach the feed thread rather than join it: if it is blocked in a
+            // `write()` to an un-drained stdout pipe, `join()` would hang forever
+            // (the `terminated` flag can't interrupt a syscall).
+            drop(executor_slot().lock().unwrap().take());
+            // Teardown watchdog. The feed thread can be wedged mid-`write()` to a
+            // full stdout pipe (a client that stopped draining) *while holding the
+            // `OUT` mutex*, so the disconnect-response `send()` in `run()` would
+            // deadlock on that same mutex and the process would never exit. In the
+            // normal (draining) case `run()` sends the response and exits in
+            // microseconds, well before this fires; only the wedged case waits it
+            // out, bounding the hang to 200ms instead of forever.
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::process::exit(0);
+            });
             vec![resp(json!({}))]
         }
         // Unknown requests succeed with an empty body (lenient, DAP-tolerant).

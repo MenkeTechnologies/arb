@@ -1164,7 +1164,8 @@ fn spawn_source_reader<R: io::Read + Send + 'static>(reader: R, state: Arc<Mutex
 
 /// Spawn the producer command (`sh -c`) with arb owning its fds: stdout streams
 /// into `state`, stderr into a fresh `StreamState` returned for the error pane.
-/// The child is detached (runs on its own; killed when arb exits).
+/// A background thread `wait()`s on the child so it is reaped (not zombied) when
+/// it exits; it otherwise runs on its own until arb exits.
 fn spawn_producer(
     producer: &str,
     state: Arc<Mutex<StreamState>>,
@@ -1183,7 +1184,11 @@ fn spawn_producer(
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("no stderr"))?;
-    drop(child);
+    // Reap the child when it exits (a bare `drop(child)` leaves a zombie until
+    // arb itself exits — the doc's "killed when arb exits" was inaccurate).
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
     spawn_source_reader(out, state);
     let err_state = Arc::new(Mutex::new(StreamState::new()));
     spawn_source_reader(err, err_state.clone());
