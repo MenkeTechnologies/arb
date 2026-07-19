@@ -427,17 +427,23 @@ fn main() -> io::Result<()> {
 
     // `--run 'PROD | arb | CONS'`: arb spawns the surrounding commands and owns
     // their fds. The producer's stdout feeds the stream, its stderr an error pane.
-    let (producer, consumer) = match &run_pipeline {
+    let (run_producer, consumer) = match &run_pipeline {
         Some(p) => {
             let (pr, co) = parse_pipeline(p);
             (Some(pr), co)
         }
         None => (None, None),
     };
+    // A spec-level `spawn CMD` (§7) is an input source like `--run`'s producer;
+    // CLI `--run` wins if both are given. Either way the producer's stdout feeds
+    // the stream in place of stdin.
+    let producer = run_producer.or_else(|| spec.spawn.clone());
 
     let needs_stdin =
         fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
-    if needs_stdin && run_pipeline.is_none() && io::stdin().is_terminal() {
+    // A producer (from `--run` or a spec `spawn`) supplies the stream itself, so
+    // stdin is not required even on an interactive tty.
+    if needs_stdin && producer.is_none() && io::stdin().is_terminal() {
         eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
         std::process::exit(2);
     }
@@ -595,7 +601,13 @@ fn main() -> io::Result<()> {
     } else if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
-        if needs_stdin && !cli.json && query::is_line_streamable(out_ops) {
+        if let Some(prod) = &producer {
+            // A spec `spawn CMD` feeds the stream here (no tty); drain it, then
+            // apply `out { … }` — without this the headless path would read an
+            // empty stdin and emit nothing.
+            read_producer_sync(prod, &state)?;
+            emit_out(out_ops, &state, cli.json)
+        } else if needs_stdin && !cli.json && query::is_line_streamable(out_ops) {
             stream_out(out_ops)
         } else {
             if needs_stdin {
@@ -603,6 +615,10 @@ fn main() -> io::Result<()> {
             }
             emit_out(out_ops, &state, cli.json)
         }
+    } else if let Some(prod) = &producer {
+        // `spawn CMD` with no `out { … }`, piped onward: forward the producer's
+        // output through untouched (the passthrough twin for a spawned source).
+        stream_producer(prod)
     } else if needs_stdin {
         // A dashboard spec piped onward with no `out { … }` reshape — arb is a
         // passive tap: forward the stream through untouched so the downstream
@@ -612,6 +628,53 @@ fn main() -> io::Result<()> {
     } else {
         dump(&spec, &state)
     }
+}
+
+/// Run `producer` (`sh -c`) and drain its stdout into `state` synchronously,
+/// blocking until the child closes stdout. The headless twin of `spawn_producer`
+/// (which uses background threads) so `emit_out` sees the full output.
+fn read_producer_sync(producer: &str, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(producer)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines() {
+            match line {
+                Ok(l) => state.lock().unwrap().push(l),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.wait();
+    Ok(())
+}
+
+/// Run `producer` (`sh -c`) and copy its stdout to arb's stdout line by line,
+/// flushing per line. Used for a headless `spawn CMD` with no `out { … }` — arb
+/// forwards the spawned stream to the downstream consumer.
+fn stream_producer(producer: &str) -> io::Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(producer)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    if let Some(out) = child.stdout.take() {
+        let mut w = io::stdout().lock();
+        for line in BufReader::new(out).lines() {
+            match line {
+                Ok(l) => {
+                    if writeln!(w, "{l}").and_then(|()| w.flush()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.wait();
+    Ok(())
 }
 
 /// arb as a transparent tap: copy every stdin line to stdout unchanged, flushing

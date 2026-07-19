@@ -752,3 +752,68 @@ fn color_hex_maps_names_case_insensitively() {
     assert_eq!(color_hex(None), "#00e5ff"); // default cyan
     assert_eq!(color_hex(Some("bogus")), "#00e5ff"); // unknown → default
 }
+
+#[test]
+fn spawn_sets_source() {
+    // `spawn CMD` declares an input source; no widget source / stdin required.
+    let s = build(&parse("tail .t\nspawn seq 1 5").unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("seq 1 5"));
+}
+
+#[test]
+fn spawn_block_form() {
+    let s = build(&parse("tail .t\nspawn { ps aux }").unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("ps aux"));
+}
+
+#[test]
+fn spawn_block_multi_cmd() {
+    // Several commands in the block join with `; ` into one shell string.
+    let s = build(&parse("tail .t\nspawn { tail -f a.log; grep err }").unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("tail -f a.log; grep err"));
+}
+
+#[test]
+fn spawn_empty_errors() {
+    assert!(build(&parse("spawn").unwrap()).is_err());
+}
+
+#[test]
+fn spawn_double_errors() {
+    assert!(build(&parse("spawn a\nspawn b").unwrap()).is_err());
+}
+
+#[test]
+fn spawn_coexists_with_source_pipeline() {
+    // A `spawn` source and a widget `source { … }` pipeline are independent.
+    let s = build(&parse("tail .t\nspawn seq 1 3\nsource .t { in; count }").unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("seq 1 3"));
+    assert!(s.widgets.iter().any(|w| w.path == ".t" && w.source.is_some()));
+}
+
+#[test]
+fn spawn_from_import_merges() {
+    // A module that declares `spawn` carries it across an aliased import merge.
+    let dir = temp_lib("spawn-import");
+    std::fs::create_dir_all(&dir).unwrap();
+    let module = dir.join("src.arb");
+    std::fs::write(&module, "spawn seq 1 2\n").unwrap();
+    // The path is quoted so the lexer reads it as one string (an unquoted
+    // absolute path collides with `/…/` regex-token lexing).
+    let spec_src = format!("tail .t\nimport \"{}\" as m", module.display());
+    let s = build(&parse(&spec_src).unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("seq 1 2"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_conflict_across_imports_errors() {
+    // A local `spawn` plus an imported module that also spawns is a conflict.
+    let dir = temp_lib("spawn-conflict");
+    std::fs::create_dir_all(&dir).unwrap();
+    let module = dir.join("src.arb");
+    std::fs::write(&module, "spawn seq 1 2\n").unwrap();
+    let spec_src = format!("spawn echo hi\nimport \"{}\" as m", module.display());
+    assert!(build(&parse(&spec_src).unwrap()).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

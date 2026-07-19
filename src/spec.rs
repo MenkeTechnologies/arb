@@ -322,6 +322,12 @@ pub struct Spec {
     pub mouse_binds: Vec<(MouseTrigger, BindAction)>,
     /// Terminal-resize reactions (`bind <Resize> <action>`).
     pub resize_binds: Vec<BindAction>,
+    /// Input-source command (`spawn CMD` / `spawn { CMD }`, SPEC §7): arb
+    /// launches CMD via `sh -c` and feeds its stdout into the stream in place of
+    /// stdin (fire-and-forget; child detached, dies with arb). CLI `--run` wins
+    /// if both are given. The interactive `send`/PTY react leg + `.ps.sel`
+    /// selection widget are deferred. `None` = read stdin.
+    pub spawn: Option<String>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -462,6 +468,12 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
             return Err(format!("import: `{ns}` defines `out`, but one is already set"));
         }
         dst.out = Some(out);
+    }
+    if let Some(sp) = src.spawn {
+        if dst.spawn.is_some() {
+            return Err(format!("import: `{ns}` defines a spawn source, but one is already set"));
+        }
+        dst.spawn = Some(sp);
     }
     Ok(())
 }
@@ -615,6 +627,20 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
                 _ => return Err("out: expected `{ body }`".into()),
             };
             spec.out = Some(pipeline_from_body(body)?);
+        } else if c.name == "spawn" {
+            // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use its
+            // stdout as the stream (input source, in place of stdin).
+            let cmd = match c.args.first() {
+                Some(Arg::Block(b)) => block_to_shell(b),
+                _ => c.args.iter().filter_map(Arg::as_str).collect::<Vec<_>>().join(" "),
+            };
+            if cmd.trim().is_empty() {
+                return Err("spawn: missing command".into());
+            }
+            if spec.spawn.is_some() {
+                return Err("spawn: a stream source is already declared".into());
+            }
+            spec.spawn = Some(cmd);
         } else if c.name == "grid" {
             let path = c
                 .args
@@ -1558,6 +1584,20 @@ fn compile_regex(raw: &str) -> Result<Regex, String> {
         .and_then(|s| s.strip_suffix('/'))
         .unwrap_or(raw);
     Regex::new(pat).map_err(|e| format!("bad regex: {e}"))
+}
+
+/// Reconstruct a shell string from a `{ … }` block body: each top-level command
+/// contributes its verb + word args, commands joined by `; ` (`{ ps aux }` ->
+/// "ps aux"; `{ tail -f a.log; grep err }` -> "tail -f a.log; grep err").
+fn block_to_shell(cmds: &[Command]) -> String {
+    cmds.iter()
+        .map(|c| {
+            let mut w = vec![c.name.clone()];
+            w.extend(c.args.iter().filter_map(|a| a.as_str().map(str::to_string)));
+            w.join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Read a regex argument, stripping optional `/…/` delimiters.

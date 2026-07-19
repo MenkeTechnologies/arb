@@ -80,12 +80,19 @@ a..b           range
 ```
 in                       stdin (lines)
 in.json in.xml in.html in.yaml in.toml in.csv   parsed stream
-spawn { ps aux }         arb launches a process (Expect)
-! vmstat 1 every 1s      repeated command source
-< file.log               file
+spawn ps aux             arb launches a process; its stdout is the stream ✅
+spawn { tail -f a.log; grep err }   block form → one `sh -c` string ✅
+! vmstat 1 every 1s      repeated command source ⬜
+< file.log               file ⬜
 out { … }                downstream emission (to | next), shaped by controls
-send "text"              send input to spawned process (Expect)
+send "text"              send input to spawned process (Expect) ⬜
 ```
+
+`spawn CMD` (or `spawn { CMD }`) makes a spec self-sourcing: arb runs CMD via
+`sh -c` and feeds its stdout into the stream in place of stdin (fire-and-forget;
+the child dies with arb). A CLI `--run 'PROD | _ | CONS'` producer wins if both
+are given. The interactive `send`/PTY react leg + the `.ps.sel` selection widget
+(§14) remain ⬜ (no PTY substrate yet).
 
 ## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 
@@ -248,7 +255,8 @@ expect {
 }
 ```
 
-⬜ Planned: `spawn`.
+`spawn CMD` (SPEC §7) launches a process whose stdout feeds the stream; the
+interactive `send`/PTY react leg is still ⬜ Planned.
 
 ## 14. Events — bind (Tk)
 
@@ -432,7 +440,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
-4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions. *(`spawn`: ⬜)*
+4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source. *(interactive `send`/PTY react + `.ps.sel`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry client over a git index (`arb update`/`search`/`install`/`add`/`uninstall`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking) ship. *(`arb publish` is client-only pending the hosted index; native/cdylib packages + multi-version semver resolution: ⬜)*
