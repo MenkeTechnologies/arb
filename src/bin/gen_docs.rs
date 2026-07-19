@@ -43,10 +43,10 @@ fn main() {
     );
 }
 
-/// Read the stdlib preset catalog: for each `stdlib/*.arb`, the file stem and
-/// the description from its leading `# <name> — <desc>` header comment (falling
-/// back to the raw comment, then a generic line). Sorted by name.
-fn read_presets() -> Vec<(String, String)> {
+/// Read the stdlib preset catalog: for each `stdlib/*.arb`, the file stem, the
+/// description from its leading `# <name> — <desc>` header comment, and a usage
+/// example from the second `#` comment line (`cmd | arb -p name`). Sorted by name.
+fn read_presets() -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let dir = match std::fs::read_dir("stdlib") {
         Ok(d) => d,
@@ -65,7 +65,8 @@ fn read_presets() -> Vec<(String, String)> {
             None => continue,
         };
         let body = std::fs::read_to_string(&path).unwrap_or_default();
-        let first = body.lines().next().unwrap_or("").trim_start_matches('#').trim();
+        let mut lines = body.lines();
+        let first = lines.next().unwrap_or("").trim_start_matches('#').trim();
         // Header form is `name — description`; keep only the description.
         let desc = first
             .split_once(" — ")
@@ -73,18 +74,27 @@ fn read_presets() -> Vec<(String, String)> {
             .map(|(_, d)| d.trim().to_string())
             .filter(|d| !d.is_empty())
             .unwrap_or_else(|| format!("prebuilt dashboard preset for {name}"));
-        out.push((name, desc));
+        // Second comment line is the invocation example, if present.
+        let example = lines
+            .next()
+            .map(|l| l.trim_start_matches('#').trim())
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("… | arb -p {name}"));
+        out.push((name, desc, example));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
-/// Render the stat grid plus one section/table per chapter, in display order.
-fn build_body(corpus: &[(&str, &str, &str)], presets: &[(String, String)]) -> String {
+/// Render one `<section>` per chapter, each an `<article class="doc-entry">` per
+/// construct: name heading, description, and a usage example — plus a final
+/// Presets section built the same way from the stdlib catalog.
+fn build_body(corpus: &[(&str, &str, &str, &str)], presets: &[(String, String, String)]) -> String {
     let mut out = String::new();
 
     for chapter in CHAPTER_ORDER {
-        let rows: Vec<_> = corpus.iter().filter(|(_, c, _)| c == chapter).collect();
+        let rows: Vec<_> = corpus.iter().filter(|(_, c, _, _)| c == chapter).collect();
         if rows.is_empty() {
             continue;
         }
@@ -94,23 +104,20 @@ fn build_body(corpus: &[(&str, &str, &str)], presets: &[(String, String)]) -> St
         let _ = write!(
             out,
             "\n      <section class=\"tutorial-section\" id=\"ch-{slug}\">\n\
-             \x20       <h2>{title}</h2>\n\
-             \x20       <table class=\"file-table\">\n\
-             \x20         <thead><tr><th>{col}</th><th>Description</th></tr></thead>\n\
-             \x20         <tbody>\n",
+             \x20       <h2>{title}</h2>\n",
             slug = slugify(chapter_title(chapter)),
             title = chapter_title(chapter),
-            col = html_escape(chapter),
         );
-        for (name, _, doc) in rows {
-            let _ = writeln!(
-                out,
-                "<tr><td><code>{}</code></td><td>{}</td></tr>",
-                html_escape(name),
-                html_escape(doc),
+        for (i, (name, _, doc, example)) in rows.iter().enumerate() {
+            emit_entry(
+                &mut out,
+                &format!("doc-{}-{}", slugify(chapter_title(chapter)), i + 1),
+                name,
+                doc,
+                example,
             );
         }
-        out.push_str("          </tbody>\n        </table>\n      </section>\n");
+        out.push_str("      </section>\n");
     }
 
     // Presets chapter — the shipped stdlib dashboards you `import` by name.
@@ -118,23 +125,32 @@ fn build_body(corpus: &[(&str, &str, &str)], presets: &[(String, String)]) -> St
         out.push_str(
             "\n      <section class=\"tutorial-section\" id=\"ch-presets\">\n\
              \x20       <h2>Stdlib presets</h2>\n\
-             \x20       <p class=\"tutorial-note\">Prebuilt dashboards shipped with arb; drop one in with <code>import NAME</code> or auto-selected by stream sniffing.</p>\n\
-             \x20       <table class=\"file-table\">\n\
-             \x20         <thead><tr><th>Preset</th><th>Description</th></tr></thead>\n\
-             \x20         <tbody>\n",
+             \x20       <p class=\"tutorial-note\">Prebuilt dashboards shipped with arb; drop one in with <code>import NAME</code> or auto-selected by stream sniffing.</p>\n",
         );
-        for (name, desc) in presets {
-            let _ = writeln!(
-                out,
-                "<tr><td><code>{}</code></td><td>{}</td></tr>",
-                html_escape(name),
-                html_escape(desc),
-            );
+        for (i, (name, desc, example)) in presets.iter().enumerate() {
+            emit_entry(&mut out, &format!("doc-preset-{}", i + 1), name, desc, example);
         }
-        out.push_str("          </tbody>\n        </table>\n      </section>\n");
+        out.push_str("      </section>\n");
     }
 
     out
+}
+
+/// Emit one `<article class="doc-entry">`: anchored name heading, description,
+/// and a `lang-arb` usage example.
+fn emit_entry(out: &mut String, anchor: &str, name: &str, doc: &str, example: &str) {
+    let _ = write!(
+        out,
+        "        <article class=\"doc-entry\" id=\"{anchor}\">\n\
+         \x20         <h3><a class=\"doc-anchor\" href=\"#{anchor}\">#</a> <code>{name}</code></h3>\n\
+         \x20         <p>{doc}</p>\n\
+         \x20         <pre><code class=\"lang-arb\">{example}</code></pre>\n\
+         \x20       </article>\n",
+        anchor = anchor,
+        name = html_escape(name),
+        doc = html_escape(doc),
+        example = html_escape(example),
+    );
 }
 
 /// A readable section heading for each corpus chapter key.
