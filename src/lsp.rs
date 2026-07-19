@@ -499,6 +499,7 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("abs", "Query", "Absolute value of each numeric line.", "in | delta | abs"),
     ("clamp", "Query", "Clamp each numeric line into the inclusive range [LO, HI]; non-numeric untouched.", "in | clamp 0 100"),
     ("len", "Query", "Replace each line with its character count.", "in | len"),
+    ("length", "Query", "jq length: array element count / object key count / string char count / |number| / null 0; non-JSON falls back to char count.", "in.json | length"),
     ("wc", "Query", "Replace each line with its word count.", "in | wc"),
     ("index", "Query", "Keep only the Nth line (1-based); out-of-range yields no lines.", "in | index 3"),
     ("cut", "Query", "Split each line by DELIM and keep the Nth (1-based) field.", "in | cut , 2"),

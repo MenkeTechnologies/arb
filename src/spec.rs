@@ -1797,6 +1797,9 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::Spec
                 "nonempty" => ops.push(QueryOp::Nonempty),
                 "numeric" => ops.push(QueryOp::Numeric),
                 "len" => ops.push(QueryOp::Len),
+                // jq `length`: JSON-aware (array/object/string/number), vs `len`
+                // which is the raw char count.
+                "length" => ops.push(QueryOp::JsonLen),
                 "wc" => ops.push(QueryOp::Wc),
                 "abs" => ops.push(QueryOp::Abs),
                 "round" => ops.push(QueryOp::Round),

@@ -239,6 +239,13 @@ pub enum QueryOp {
     Numeric,
     /// replace each line with its character count.
     Len,
+    /// jq `length` (JSON-aware): array element count / object key count / string
+    /// char count / |number| / null=0; a non-JSON line falls back to char count.
+    JsonLen,
+    /// jq slice `.[a:b]` over a JSON array line (a/b may be negative — counted
+    /// from the end — or omitted); a string line is char-sliced; other lines pass
+    /// through unchanged.
+    JsonSlice(Option<i64>, Option<i64>),
     /// replace each line with its word count.
     Wc,
     /// absolute value of each numeric line.
@@ -997,6 +1004,36 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     *l = l.chars().count().to_string();
                 }
             }
+            QueryOp::JsonLen => {
+                for l in cur.iter_mut() {
+                    *l = match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Array(a)) => a.len().to_string(),
+                        Ok(Value::Object(m)) => m.len().to_string(),
+                        Ok(Value::String(s)) => s.chars().count().to_string(),
+                        Ok(Value::Number(n)) => fmt_num(n.as_f64().unwrap_or(0.0).abs()),
+                        Ok(Value::Null) => "0".to_string(),
+                        // jq errors on a bool length; arb has no per-line error
+                        // channel, so fall back to the raw line's char count.
+                        _ => l.chars().count().to_string(),
+                    };
+                }
+            }
+            QueryOp::JsonSlice(a, b) => {
+                for l in cur.iter_mut() {
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Array(arr)) => {
+                            let (lo, hi) = slice_bounds(*a, *b, arr.len());
+                            *l = Value::Array(arr[lo..hi].to_vec()).to_string();
+                        }
+                        Ok(Value::String(s)) => {
+                            let chars: Vec<char> = s.chars().collect();
+                            let (lo, hi) = slice_bounds(*a, *b, chars.len());
+                            *l = chars[lo..hi].iter().collect();
+                        }
+                        _ => {} // non-array/string lines pass through
+                    }
+                }
+            }
             QueryOp::Wc => {
                 for l in cur.iter_mut() {
                     *l = l.split_whitespace().count().to_string();
@@ -1269,6 +1306,8 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Nonempty
                 | QueryOp::Numeric
                 | QueryOp::Len
+                | QueryOp::JsonLen
+                | QueryOp::JsonSlice(_, _)
                 | QueryOp::Wc
                 | QueryOp::Abs
                 | QueryOp::Round
@@ -1446,9 +1485,11 @@ fn walk(mut cur: Value, path: &[String]) -> Option<Value> {
         cur = match cur {
             Value::Object(mut m) => m.remove(key)?,
             Value::Array(mut a) => {
-                let i = key.parse::<usize>().ok()?;
-                if i < a.len() {
-                    a.swap_remove(i)
+                // jq array index: a negative index counts from the end (`.[-1]`).
+                let idx = key.parse::<i64>().ok()?;
+                let i = if idx < 0 { a.len() as i64 + idx } else { idx };
+                if i >= 0 && (i as usize) < a.len() {
+                    a.swap_remove(i as usize)
                 } else {
                     return None;
                 }
@@ -1457,6 +1498,17 @@ fn walk(mut cur: Value, path: &[String]) -> Option<Value> {
         };
     }
     Some(cur)
+}
+
+/// Resolve jq slice bounds `[a:b]` to a clamped `lo..hi` over `len`. A negative
+/// bound counts from the end; `None` is the start/end. Clamped into `0..=len`,
+/// and `hi < lo` collapses to an empty slice.
+fn slice_bounds(a: Option<i64>, b: Option<i64>, len: usize) -> (usize, usize) {
+    let n = len as i64;
+    let norm = |x: i64| (if x < 0 { x + n } else { x }).clamp(0, n);
+    let lo = norm(a.unwrap_or(0));
+    let hi = norm(b.unwrap_or(n));
+    (lo as usize, hi.max(lo) as usize)
 }
 
 /// Parse the numeric lines of a slice, ignoring non-numeric ones.

@@ -73,7 +73,7 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "length" => {
-            ops.push(QueryOp::Len);
+            ops.push(QueryOp::JsonLen);
             return Ok(());
         }
         "add" => {
@@ -136,11 +136,13 @@ fn strip_quotes(s: &str) -> String {
         .to_string()
 }
 
-/// A stage is a pure path if every char is a path char (no operators/spaces).
-/// `:` is excluded so array slices `.[1:3]` fall through to a clean error.
+/// A stage is a pure path if every char is a path char (no spaces/operators
+/// outside brackets). `:` and `-` are allowed so slices `.[1:3]` and negative
+/// indices `.[-1]` route here; a bare `-`/`: ` outside a bracket still errors in
+/// `translate_path` (fail-closed), never mis-handles.
 fn is_pure_path(s: &str) -> bool {
     s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '[' | ']' | '"' | '_'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '[' | ']' | '"' | '_' | ':' | '-'))
 }
 
 /// Translate a pure path (`.a.b`, `.foo[]`, `.[0]`, `.["k"]`) into ops.
@@ -178,8 +180,9 @@ fn translate_path(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse a `[]` (iterate), `[N]` (array index), or `["k"]` (string key) subscript
-/// at `cs[i] == '['`.
+/// Parse a subscript at `cs[i] == '['`: `[]` (iterate), `["k"]` (string key),
+/// `[N]`/`[-N]` (array index, negative from the end), or `[a:b]` (slice, either
+/// bound optional/negative).
 fn parse_bracket(
     cs: &[char],
     i: &mut usize,
@@ -189,61 +192,60 @@ fn parse_bracket(
     s: &str,
 ) -> Result<(), String> {
     *i += 1; // consume '['
-    match cs.get(*i) {
-        Some(']') => {
-            *i += 1;
-            flush(key, ops);
-            ops.push(QueryOp::Each);
-            Ok(())
-        }
-        Some('"') => {
-            *i += 1;
-            let mut str_key = String::new();
-            while *i < cs.len() && cs[*i] != '"' {
-                str_key.push(cs[*i]);
-                *i += 1;
-            }
-            if cs.get(*i) != Some(&'"') {
-                return Err(format!("jq: unterminated `[\"…\"]` in `{s}`"));
-            }
-            *i += 1; // closing quote
-            expect(cs, i, ']', s)?;
-            key.push(str_key);
-            Ok(())
-        }
-        Some(d) if d.is_ascii_digit() => {
-            let n = take_digits(cs, i);
-            expect(cs, i, ']', s)?;
-            // A numeric path segment is an array index in arb's `walk`.
-            key.push(n);
-            Ok(())
-        }
-        _ => Err(format!(
-            "jq: unsupported subscript in `{s}` (slices/negative indices are not supported)"
-        )),
+    let start = *i;
+    while *i < cs.len() && cs[*i] != ']' {
+        *i += 1;
+    }
+    if cs.get(*i) != Some(&']') {
+        return Err(format!("jq: unterminated `[` in `{s}`"));
+    }
+    let content: String = cs[start..*i].iter().collect();
+    *i += 1; // consume ']'
+    let c = content.trim();
+    // `[]` — iterate the array/object.
+    if c.is_empty() {
+        flush(key, ops);
+        ops.push(QueryOp::Each);
+        return Ok(());
+    }
+    // `["key"]` — a quoted object key (checked before `:` so `["a:b"]` is a key).
+    if let Some(k) = c.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        key.push(k.to_string());
+        return Ok(());
+    }
+    // `[a:b]` — a slice; it applies to the value the pending path points at.
+    if let Some((a, b)) = c.split_once(':') {
+        flush(key, ops);
+        ops.push(QueryOp::JsonSlice(
+            parse_opt_int(a, s)?,
+            parse_opt_int(b, s)?,
+        ));
+        return Ok(());
+    }
+    // `[N]` / `[-N]` — an array index (`walk` handles the negative case).
+    if c.parse::<i64>().is_ok() {
+        key.push(c.to_string());
+        Ok(())
+    } else {
+        Err(format!("jq: unsupported subscript `[{content}]` in `{s}`"))
     }
 }
 
-fn expect(cs: &[char], i: &mut usize, ch: char, s: &str) -> Result<(), String> {
-    if cs.get(*i) == Some(&ch) {
-        *i += 1;
-        Ok(())
+/// Parse an optional slice bound: empty → `None`, else an `i64` (may be negative).
+fn parse_opt_int(s: &str, whole: &str) -> Result<Option<i64>, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        Ok(None)
     } else {
-        Err(format!("jq: expected `{ch}` in `{s}`"))
+        s.parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("jq: bad slice bound `{s}` in `{whole}`"))
     }
 }
 
 fn take_ident(cs: &[char], i: &mut usize) -> String {
     let start = *i;
     while *i < cs.len() && (cs[*i].is_ascii_alphanumeric() || cs[*i] == '_') {
-        *i += 1;
-    }
-    cs[start..*i].iter().collect()
-}
-
-fn take_digits(cs: &[char], i: &mut usize) -> String {
-    let start = *i;
-    while *i < cs.len() && cs[*i].is_ascii_digit() {
         *i += 1;
     }
     cs[start..*i].iter().collect()
@@ -406,9 +408,33 @@ mod tests {
     }
 
     #[test]
+    fn slices_and_negative_indices() {
+        // Array slice, either bound optional or negative.
+        assert_eq!(run(".[1:3]", &["[10,20,30,40,50]"]), vec!["[20,30]"]);
+        assert_eq!(run(".[:2]", &["[10,20,30]"]), vec!["[10,20]"]);
+        assert_eq!(run(".[2:]", &["[10,20,30,40]"]), vec!["[30,40]"]);
+        assert_eq!(run(".[-2:]", &["[10,20,30,40]"]), vec!["[30,40]"]);
+        assert_eq!(run(".foo[1:3]", &[r#"{"foo":[1,2,3,4]}"#]), vec!["[2,3]"]);
+        // String slice.
+        assert_eq!(run(".[1:3]", &[r#""hello""#]), vec!["el"]);
+        // Negative index → element from the end.
+        assert_eq!(run(".[-1]", &[r#"["a","b","c"]"#]), vec!["c"]);
+        assert_eq!(run(".foo[-1]", &[r#"{"foo":[1,2,3]}"#]), vec!["3"]);
+    }
+
+    #[test]
+    fn length_is_json_aware() {
+        assert_eq!(run("length", &["[1,2,3]"]), vec!["3"]); // array elements
+        assert_eq!(run("length", &[r#"{"a":1,"b":2}"#]), vec!["2"]); // object keys
+        assert_eq!(run("length", &[r#""hello""#]), vec!["5"]); // string chars
+        assert_eq!(run("length", &["-7"]), vec!["7"]); // |number|
+        assert_eq!(run("length", &["null"]), vec!["0"]);
+    }
+
+    #[test]
     fn unsupported_errors_cleanly() {
         assert!(translate(".a.b as $x").is_err());
-        assert!(translate(".[1:3]").is_err()); // slice
+        assert!(translate(".[1:x]").is_err()); // bad slice bound
         assert!(translate(".foo // 0").is_err()); // alternative
         assert!(translate(".foo?").is_err()); // optional
         assert!(translate("reduce .[] as $x (0; . + $x)").is_err());

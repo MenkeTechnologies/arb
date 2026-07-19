@@ -198,8 +198,9 @@ out { in.html; //div[@class]//span/text() }              # xpath: predicate + ch
 ```
 
 Supported jq: identity `.`, key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index
-`.[N]`, pipe `|`, `select(…)`, `map(…)`, and the builtins arb already has
-(`keys`/`values`/`length`/`add`/`has`/`to_entries`). Supported xpath: descendant
+`.[N]` (and negative `.[-1]`), slice `.[a:b]` (bounds optional/negative), pipe
+`|`, `select(…)`, `map(…)`, and the builtins arb already has (`keys`/`values`/
+`length` (JSON-aware — array/object/string/number)/`add`/`has`/`to_entries`). Supported xpath: descendant
 `//tag`, child `/a/b`, chain `//a//b`, the `[@attr]` existence predicate, and the
 `/@attr` / `/text()` accessors, plus a standalone `@attr` step. **Anything
 outside the documented subset is a hard error** (`jq: …` / `xpath: …`) anchored to
