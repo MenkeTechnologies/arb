@@ -3,10 +3,33 @@
 //! is absent.
 
 use arb::pkg::{
-    install_from, parse_index, parse_manifest, read_pkg_module, search_index, IndexEntry,
+    install_from, install_with_index, parse_index, parse_manifest, read_pkg_module, search_index,
+    Index, IndexEntry,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Create a local git repo that is a valid arb package (arb.toml + NAME.arb),
+/// commit it, and return its `file://` URL.
+fn make_pkg_repo(dir: &Path, name: &str, arb_toml: &str, entry_arb: &str) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("arb.toml"), arb_toml).unwrap();
+    std::fs::write(dir.join(format!("{name}.arb")), entry_arb).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "t@e"],
+        &["config", "user.name", "t"],
+        &["add", "-A"],
+        &["commit", "-qm", "init"],
+    ] {
+        assert!(Command::new("git").args(args).current_dir(dir).output().unwrap().status.success());
+    }
+    format!("file://{}", dir.display())
+}
+
+fn entry(repo: &str) -> IndexEntry {
+    IndexEntry { repo: repo.into(), version: "0.1.0".into(), desc: String::new() }
+}
 
 fn tmp(label: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("arb-pkg-{}-{label}", std::process::id()));
@@ -146,4 +169,80 @@ fn install_from_clones_validates_and_rolls_back() {
     for d in [&src_repo, &pkgdir, &bad_repo] {
         let _ = std::fs::remove_dir_all(d);
     }
+}
+
+#[test]
+fn install_with_index_resolves_transitive_deps() {
+    if !have_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let base = tmp("deps");
+    let url_a = make_pkg_repo(
+        &base.join("a"),
+        "arb-a",
+        "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"0.1\"\n",
+        "gauge .g -max 100",
+    );
+    let url_b = make_pkg_repo(&base.join("b"), "arb-b", "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n", "tail .b");
+    let mut idx = Index::new();
+    idx.insert("arb-a".into(), entry(&url_a));
+    idx.insert("arb-b".into(), entry(&url_b));
+    let pkgdir = base.join("pkgs");
+    install_with_index("arb-a", &idx, &pkgdir).expect("install ok");
+    // Both the package and its dep land, and the dep resolves as a module tier.
+    assert!(pkgdir.join("arb-a/arb-a.arb").exists());
+    assert!(pkgdir.join("arb-b/arb-b.arb").exists());
+    assert_eq!(read_pkg_module(&pkgdir, "arb-b").as_deref(), Some("tail .b"));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn install_with_index_missing_dep_errors_and_rolls_back() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("deps-missing");
+    let url_c = make_pkg_repo(
+        &base.join("c"),
+        "arb-c",
+        "[package]\nname = \"arb-c\"\nversion = \"0.1.0\"\n\n[deps]\nghost = \"0.1\"\n",
+        "list .c",
+    );
+    let mut idx = Index::new();
+    idx.insert("arb-c".into(), entry(&url_c)); // "ghost" deliberately absent
+    let pkgdir = base.join("pkgs");
+    let e = install_with_index("arb-c", &idx, &pkgdir).unwrap_err();
+    assert!(e.contains("ghost") && e.contains("not in the registry"), "err: {e}");
+    // Failed-dep run is rolled back — no partial tree.
+    assert!(!pkgdir.join("arb-c").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn install_with_index_cycle_terminates() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("deps-cycle");
+    let url_a = make_pkg_repo(
+        &base.join("a"),
+        "arb-a2",
+        "[package]\nname = \"arb-a2\"\nversion = \"0.1.0\"\n\n[deps]\narb-b2 = \"0.1\"\n",
+        "gauge .g",
+    );
+    let url_b = make_pkg_repo(
+        &base.join("b"),
+        "arb-b2",
+        "[package]\nname = \"arb-b2\"\nversion = \"0.1.0\"\n\n[deps]\narb-a2 = \"0.1\"\n",
+        "tail .b",
+    );
+    let mut idx = Index::new();
+    idx.insert("arb-a2".into(), entry(&url_a));
+    idx.insert("arb-b2".into(), entry(&url_b));
+    let pkgdir = base.join("pkgs");
+    // The visited-set must break the back-edge (a hang/overflow is the failure).
+    install_with_index("arb-a2", &idx, &pkgdir).expect("cycle must terminate");
+    assert!(pkgdir.join("arb-a2").exists() && pkgdir.join("arb-b2").exists());
+    let _ = std::fs::remove_dir_all(&base);
 }

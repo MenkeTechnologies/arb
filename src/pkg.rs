@@ -13,7 +13,7 @@
 //! built, so it validates the package and prints the manual PR steps — it never
 //! claims a package was registered.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -184,15 +184,66 @@ pub fn install_from(repo: &str, name: &str, pkg_dir: &Path) -> Result<PathBuf, S
     }
 }
 
-/// `arb install NAME`: look up the local index and install the named package.
+/// Recursively install `name` + its transitive `[deps]` from `idx` into
+/// `pkg_dir`. `visited` guards cycles/diamonds; `installed` records what THIS run
+/// created so the caller can roll back on failure. Deps resolve to each name's
+/// index-pinned ref (no semver — SPEC §18 caveat). Pre-order: a package's
+/// manifest must be on disk before its deps are discoverable.
+fn install_rec(
+    name: &str,
+    idx: &Index,
+    pkg_dir: &Path,
+    visited: &mut BTreeSet<String>,
+    installed: &mut Vec<String>,
+) -> Result<(), String> {
+    if !visited.insert(name.to_string()) {
+        return Ok(()); // cycle or diamond — already handled this run
+    }
+    if pkg_dir.join(name).exists() {
+        return Ok(()); // skip an already-installed dep
+    }
+    let entry = idx.get(name).ok_or_else(|| format!("package `{name}` not in the registry"))?;
+    install_from(&entry.repo, name, pkg_dir)?; // clone + validate + rollback-if-broken
+    installed.push(name.to_string());
+    // Re-read the freshly-installed manifest to discover its deps.
+    let src = std::fs::read_to_string(pkg_dir.join(name).join("arb.toml"))
+        .map_err(|_| format!("`{name}`: missing arb.toml after install"))?;
+    let manifest = parse_manifest(&src)?;
+    for dep in manifest.deps.keys() {
+        install_rec(dep, idx, pkg_dir, visited, installed)?;
+    }
+    Ok(())
+}
+
+/// Install `name` + transitive deps using an explicit index and pkg dir
+/// (env-free — the unit-test seam). On any failure the whole run is rolled back
+/// (a failed dep never leaves a partial tree; `arb install` never half-succeeds).
+pub fn install_with_index(name: &str, idx: &Index, pkg_dir: &Path) -> Result<PathBuf, String> {
+    if pkg_dir.join(name).exists() {
+        return Err(format!("`{name}` is already installed (uninstall it first)"));
+    }
+    let mut visited = BTreeSet::new();
+    let mut installed: Vec<String> = Vec::new();
+    match install_rec(name, idx, pkg_dir, &mut visited, &mut installed) {
+        Ok(()) => Ok(pkg_dir.join(name)),
+        Err(e) => {
+            for n in &installed {
+                let _ = std::fs::remove_dir_all(pkg_dir.join(n)); // undo only this run
+            }
+            Err(e)
+        }
+    }
+}
+
+/// `arb install NAME`: look up the local index and install the named package
+/// plus its transitive `[deps]`.
 pub fn install(name: &str) -> Result<PathBuf, String> {
     let reg = registry_dir().ok_or("no HOME for the registry")?;
     let index_src = std::fs::read_to_string(reg.join("index.json"))
         .map_err(|_| "no registry index — run `arb update` first".to_string())?;
     let idx = parse_index(&index_src)?;
-    let entry = idx.get(name).ok_or_else(|| format!("package `{name}` not in the registry"))?;
     let dir = pkg_dir().ok_or("no HOME for packages")?;
-    install_from(&entry.repo, name, &dir)
+    install_with_index(name, &idx, &dir)
 }
 
 /// `arb update`: clone or fast-forward the registry index repo.
