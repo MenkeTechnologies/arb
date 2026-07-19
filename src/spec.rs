@@ -1315,7 +1315,11 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
 /// `want LINES…` (expected output). Unknown clauses / a missing `run` error.
 fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
     let str_args = |c: &Command| -> Vec<String> {
-        c.args.iter().filter_map(Arg::as_str).map(String::from).collect()
+        c.args
+            .iter()
+            .filter_map(Arg::as_str)
+            .map(String::from)
+            .collect()
     };
     let mut given = Vec::new();
     let mut want = Vec::new();
@@ -1341,7 +1345,12 @@ fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
         }
     }
     let ops = ops.ok_or_else(|| format!("test `{name}`: missing `run {{ … }}`"))?;
-    Ok(TestCase { name, given, ops, want })
+    Ok(TestCase {
+        name,
+        given,
+        ops,
+        want,
+    })
 }
 
 /// Compile a `source { … }` body into a query pipeline. Must start with `in`.

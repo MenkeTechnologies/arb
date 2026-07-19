@@ -1007,7 +1007,8 @@ fn poll_double_errors() {
 #[test]
 fn test_blocks_parse_into_spec_tests() {
     let s = build(
-        &parse("tail .l\ntest \"t1\" { given \"a\" \"b\"; run { in; count }; want \"2\" }").unwrap(),
+        &parse("tail .l\ntest \"t1\" { given \"a\" \"b\"; run { in; count }; want \"2\" }")
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(s.tests.len(), 1);

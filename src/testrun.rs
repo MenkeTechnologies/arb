@@ -45,7 +45,11 @@ pub fn run(tests: &[TestCase]) -> Report {
         }
     }
     text.push_str(&format!("# {passed} passed, {failed} failed\n"));
-    Report { passed, failed, text }
+    Report {
+        passed,
+        failed,
+        text,
+    }
 }
 
 #[cfg(test)]
@@ -82,11 +86,13 @@ test \"wrong on purpose\" {\n\
     #[test]
     fn scalar_and_pairs_results_flatten() {
         // A reducer (count -> scalar) compares against a single want line.
-        let count = tests_of("test \"n\" { given \"a\" \"b\" \"c\"; run { in; count }; want \"3\" }");
+        let count =
+            tests_of("test \"n\" { given \"a\" \"b\" \"c\"; run { in; count }; want \"3\" }");
         assert_eq!(run(&count).failed, 0);
         // A tally (-> pairs) flattens to key\tvalue lines.
-        let tally =
-            tests_of("test \"t\" { given \"a\" \"a\" \"b\"; run { in; tally }; want \"a\t2\" \"b\t1\" }");
+        let tally = tests_of(
+            "test \"t\" { given \"a\" \"a\" \"b\"; run { in; tally }; want \"a\t2\" \"b\t1\" }",
+        );
         assert_eq!(run(&tally).failed, 0);
     }
 
