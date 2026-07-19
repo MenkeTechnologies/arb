@@ -1305,10 +1305,6 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
     }
 }
 
-/// Split a CSV line on commas, trimming each field. (Quoted fields containing
-/// commas are not yet handled.)
-/// Parse a header + data rows of a delimited stream into JSON object strings
-/// keyed by the header, so `field NAME` works over CSV/TSV.
 /// Parse the stream as a YAML document (or `---`-separated multi-document) and
 /// emit each document as a compact JSON line. Unparseable documents are dropped.
 fn yaml_to_json(lines: &[String]) -> Vec<String> {
@@ -1329,6 +1325,8 @@ fn toml_to_json(lines: &[String]) -> Vec<String> {
     }
 }
 
+/// Parse a header + data rows of a delimited stream into JSON object strings
+/// keyed by the header, so `field NAME` works over CSV/TSV.
 fn to_json_records(lines: &[String], delim: char) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();
@@ -1350,8 +1348,52 @@ fn to_json_records(lines: &[String], delim: char) -> Vec<String> {
         .collect()
 }
 
+/// Split one delimited line into fields per RFC 4180 (line-oriented: no embedded
+/// newlines). A field may be double-quoted; a quoted field may contain the
+/// delimiter, and a doubled `""` inside it is one literal `"`. Unquoted fields
+/// are trimmed (preserving prior behavior); quoted fields are returned verbatim.
 fn split_delim(line: &str, delim: char) -> Vec<String> {
-    line.split(delim).map(|s| s.trim().to_string()).collect()
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut quoted = false; // this field opened with a quote
+    let mut chars = line.chars().peekable();
+
+    // Unquoted fields are trimmed; a quoted field is returned exactly.
+    let finish = |f: &str, q: bool| -> String {
+        if q {
+            f.to_string()
+        } else {
+            f.trim().to_string()
+        }
+    };
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next(); // "" -> one literal quote
+                    field.push('"');
+                } else {
+                    in_quotes = false; // closing quote
+                }
+            } else {
+                field.push(c);
+            }
+        } else if c == '"' && field.trim().is_empty() {
+            in_quotes = true; // opening quote at field start
+            quoted = true;
+            field.clear(); // drop any leading whitespace
+        } else if c == delim {
+            fields.push(finish(&field, quoted));
+            field.clear();
+            quoted = false;
+        } else {
+            field.push(c);
+        }
+    }
+    fields.push(finish(&field, quoted));
+    fields
 }
 
 /// Extract a `key=value` (logfmt) field from a line; strips surrounding quotes.
@@ -1594,5 +1636,44 @@ fn json_to_string(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_plain() {
+        assert_eq!(split_delim("a,b,c", ','), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn split_quoted_comma() {
+        // A delimiter inside quotes is not a separator.
+        assert_eq!(split_delim("\"a,b\",c", ','), vec!["a,b", "c"]);
+    }
+
+    #[test]
+    fn split_doubled_quote() {
+        // "" inside a quoted field is one literal quote.
+        assert_eq!(split_delim("\"she \"\"said\"\"\",x", ','), vec!["she \"said\"", "x"]);
+    }
+
+    #[test]
+    fn split_trailing_empty() {
+        assert_eq!(split_delim("a,", ','), vec!["a", ""]);
+    }
+
+    #[test]
+    fn split_tsv() {
+        assert_eq!(split_delim("a\tb\tc", '\t'), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn split_unquoted_trims_quoted_keeps_spaces() {
+        // Unquoted fields are trimmed; a quoted field keeps its inner spaces.
+        assert_eq!(split_delim(" a , b ", ','), vec!["a", "b"]);
+        assert_eq!(split_delim("\" a \",b", ','), vec![" a ", "b"]);
     }
 }
