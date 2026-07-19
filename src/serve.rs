@@ -43,12 +43,23 @@ pub fn serve(spec: Spec, state: Arc<Mutex<StreamState>>, port: u16) -> std::io::
 
     let spec = Arc::new(spec);
     let page = Arc::new(render_page(&spec));
-    // Live input store, seeded like the TUI (main.rs): each `input .name` -> "".
+    // Live input store, seeded like the TUI (main.rs): every control widget ->
+    // its initial value (slider = min, check = "0", else "").
     let inputs: Inputs = Arc::new(Mutex::new(
         spec.widgets
             .iter()
-            .filter(|w| w.kind == WidgetKind::Input)
-            .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
+            .filter(|w| w.kind.is_control())
+            .map(|w| {
+                let name = w.path.trim_start_matches('.').to_string();
+                let init = match w.kind {
+                    WidgetKind::Slider => crate::query::fmt_scalar(crate::spec::parse_scalar(
+                        w.opts.get("min").map(String::as_str).unwrap_or("0"),
+                    )),
+                    WidgetKind::Check => "0".to_string(),
+                    _ => String::new(),
+                };
+                (name, init)
+            })
             .collect(),
     ));
     for conn in listener.incoming() {
@@ -347,6 +358,54 @@ fn widget_json(
                 "input": true,
             }))
         }
+        WidgetKind::Filter => {
+            // Like Input, but carries a label; drives `where match(.name)`.
+            let name = w.path.trim_start_matches('.');
+            base(json!({
+                "name": name,
+                "value": inputs.get(name).cloned().unwrap_or_default(),
+                "placeholder": w.opts.get("placeholder").or_else(|| w.opts.get("label")).or_else(|| w.opts.get("title")).cloned().unwrap_or_default(),
+                "filter": true,
+            }))
+        }
+        WidgetKind::Check => {
+            // Boolean: `value` as a bool for the checkbox; the client POSTs "1"/"0".
+            let name = w.path.trim_start_matches('.');
+            base(json!({
+                "name": name,
+                "value": inputs.get(name).map(String::as_str).unwrap_or("0") == "1",
+                "label": w.opts.get("label").or_else(|| w.opts.get("title")).map(String::as_str).unwrap_or(name),
+                "check": true,
+            }))
+        }
+        WidgetKind::Slider => {
+            // Range: parse_scalar so durations/sizes (5s, 4mb) resolve like the TUI.
+            let name = w.path.trim_start_matches('.');
+            let min = crate::spec::parse_scalar(w.opts.get("min").map(String::as_str).unwrap_or("0"));
+            let max = w.opts.get("max").map(|s| crate::spec::parse_scalar(s)).unwrap_or(100.0);
+            let step = w.opts.get("step").map(|s| crate::spec::parse_scalar(s)).unwrap_or(1.0);
+            let value = inputs.get(name).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(min);
+            base(json!({
+                "name": name, "value": value, "min": min, "max": max,
+                "step": if step > 0.0 { step } else { 1.0 },
+                "label": w.opts.get("label").or_else(|| w.opts.get("title")).map(String::as_str).unwrap_or(name),
+                "slider": true,
+            }))
+        }
+        WidgetKind::Facet => {
+            // Candidates: -opts, else server-computed distinct -field values over
+            // the live stream. selected = the current comma-set.
+            let name = w.path.trim_start_matches('.');
+            let cands = crate::tui::facet_candidates(w, raw);
+            let sel = inputs.get(name).map(String::as_str).unwrap_or("");
+            let selected: Vec<&str> =
+                sel.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            base(json!({
+                "name": name, "opts": cands, "selected": selected,
+                "label": w.opts.get("label").or_else(|| w.opts.get("title")).map(String::as_str).unwrap_or(name),
+                "facet": true,
+            }))
+        }
         WidgetKind::Chart => {
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
@@ -448,7 +507,14 @@ html, body { height: 100%; margin: 0; }\n\
 .arb-grid > * { min-width: 0; }\n\
 .arb-tabs { display: flex; gap: 4px; flex-wrap: wrap; }\n\
 .arb-tab { padding: 2px 10px; border: 1px solid var(--border, #333); border-radius: 3px; font-size: 0.9em; }\n\
-.arb-tab.sel { background: var(--cyan, #05d9e8); color: #000; font-weight: bold; }\n";
+.arb-tab.sel { background: var(--cyan, #05d9e8); color: #000; font-weight: bold; }\n\
+.arb-ctl { display: flex; align-items: center; gap: 8px; padding: 4px 0; }\n\
+.arb-ctl-label { font-size: 0.85em; color: var(--fg-dim, #9e9e9e); }\n\
+.arb-ctl-val { font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }\n\
+.zg-range { flex: 1; accent-color: var(--cyan, #05d9e8); }\n\
+.arb-check input, .arb-facet-opt input { accent-color: var(--cyan, #05d9e8); }\n\
+.arb-facet { display: flex; flex-direction: column; gap: 2px; }\n\
+.arb-facet-opt { display: flex; align-items: center; gap: 6px; font-size: 0.9em; cursor: pointer; }\n";
 
 /// Client init: mount `ZGui.appShell`, build one `ZGui.*` component per widget
 /// (from `window.ARB_META`), and drive them from the `/ws` push (falling back to
@@ -482,6 +548,9 @@ const ZINIT: &str = r#"
   function pairsRows(p) { return (p || []).map(function (x) { return { label: String(x[0]), value: Number(x[1]) || 0 }; }); }
   function cols(h) { return (h || []).map(function (x, i) { return { key: 'c' + i, label: x }; }); }
   function tblRows(h, r) { return (r || []).map(function (row) { var o = {}; (row || []).forEach(function (c, i) { o['c' + i] = c; }); return o; }); }
+  function postSet(name, val) {
+    fetch('/set?name=' + encodeURIComponent(name) + '&value=' + encodeURIComponent(val), { method: 'POST' }).catch(function () {});
+  }
 
   slots = (meta.widgets || []).map(function (w) {
     var card = ZGui.card({ title: w.name + '  ·  ' + w.kind });
@@ -525,7 +594,7 @@ const ZINIT: &str = r#"
         });
       };
     }
-    if (k === 'input') {
+    if (k === 'input' || k === 'filter') {
       // A live editable field: debounced POST /set on change reshapes the pipe.
       var inp = document.createElement('input');
       inp.type = 'text'; inp.className = 'zg-input';
@@ -535,13 +604,67 @@ const ZINIT: &str = r#"
       inp.addEventListener('input', function () {
         clearTimeout(tmr);
         var name = it.name, val = inp.value;
-        tmr = setTimeout(function () {
-          fetch('/set?name=' + encodeURIComponent(name) + '&value=' + encodeURIComponent(val), { method: 'POST' }).catch(function () {});
-        }, 120);
+        tmr = setTimeout(function () { postSet(name, val); }, 120);
       });
-      host.appendChild(inp);
+      if (k === 'filter' && it.placeholder) {
+        var wrap = document.createElement('label'); wrap.className = 'arb-ctl';
+        var lb = document.createElement('span'); lb.className = 'arb-ctl-label'; lb.textContent = it.placeholder;
+        wrap.appendChild(lb); wrap.appendChild(inp); host.appendChild(wrap);
+      } else { host.appendChild(inp); }
       // Don't clobber the field the user is editing when /data refreshes.
       return function (d) { if (document.activeElement !== inp && d.value != null) inp.value = d.value; };
+    }
+    if (k === 'slider') {
+      var sw = document.createElement('label'); sw.className = 'arb-ctl';
+      var sl = document.createElement('span'); sl.className = 'arb-ctl-label'; sl.textContent = it.label || slot.w.name;
+      var rng = document.createElement('input'); rng.type = 'range'; rng.className = 'zg-range';
+      rng.min = it.min; rng.max = it.max; rng.step = it.step; rng.value = it.value;
+      var ov = document.createElement('span'); ov.className = 'arb-ctl-val'; ov.textContent = it.value;
+      var st = null;
+      rng.addEventListener('input', function () {
+        ov.textContent = rng.value;
+        clearTimeout(st); var name = it.name, val = rng.value;
+        st = setTimeout(function () { postSet(name, val); }, 120);
+      });
+      sw.appendChild(sl); sw.appendChild(rng); sw.appendChild(ov); host.appendChild(sw);
+      return function (d) { if (document.activeElement !== rng && d.value != null) { rng.value = d.value; ov.textContent = d.value; } };
+    }
+    if (k === 'check') {
+      var cw = document.createElement('label'); cw.className = 'arb-ctl arb-check';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!it.value;
+      var ct = document.createElement('span'); ct.className = 'arb-ctl-label'; ct.textContent = it.label || slot.w.name;
+      cb.addEventListener('change', function () { postSet(it.name, cb.checked ? '1' : '0'); });
+      cw.appendChild(cb); cw.appendChild(ct); host.appendChild(cw);
+      return function (d) { if (document.activeElement !== cb && d.value != null) cb.checked = !!d.value; };
+    }
+    if (k === 'facet') {
+      var fw = document.createElement('div'); fw.className = 'arb-facet';
+      if (it.label) { var fl = document.createElement('div'); fl.className = 'arb-ctl-label'; fl.textContent = it.label; fw.appendChild(fl); }
+      var boxes = {};
+      function rebuild(opts, selected) {
+        Array.prototype.slice.call(fw.querySelectorAll('.arb-facet-opt')).forEach(function (n) { n.remove(); });
+        boxes = {};
+        (opts || []).forEach(function (opt) {
+          var row = document.createElement('label'); row.className = 'arb-facet-opt';
+          var b = document.createElement('input'); b.type = 'checkbox'; b.checked = (selected || []).indexOf(opt) >= 0;
+          b.addEventListener('change', function () {
+            var set = []; Object.keys(boxes).forEach(function (o) { if (boxes[o].checked) set.push(o); });
+            postSet(it.name, set.join(','));
+          });
+          boxes[opt] = b;
+          var t = document.createElement('span'); t.textContent = opt;
+          row.appendChild(b); row.appendChild(t); fw.appendChild(row);
+        });
+      }
+      var optsKey = (it.opts || []).join('');
+      rebuild(it.opts, it.selected || []); host.appendChild(fw);
+      return function (d) {
+        // -field candidates grow as the stream flows: rebuild only when the option
+        // list changes, and never while the user is toggling a box.
+        if (document.activeElement && fw.contains(document.activeElement)) return;
+        var key = (d.opts || []).join('');
+        if (key !== optsKey) { optsKey = key; rebuild(d.opts, d.selected || []); }
+      };
     }
     // text / tail / list / block / frame / select -> a streaming log view.
     var lv = ZGui.logView.create(host, { maxLines: 2000, ansi: true });
@@ -781,5 +904,94 @@ mod tests {
         assert!(page.contains("/set"));
         assert!(page.contains("addEventListener"));
         assert!(page.contains("zg-input"));
+    }
+
+    #[test]
+    fn widget_json_control_kinds_carry_state() {
+        // filter
+        let s = build(&parse("filter .q -placeholder P").unwrap()).unwrap();
+        let mut m = HashMap::new();
+        m.insert("q".to_string(), "hi".to_string());
+        let v = widget_json(&s.widgets[0], &[], 0.0, &m);
+        assert_eq!(v["filter"], true);
+        assert_eq!(v["value"], "hi");
+        assert_eq!(v["placeholder"], "P");
+        // check
+        let s = build(&parse("check .c -label On").unwrap()).unwrap();
+        let v = widget_json(&s.widgets[0], &[], 0.0, &HashMap::new());
+        assert_eq!(v["check"], true);
+        assert_eq!(v["value"], false);
+        assert_eq!(v["label"], "On");
+        let mut m = HashMap::new();
+        m.insert("c".to_string(), "1".to_string());
+        assert_eq!(widget_json(&s.widgets[0], &[], 0.0, &m)["value"], true);
+        // slider
+        let s = build(&parse("slider .th -min 0 -max 10 -step 2").unwrap()).unwrap();
+        let mut m = HashMap::new();
+        m.insert("th".to_string(), "4".to_string());
+        let v = widget_json(&s.widgets[0], &[], 0.0, &m);
+        assert_eq!(v["slider"], true);
+        assert_eq!(v["value"], 4.0);
+        assert_eq!(v["min"], 0.0);
+        assert_eq!(v["max"], 10.0);
+        assert_eq!(v["step"], 2.0);
+        // facet: static -opts + selected
+        let s = build(&parse("facet .lv -opts {a b c}").unwrap()).unwrap();
+        let mut m = HashMap::new();
+        m.insert("lv".to_string(), "a,c".to_string());
+        let v = widget_json(&s.widgets[0], &[], 0.0, &m);
+        assert_eq!(v["facet"], true);
+        assert_eq!(v["opts"], serde_json::json!(["a", "b", "c"]));
+        assert_eq!(v["selected"], serde_json::json!(["a", "c"]));
+    }
+
+    #[test]
+    fn widget_json_facet_distinct_field_candidates() {
+        // No -opts: candidates are distinct -field values over the raw stream.
+        let s = build(&parse("facet .lv -field level").unwrap()).unwrap();
+        let raw: Vec<String> = ["INFO", "WARN", "INFO"]
+            .iter()
+            .map(|l| format!(r#"{{"level":"{l}"}}"#))
+            .collect();
+        let v = widget_json(&s.widgets[0], &raw, 0.0, &HashMap::new());
+        assert_eq!(v["opts"], serde_json::json!(["INFO", "WARN"]));
+    }
+
+    #[test]
+    fn set_route_slider_and_facet_resolve_in_data_json() {
+        // Slider -> numeric where.
+        let s = build(&parse("list .l\nsource .l { in; where x < .th }").unwrap()).unwrap();
+        let st = state_with(&["1", "2", "3", "4", "5"]);
+        let (n, val) = parse_set_query("name=th&value=3");
+        let mut store = HashMap::new();
+        store.insert(n, val);
+        let j: serde_json::Value = serde_json::from_str(&data_json(&s, &st, &store)).unwrap();
+        assert_eq!(j[0]["text"], "1\n2");
+        // Facet -> `where field in .set`.
+        let s = build(&parse("list .l\nsource .l { in; where level in .sel }").unwrap()).unwrap();
+        let st = state_with(&[r#"{"level":"INFO"}"#, r#"{"level":"WARN"}"#, r#"{"level":"INFO"}"#]);
+        // Empty selection -> all pass.
+        let j0: serde_json::Value =
+            serde_json::from_str(&data_json(&s, &st, &HashMap::new())).unwrap();
+        assert_eq!(j0[0]["text"].as_str().unwrap().lines().count(), 3);
+        let (n, val) = parse_set_query("name=sel&value=INFO");
+        let mut store = HashMap::new();
+        store.insert(n, val);
+        let j1: serde_json::Value = serde_json::from_str(&data_json(&s, &st, &store)).unwrap();
+        assert_eq!(j1[0]["text"].as_str().unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn served_page_wires_all_controls() {
+        let spec =
+            build(&parse("filter .q\nslider .s -min 0 -max 9\ncheck .c\nfacet .f -opts {a b}").unwrap())
+                .unwrap();
+        let page = render_page(&spec);
+        assert!(page.contains("postSet"));
+        assert!(page.contains("'range'"));
+        assert!(page.contains("'checkbox'"));
+        assert!(page.contains("arb-facet"));
+        assert!(page.contains("k === 'slider'"));
+        assert!(page.contains("k === 'facet'"));
     }
 }

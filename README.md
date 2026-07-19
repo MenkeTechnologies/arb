@@ -331,10 +331,11 @@ with the matching component — `gauge`→`ZGui.gauge`, `chart`→`ZGui.chart`,
 containers/log→`ZGui.card`+`ZGui.logView`. Every widget's `source` is evaluated
 server-side and pushed as structured JSON; the client feeds it to the component
 handles (`.set`/`.setSeries`/`.setRows`) — never `innerHTML` with stream data, so
-nothing can inject markup. `input` widgets render as editable fields that
-`POST /set` on change, so the server re-resolves the bound pipelines live — the
-browser drives the megafilter/map just like the terminal. `--port 0` picks a free
-port and prints it.
+nothing can inject markup. the `input`/`filter` fields, `slider` (range), `check` (checkbox), and `facet`
+(multi-select, with `-field` candidates computed server-side) controls render as
+real form elements that `POST /set` on change, so the server re-resolves the
+bound pipelines live — the browser drives the megafilter/map just like the
+terminal. `--port 0` picks a free port and prints it.
 
 > The web target needs the submodule checked out: `git submodule update --init`.
 > Without it the binary still builds (the dashboard shows a one-line notice).
@@ -515,12 +516,11 @@ the terminal or the browser) is complete:
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
-**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — dynamic
-`-field` facet candidates and web interactivity for the `filter`/`facet`/`slider`
-controls, the hosted registry index behind `arb publish` (the client validates +
-prints PR steps today) with native/cdylib packages, and upstream-command sniffing
-for the shareable-dashboard ecosystem. Akka-style actors and mouse/resize events
-are
+**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — the hosted
+registry index behind `arb publish` (the client validates + prints PR steps
+today) with native/cdylib packages and semver resolution, and upstream-command
+sniffing for the shareable-dashboard ecosystem. Akka-style actors and
+mouse/resize events are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
 bytes with no mouse event stream.
 
