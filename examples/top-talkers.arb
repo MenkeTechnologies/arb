@@ -1,0 +1,7 @@
+# top-talkers — rank the busiest source addresses in a whitespace-columnar
+# stream (field 1 = client IP), most frequent first, plus the running total.
+#   awk '{print $1, $7}' access.log | arb examples/top-talkers.arb
+bars  .ips -label "requests by client"
+gauge .total -max 100000 -label "total requests"
+source .ips   { in; field 1; tally }
+source .total { in; count }

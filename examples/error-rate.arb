@@ -1,0 +1,7 @@
+# error-rate — split a log stream into errors vs. everything, show the error
+# count as a gauge and stream the matching lines underneath.
+#   tail -f app.log | arb examples/error-rate.arb
+gauge .errors -max 100 -label "errors seen"
+tail  .errlog -label "error lines"
+source .errors { in; match /(?i)error|fatal|panic/; count }
+source .errlog { in; match /(?i)error|fatal|panic/ }

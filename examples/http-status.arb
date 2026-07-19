@@ -1,0 +1,10 @@
+# http-status — HTTP access log dashboard from logfmt lines
+# (`code=200 path=/api dur=12`): status-code distribution, a live count of 5xx
+# responses, and the raw tail.
+#   tail -f access.logfmt | arb examples/http-status.arb
+bars  .codes -label "status codes"
+gauge .errors -max 50 -label "5xx count"
+tail  .raw
+source .codes  { in.logfmt; field code; tally }
+source .errors { in.logfmt; field code; match /^5/; count }
+source .raw    { in }

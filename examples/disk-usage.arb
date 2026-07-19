@@ -1,0 +1,8 @@
+# disk-usage — feed `df -Pk` (POSIX 1K-block output): a table of every mount and
+# a gauge counting how many filesystems are mounted. The header row (starting
+# with "Filesystem") is dropped before counting.
+#   df -Pk | arb examples/disk-usage.arb
+table .df -label "df -Pk"
+gauge .mounts -max 64 -label "filesystems"
+source .df     { in }
+source .mounts { in; reject /^Filesystem/; count }

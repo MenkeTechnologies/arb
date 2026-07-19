@@ -1,0 +1,8 @@
+# word-freq — tokenize a text stream into words and rank them by frequency,
+# the classic `tr -s ' ' '\n' | sort | uniq -c | sort -rn` pipeline as a live
+# dashboard.
+#   cat prose.txt | arb examples/word-freq.arb
+bars  .words -label "word frequency"
+gauge .count -max 100000 -label "total words"
+source .words { in; words; lower; tally }
+source .count { in; words; count }

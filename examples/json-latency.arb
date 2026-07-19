@@ -1,0 +1,10 @@
+# json-latency — latency stats from a JSON-lines stream of request records
+# ({"path":"/api","ms":42}): average and peak service time as gauges, with a
+# live tail of the slow requests (> 100 ms).
+#   cat requests.jsonl | arb examples/json-latency.arb
+gauge .avg -max 500 -label "avg ms"
+gauge .peak -max 500 -label "max ms"
+tail  .slow -label "slow (>100ms)"
+source .avg  { in.json; field ms; avg }
+source .peak { in.json; field ms; max }
+source .slow { in.json; where ms > 100 }

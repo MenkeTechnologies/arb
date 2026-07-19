@@ -8,6 +8,7 @@
 ```
 
 ![Rust](https://img.shields.io/badge/Rust-2021-05d9e8?style=flat-square)
+[![CI](https://github.com/MenkeTechnologies/arb/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/arb/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/arb/)
 ![license](https://img.shields.io/badge/license-MIT-ff2a6d?style=flat-square)
 ![status](https://img.shields.io/badge/status-active%20%C2%B7%20in%20development-9b5de5?style=flat-square)
@@ -366,6 +367,25 @@ comment line is the description shown by `--installed`/`--list`. Install
 validates the spec before adding it, so the library only holds runnable
 dashboards. A shared spec is any `.arb` file today; a remote registry (install by
 URL/name) plugs into the same resolver next.
+
+### Worked examples — `examples/`
+
+The [`examples/`](examples/) directory holds small, self-contained dashboards
+that each demonstrate one idiom, with the exact producer in the header comment.
+Run any of them with `-f`:
+
+```sh
+tail -f app.log        | arb examples/error-rate.arb   # errors vs. all, as a gauge + tail
+tail -f access.logfmt  | arb examples/http-status.arb  # status-code bars + 5xx counter (logfmt)
+awk '{print $1}' log   | arb examples/top-talkers.arb  # rank busiest clients (columnar)
+cat requests.jsonl     | arb examples/json-latency.arb # avg/peak ms + slow-request tail (JSON)
+cat prose.txt          | arb examples/word-freq.arb    # tokenize + rank words
+df -Pk                 | arb examples/disk-usage.arb   # mount table + filesystem count
+```
+
+Every example is covered by `tests/examples.rs`: each parses and builds, and the
+named ones have their `source { … }` pipelines evaluated against sample input
+and asserted, so the examples are proven to compute what their comment claims.
 
 ---
 
