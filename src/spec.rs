@@ -116,6 +116,17 @@ pub enum BindAction {
     SetInput { name: String, value: String },
     /// Quit the TUI.
     Quit,
+    /// Ring the terminal bell (write 0x07 after the next draw).
+    Beep,
+    /// Flash a message in the status bar for a few seconds.
+    Alert(String),
+    /// Tint a widget's border/accent for a few seconds. `widget` is the path
+    /// without the leading dot; `color` is a color name (green/red/…).
+    Flash { widget: String, color: String },
+    /// Run a shell command, fire-and-forget (never waits, never blocks the loop).
+    Exec(String),
+    /// Run several actions in order (block form `{ alert "x"; beep }`).
+    Seq(Vec<BindAction>),
 }
 
 /// Parse a key spec to its raw byte. Accepts control-key forms (`C-u`, `c-u`,
@@ -159,8 +170,38 @@ pub struct Expect {
 /// Parse an action clause (`set .name VALUE…` | `quit`) shared by `bind` and
 /// `expect`. `params` is the args AFTER the action verb.
 fn parse_action(verb: &str, params: &[Arg]) -> Result<BindAction, String> {
+    // The space-joined string params (used by alert/exec/set values).
+    let joined = || {
+        params
+            .iter()
+            .filter_map(Arg::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     match verb {
         "quit" => Ok(BindAction::Quit),
+        "beep" => Ok(BindAction::Beep),
+        "alert" => Ok(BindAction::Alert(joined())),
+        "exec" => {
+            let cmd = joined();
+            if cmd.is_empty() {
+                return Err("exec: missing command".into());
+            }
+            Ok(BindAction::Exec(cmd))
+        }
+        "flash" => {
+            let widget = params
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("flash: missing widget (.name)")?;
+            let widget = widget.strip_prefix('.').unwrap_or(widget).to_string();
+            let color = params
+                .get(1)
+                .and_then(Arg::as_str)
+                .unwrap_or("yellow")
+                .to_string();
+            Ok(BindAction::Flash { widget, color })
+        }
         "set" => {
             let name = params
                 .first()
@@ -174,7 +215,32 @@ fn parse_action(verb: &str, params: &[Arg]) -> Result<BindAction, String> {
                 .join(" ");
             Ok(BindAction::SetInput { name, value })
         }
-        other => Err(format!("unknown action `{other}` (set | quit)")),
+        other => Err(format!(
+            "unknown action `{other}` (set | quit | beep | alert | flash | exec)"
+        )),
+    }
+}
+
+/// Parse a block-form action body (`{ alert "x"; beep; flash .w red }`) into a
+/// `Seq` — each top-level command is one action, run in order.
+fn parse_action_block(cmds: &[Command]) -> Result<BindAction, String> {
+    let actions = cmds
+        .iter()
+        .map(|c| parse_action(&c.name, &c.args))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BindAction::Seq(actions))
+}
+
+/// Parse the action clause of a `bind`/`expect`: either a `{ … }` block (→ Seq)
+/// or the single-line `verb params…` form. `rest` is the args after the key/regex.
+fn parse_bind_or_expect_action(rest: &[Arg]) -> Result<BindAction, String> {
+    match rest.first() {
+        Some(Arg::Block(cmds)) => parse_action_block(cmds),
+        Some(_) => {
+            let verb = rest[0].as_str().unwrap_or("");
+            parse_action(verb, &rest[1..])
+        }
+        None => Err("missing action (set | quit | beep | alert | flash | exec | { … })".into()),
     }
 }
 
@@ -319,30 +385,23 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             let pipeline = pipeline_from_body(body)?;
             set_search(spec, path, pipeline)?;
         } else if c.name == "bind" {
-            // `bind C-<letter> set .name VALUE` | `bind C-<letter> quit`
+            // `bind C-<key> ACTION` — ACTION is `set|quit|beep|alert|flash|exec …`
+            // or a `{ … }` block of them.
             let keyspec = c
                 .args
                 .first()
                 .and_then(Arg::as_str)
                 .ok_or("bind: missing key (e.g. C-u)")?;
             let key = parse_key(keyspec)
-                .ok_or_else(|| format!("bind: `{keyspec}` is not a control key (use C-<letter>)"))?;
-            let verb = c
-                .args
-                .get(1)
-                .and_then(Arg::as_str)
-                .ok_or("bind: missing action (set | quit)")?;
-            let action = parse_action(verb, &c.args[2..]).map_err(|e| format!("bind: {e}"))?;
+                .ok_or_else(|| format!("bind: `{keyspec}` is not a bindable key (use C-<letter> or <Enter>/<Esc>/<Tab>/<Key-x>)"))?;
+            let action =
+                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("bind: {e}"))?;
             spec.binds.push(Bind { key, action });
         } else if c.name == "expect" {
-            // `expect /regex/ set .name VALUE` | `expect /regex/ quit`
+            // `expect /regex/ ACTION` — ACTION as for `bind`.
             let pattern = regex_arg(c)?;
-            let verb = c
-                .args
-                .get(1)
-                .and_then(Arg::as_str)
-                .ok_or("expect: missing action (set | quit)")?;
-            let action = parse_action(verb, &c.args[2..]).map_err(|e| format!("expect: {e}"))?;
+            let action =
+                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("expect: {e}"))?;
             spec.expects.push(Expect { pattern, action });
         } else if c.name == "out" {
             let body = match c.args.first() {

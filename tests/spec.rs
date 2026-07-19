@@ -328,6 +328,49 @@ fn parse_key_control_specs() {
 }
 
 #[test]
+fn parses_beep_alert_exec_flash_actions() {
+    use arb::spec::BindAction;
+    let s = build(
+        &parse(
+            "bind C-b beep\n\
+             bind C-a alert disk full\n\
+             expect /panic/ exec notify-send arb\n\
+             expect /5\\d\\d/ flash .log red",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.binds[0].action, BindAction::Beep);
+    assert_eq!(s.binds[1].action, BindAction::Alert("disk full".into()));
+    assert_eq!(s.expects[0].action, BindAction::Exec("notify-send arb".into()));
+    assert_eq!(
+        s.expects[1].action,
+        BindAction::Flash { widget: "log".into(), color: "red".into() }
+    );
+    // exec with no command, and an unknown action, are rejected.
+    assert!(build(&parse("bind C-x exec").unwrap()).is_err());
+    assert!(build(&parse("bind C-x frobnicate").unwrap()).is_err());
+}
+
+#[test]
+fn parses_block_form_action_sequence() {
+    use arb::spec::BindAction;
+    // `expect /re/ { alert "x"; beep }` -> a Seq of the two actions.
+    let s = build(&parse("expect /5\\d\\d/ { alert 5xx; beep }").unwrap()).unwrap();
+    match &s.expects[0].action {
+        BindAction::Seq(v) => {
+            assert_eq!(v.len(), 2);
+            assert_eq!(v[0], BindAction::Alert("5xx".into()));
+            assert_eq!(v[1], BindAction::Beep);
+        }
+        other => panic!("expected Seq, got {other:?}"),
+    }
+    // Single-line form still yields a scalar action, not a Seq.
+    let s2 = build(&parse("bind C-q quit").unwrap()).unwrap();
+    assert_eq!(s2.binds[0].action, BindAction::Quit);
+}
+
+#[test]
 fn bind_parses_set_and_quit() {
     use arb::spec::BindAction;
     let s = build(

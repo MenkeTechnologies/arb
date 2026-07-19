@@ -101,6 +101,13 @@ pub struct Controls {
     pub exact: bool,
     /// fzf compat: keep input order, don't sort by score (`--no-sort`).
     pub no_sort: bool,
+    /// Set by a `beep` action; the run loop rings the bell after the next draw
+    /// then clears it.
+    pub beep_pending: bool,
+    /// Active `alert` message + when it expires (shown in the status bar).
+    pub alert: Option<(String, Instant)>,
+    /// Active `flash` tints: widget path (no dot) -> (color name, expiry).
+    pub flashes: HashMap<String, (String, Instant)>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -210,6 +217,29 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
         BindAction::SetInput { name, value } => {
             if let Some(slot) = c.inputs.iter_mut().find(|(n, _)| n == name) {
                 slot.1 = value.clone();
+            }
+        }
+        BindAction::Beep => c.beep_pending = true,
+        BindAction::Alert(msg) => {
+            c.alert = Some((msg.clone(), Instant::now() + Duration::from_secs(3)));
+        }
+        BindAction::Flash { widget, color } => {
+            c.flashes
+                .insert(widget.clone(), (color.clone(), Instant::now() + Duration::from_secs(2)));
+        }
+        BindAction::Exec(cmd) => {
+            // Fire-and-forget: spawn, never wait — the run loop must not block.
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        BindAction::Seq(actions) => {
+            for a in actions {
+                apply_bind_action(c, a);
             }
         }
     }
@@ -611,20 +641,35 @@ pub fn run(
         // Snapshot live `input .name` values (form mode) so bound `apply .name`
         // pipelines resolve against what the user has typed, and the focused
         // field renders highlighted.
-        let (inputs, focus_name): (HashMap<String, String>, Option<String>) = {
-            let c = controls.lock().unwrap();
-            let map = c.inputs.iter().cloned().collect();
-            let focus = c.inputs.get(c.focus).map(|(n, _)| n.clone());
-            (map, focus)
-        };
+        // Snapshot form values plus the transient `alert`/`flash`/`beep` action
+        // state (pruning anything expired) in one lock, so render is lock-free.
+        let mut c = controls.lock().unwrap();
+        let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
+        let focus_name = c.inputs.get(c.focus).map(|(n, _)| n.clone());
+        let now = Instant::now();
+        let alert_msg = c.alert.as_ref().filter(|(_, exp)| *exp > now).map(|(m, _)| m.clone());
+        c.flashes.retain(|_, (_, exp)| *exp > now);
+        let flash_snap: HashMap<String, String> =
+            c.flashes.iter().map(|(k, (col, _))| (k.clone(), col.clone())).collect();
+        let beep = std::mem::take(&mut c.beep_pending);
+        drop(c);
         let st = state.lock().unwrap();
         let draw = terminal.draw(|f| {
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
-            render(f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref());
+            render(
+                f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
+                alert_msg.as_deref(), &flash_snap,
+            );
         });
         drop(st);
         if let Err(e) = draw {
             break Err(e);
+        }
+        // Ring the terminal bell once after the frame if a `beep` action fired.
+        if beep {
+            use std::io::Write;
+            let _ = terminal.backend_mut().write_all(b"\x07");
+            let _ = terminal.backend_mut().flush();
         }
         thread::sleep(Duration::from_millis(120));
     };
@@ -653,6 +698,8 @@ fn render(
     err: Option<(&[String], &str)>,
     inputs: &HashMap<String, String>,
     focus: Option<&str>,
+    alert: Option<&str>,
+    flashes: &HashMap<String, String>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -681,12 +728,21 @@ fn render(
     }
 
     let matched = st.lines.iter().filter(|l| filter_matches(l, filter)).count();
-    let hint = if filter.is_empty() {
-        "  type to filter  ·  Bksp edit  ·  Esc clear  ·  Ctrl-C quit".to_string()
+    // An active `alert` action takes over the status bar; else the filter hint.
+    if let Some(msg) = alert {
+        f.render_widget(
+            Paragraph::new(format!("  ⚠ {msg}"))
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            bar,
+        );
     } else {
-        format!("  filter: {filter}▏   {matched}/{} lines", st.lines.len())
-    };
-    f.render_widget(Paragraph::new(hint), bar);
+        let hint = if filter.is_empty() {
+            "  type to filter  ·  Bksp edit  ·  Esc clear  ·  Ctrl-C quit".to_string()
+        } else {
+            format!("  filter: {filter}▏   {matched}/{} lines", st.lines.len())
+        };
+        f.render_widget(Paragraph::new(hint), bar);
+    }
 
     // Materialize the ring once, narrowed by the interactive filter — so the
     // whole dashboard (tail, counts, tallies) reflects what you typed.
@@ -721,7 +777,9 @@ fn render(
             let pipeline = crate::spec::resolve_pipeline(&s.pipeline, inputs);
             eval(&pipeline, &raw, elapsed)
         });
-        render_widget(f, rects[i], w, st, &raw, result);
+        // A live `flash` action tints this widget's border/accent.
+        let flash = flashes.get(w.path.trim_start_matches('.')).map(String::as_str);
+        render_widget(f, rects[i], w, st, &raw, result, flash);
     }
 }
 
@@ -1044,6 +1102,7 @@ fn render_widget(
     st: &StreamState,
     lines: &[String],
     result: Option<QueryResult>,
+    flash: Option<&str>,
 ) {
     // `-label`/`-title` overrides the widget's display name (the dot-path).
     let name = w
@@ -1060,8 +1119,10 @@ fn render_widget(
         st.rate()
     );
     // Per-widget accent (`-color NAME`): tints the border and each kind's accent
-    // element (gauge/bar fill, spark, chart line, table header). Default cyan.
-    let accent = hex_color(crate::spec::color_hex(w.opts.get("color").map(String::as_str)));
+    // element (gauge/bar fill, spark, chart line, table header). Default cyan. A
+    // live `flash` action temporarily overrides the color.
+    let color_name = flash.or_else(|| w.opts.get("color").map(String::as_str));
+    let accent = hex_color(crate::spec::color_hex(color_name));
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
@@ -1328,7 +1389,7 @@ mod tests {
         let st = StreamState::new();
         let data = vec!["one".to_string(), "two".to_string()];
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
-        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None)).unwrap();
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None)).unwrap();
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
     }
 

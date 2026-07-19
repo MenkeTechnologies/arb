@@ -478,22 +478,27 @@ the terminal or the browser) is complete:
 - **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
   [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
 - **Megafilter/map** — `out { … }` shapes the downstream passthrough; `input`
-  fields feed `apply`/`bind` live.
+  fields feed `apply`/`bind` live, and a numeric control-path predicate
+  (`where lat < .th`) filters by a control's live value.
 - **Web target** — `arb --serve` hosts the same spec as a live browser dashboard
   over a hand-rolled WebSocket (RFC 6455), with a `/data` polling fallback;
   `arb --html` emits a static snapshot.
-- **Reactions & events** — `expect /re/ set|quit` and `bind C-<key> set|quit`.
+- **Reactions & events** — `expect /re/ ACTION` / `bind C-<key> ACTION` with
+  actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk
+  named keys (`<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`); `.w configure -k v` retune.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution,
   and a local preset library (`--save`/`--install`/`--uninstall`/`--installed`).
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — LSP/DAP
-frontends, the full expect/bind action vocabulary
-(`alert`/`flash`/`beep`/`exec`) and block form, control-path predicates
-(`where(lat < .th)`), a networked package registry (`publish`/`search`/native
-ABI), and upstream-command sniffing for the shareable-dashboard ecosystem.
-Akka-style actors are **out of scope** — dataflow / pub-sub belong to `stryke`.
+frontends, dedicated `filter`/`facet`/`slider` control widgets and string/set
+control predicates (`match(.q)`, `level in .lv`), `expect` `timeout` reactions,
+module namespacing (`import X as Y`), a networked package registry
+(`publish`/`search`/native ABI), and upstream-command sniffing for the
+shareable-dashboard ecosystem. Akka-style actors and mouse/resize events are
+**out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
+bytes with no mouse event stream.
 
 Nothing is faked: unrecognized widget verbs are ignored so specs stay
 forward-compatible, and unbuilt features are absent, not stubbed.

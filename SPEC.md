@@ -227,22 +227,30 @@ out {
 
 ## 13. Expect — stream reactions
 
+A matching stream line fires an action (space-form args, per §2 — not paren calls):
+
 ```
-expect {
-    /5\d\d/      { alert("5xx"); flash .log red }
-    /panic|OOM/  { beep; exec("notify-send arb") }
-    timeout 5s   { alert("idle") }
-}
-# actions: alert(s) flash .w color beep exec(cmd) spawn{…} + any statement
+expect /5\d\d/ { alert "5xx"; flash .log red }   # regex → a block of actions
+expect /panic|OOM/ beep                          # …or a single action
+expect /down/ exec "notify-send arb"
+# actions: set .name V | quit | beep | alert MSG | flash .w COLOR | exec CMD
+#          | { … }  (a block runs several in order)
 ```
+
+⬜ Planned: the `expect { /re/ {…} … }` multi-clause block, `timeout Ns` idle
+reactions, and `spawn`.
 
 ## 14. Events — bind (Tk)
 
 ```
-bind <Key-q>       { quit }
-bind .ps <Enter>   { spawn("kubectl describe " + .ps.sel) }
-bind .ps <Click>   { … }     bind <Resize> { … }
+bind C-q quit                       # a control key → an action (any §13 action)
+bind <Enter> quit                   # Tk named keys: <Enter> <Esc> <Tab> <Key-x>
+bind C-r { alert reloaded; beep }   # block form
 ```
+
+⬜ Planned: `spawn` + a widget's selection (`.ps.sel`). ❌ Out of scope:
+`<Click>`/`<Resize>` — arb reads raw tty bytes and has no mouse/resize event
+stream.
 
 ## 15. Actors — Akka-style concurrency
 
@@ -364,7 +372,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics). *(module namespacing `import X as Y`: 🟡)*
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(numeric control-path predicates `where lat < .th` ✅; string/set predicates `match(.q)`, `level in .lv` ⬜ — need dedicated `filter`/`facet` widgets + a string/set expr layer)*
-4. 🟡 Expect reactions + events/bind — `expect /re/ set|quit`, `bind C-<key> set|quit` ship; full action vocab (`alert`/`flash`/`beep`/`exec`) + block form: ⬜.
+4. ✅ Expect reactions + events/bind — `expect /re/ ACTION`, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`. *(`timeout`, multi-clause `expect { }`, `spawn`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard; `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) ships; networked registry (`publish`/`search`/native ABI) + ecosystem: ⬜.
