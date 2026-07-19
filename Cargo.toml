@@ -48,6 +48,9 @@ libc = "0.2"
 toml = "0.8"
 ansi-to-tui = "7"
 rayon = "1.12.0"
+# Package-dep version-constraint checking (arb install). Already in the tree
+# transitively; a dtolnay zero-runtime-dep crate, same durability tier as serde.
+semver = "1"
 
 [profile.release]
 lto = true

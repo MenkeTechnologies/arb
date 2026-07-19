@@ -160,6 +160,13 @@ fn validate_package(dir: &Path, name: &str) -> Result<Manifest, String> {
     let manifest_src = std::fs::read_to_string(dir.join("arb.toml"))
         .map_err(|_| format!("package `{name}`: missing arb.toml"))?;
     let manifest = parse_manifest(&manifest_src)?;
+    // Native/cdylib packages ([exports.native]) aren't loadable yet — reject them
+    // rather than install with a silently-inert native half.
+    if !manifest.native_widgets.is_empty() || !manifest.native_formats.is_empty() {
+        return Err(format!(
+            "package `{name}` declares native exports ([exports.native]) — not yet supported (script packages only)"
+        ));
+    }
     let entry = read_pkg_module(dir.parent().unwrap_or(dir), name)
         .ok_or_else(|| format!("package `{name}`: no entry module (NAME.arb / main.arb / [exports])"))?;
     let cmds = crate::parser::parse(&entry)?;
@@ -209,8 +216,31 @@ fn install_rec(
     let src = std::fs::read_to_string(pkg_dir.join(name).join("arb.toml"))
         .map_err(|_| format!("`{name}`: missing arb.toml after install"))?;
     let manifest = parse_manifest(&src)?;
-    for dep in manifest.deps.keys() {
+    for (dep, constraint) in &manifest.deps {
+        check_constraint(name, dep, constraint, idx)?;
         install_rec(dep, idx, pkg_dir, visited, installed)?;
+    }
+    Ok(())
+}
+
+/// Verify the index version of `dep` satisfies `requirer`'s `[deps]` constraint.
+/// An unknown dep is left to `install_rec` (which errors on the missing entry);
+/// an unparseable index version we don't own is a warning, not a hard failure.
+fn check_constraint(requirer: &str, dep: &str, constraint: &str, idx: &Index) -> Result<(), String> {
+    let Some(entry) = idx.get(dep) else { return Ok(()) };
+    let req = semver::VersionReq::parse(constraint)
+        .map_err(|e| format!("package `{requirer}`: bad version constraint `{constraint}` for `{dep}`: {e}"))?;
+    let ver = match semver::Version::parse(&entry.version) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("arb: registry version `{}` for `{dep}` is not semver — skipping check", entry.version);
+            return Ok(());
+        }
+    };
+    if !req.matches(&ver) {
+        return Err(format!(
+            "package `{requirer}` requires `{dep}` {constraint} but the registry has `{dep}` {ver}"
+        ));
     }
     Ok(())
 }

@@ -198,6 +198,39 @@ fn install_with_index_resolves_transitive_deps() {
 }
 
 #[test]
+fn install_with_index_rejects_incompatible_dep_version() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("deps-semver");
+    // A requires arb-b ^2, but the index only has arb-b 0.1.0 -> reject + rollback.
+    let url_a = make_pkg_repo(
+        &base.join("a"),
+        "arb-a",
+        "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"2\"\n",
+        "gauge .g",
+    );
+    let url_b = make_pkg_repo(&base.join("b"), "arb-b", "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n", "tail .b");
+    let mut idx = Index::new();
+    idx.insert("arb-a".into(), entry(&url_a));
+    idx.insert("arb-b".into(), entry(&url_b)); // version 0.1.0
+    let pkgdir = base.join("pkgs");
+    let e = install_with_index("arb-a", &idx, &pkgdir).unwrap_err();
+    assert!(e.contains("requires") && e.contains("arb-b") && e.contains("0.1.0"), "err: {e}");
+    assert!(!pkgdir.join("arb-a").exists(), "rejected install must roll back");
+    // A compatible constraint (^0.1) installs fine.
+    let url_a2 = make_pkg_repo(
+        &base.join("a2"),
+        "arb-a",
+        "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"0.1\"\n",
+        "gauge .g",
+    );
+    idx.insert("arb-a".into(), entry(&url_a2));
+    assert!(install_with_index("arb-a", &idx, &pkgdir).is_ok());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
 fn install_with_index_missing_dep_errors_and_rolls_back() {
     if !have_git() {
         return;
@@ -216,6 +249,27 @@ fn install_with_index_missing_dep_errors_and_rolls_back() {
     assert!(e.contains("ghost") && e.contains("not in the registry"), "err: {e}");
     // Failed-dep run is rolled back — no partial tree.
     assert!(!pkgdir.join("arb-c").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn install_rejects_native_exports() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("native");
+    let url = make_pkg_repo(
+        &base.join("n"),
+        "arb-native",
+        "[package]\nname = \"arb-native\"\nversion = \"0.1.0\"\n\n[exports.native]\nwidgets = [\"flamegraph\"]\n",
+        "gauge .g",
+    );
+    let mut idx = Index::new();
+    idx.insert("arb-native".into(), entry(&url));
+    let pkgdir = base.join("pkgs");
+    let e = install_with_index("arb-native", &idx, &pkgdir).unwrap_err();
+    assert!(e.contains("native exports") && e.contains("not yet supported"), "err: {e}");
+    assert!(!pkgdir.join("arb-native").exists()); // rolled back
     let _ = std::fs::remove_dir_all(&base);
 }
 
