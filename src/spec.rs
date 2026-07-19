@@ -1198,6 +1198,32 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::Spec
         // source position, not the outer `source`/`out` command (the IIFE lets the
         // arms' `return Err` unwind to the per-command span attach below).
         let step = (|| -> Result<(), crate::err::SpecError> {
+        // jq front-end: a body command whose first token is a jq literal (starts
+        // with `.`, or a `select(…)`/`map(…)` stage) is translated to arb ops.
+        // Inside a `source` body a leading `.` is unambiguous — widget-path decls
+        // never appear here. The whole command text (verb + args) is reconstructed
+        // so the jq `|` pipe, which is not an arb separator, can be split by `jq`.
+        if c.name.starts_with('.')
+            || c.name.starts_with("select(")
+            || c.name.starts_with("map(")
+        {
+            let mut parts = vec![c.name.clone()];
+            parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
+            let jq_ops = crate::jq::translate(&parts.join(" "))?;
+            ops.extend(jq_ops);
+            return Ok(());
+        }
+        // xpath front-end: a body command whose first token is an xpath literal
+        // (`/…`, `//…`, or `@…`) translates to arb's Find/Attr/Text ops. Disjoint
+        // from the jq test above (`.`/`select(`/`map(`) and from native verbs
+        // (alnum), so the three coexist in one body unambiguously.
+        if c.name.starts_with('/') || c.name.starts_with('@') {
+            let mut parts = vec![c.name.clone()];
+            parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
+            let xp_ops = crate::xpath::translate(&parts.join(" "))?;
+            ops.extend(xp_ops);
+            return Ok(());
+        }
         match c.name.as_str() {
             "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
             "in.csv" => {

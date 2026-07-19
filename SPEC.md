@@ -186,6 +186,26 @@ index N  slice A B  positional
 | `//a/@href` | `find a; attr href` |
 | `div.card h2` | `sel {div.card h2}` |
 
+**Literal front-ends.** The right column is arb's native form, but inside a
+`source { … }` / `out { … }` body you may write the **jq** or **xpath** literal
+directly — it compiles to the same ops:
+
+```
+out { in.json; .users[] | select(.age >= 18) | .name }   # jq: path, iterate, filter
+out { in.json; map(.price); sum }                        # jq map(), then a native verb
+out { in.html; //a/@href }                               # xpath: descendant + attribute
+out { in.html; //div[@class]//span/text() }              # xpath: predicate + child + text()
+```
+
+Supported jq: identity `.`, key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index
+`.[N]`, pipe `|`, `select(…)`, `map(…)`, and the builtins arb already has
+(`keys`/`values`/`length`/`add`/`has`/`to_entries`). Supported xpath: descendant
+`//tag`, child `/a/b`, chain `//a//b`, the `[@attr]` existence predicate, and the
+`/@attr` / `/text()` accessors, plus a standalone `@attr` step. **Anything
+outside the documented subset is a hard error** (`jq: …` / `xpath: …`) anchored to
+the offending verb — never silently reinterpreted (no reduce, no arithmetic
+beyond compare, no positional/value predicates, no axes, no union).
+
 ## 9. Widgets ("Tk" register)
 
 ```

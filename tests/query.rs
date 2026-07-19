@@ -1394,3 +1394,37 @@ fn index_keeps_only_the_nth_line() {
     // Out-of-range yields no lines.
     assert_eq!(f("index 9", &["a", "b"]), QueryResult::Lines(Vec::new()));
 }
+
+#[test]
+fn jq_and_xpath_literals_compile_through_the_body() {
+    // jq path literal in a real source body.
+    let jq = pipeline("tail .x\nsource .x { in.json; .foo.bar }");
+    assert_eq!(
+        eval(&jq, &lines(&["{\"foo\":{\"bar\":7}}"]), 1.0),
+        QueryResult::Lines(lines(&["7"]))
+    );
+    // xpath literal (path + attr accessor) in a real source body.
+    let xp = pipeline("tail .x\nsource .x { in.html; //a/@href }");
+    assert_eq!(
+        eval(&xp, &lines(&["<div><a href=\"x\">1</a><a href=\"y\">2</a></div>"]), 1.0),
+        QueryResult::Lines(lines(&["x", "y"]))
+    );
+}
+
+#[test]
+fn jq_xpath_and_native_verbs_coexist_in_one_body() {
+    // A native verb (`each`) and a jq stage (`select`) in the same body.
+    let ops = pipeline("tail .x\nsource .x { in.json; each; select(.n > 1) }");
+    assert_eq!(
+        eval(&ops, &lines(&["[{\"n\":1},{\"n\":2},{\"n\":3}]"]), 1.0),
+        QueryResult::Lines(lines(&["{\"n\":2}", "{\"n\":3}"]))
+    );
+}
+
+#[test]
+fn unsupported_xpath_errors_at_build_not_silently() {
+    // A positional predicate is out of subset — it must fail the build, never
+    // silently mis-handle (the `|`-swallow bug class).
+    assert!(build(&parse("tail .x\nsource .x { in.html; //a[1] }").unwrap()).is_err());
+    assert!(build(&parse("tail .x\nsource .x { in.html; //a[@c='d'] }").unwrap()).is_err());
+}

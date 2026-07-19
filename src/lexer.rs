@@ -91,6 +91,20 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
                 toks.push((Tok::Block(inner), open));
                 at_cmd_start = false;
             }
+            '/' if at_cmd_start => {
+                // An xpath location path at command position (`/a/b`, `//tag`,
+                // `//a/@href`). Regex literals only ever appear as ARGS, so a
+                // leading `/` here is never a regex — lex the whole path as one
+                // atom (up to the normal word delimiters) so `xpath::translate`
+                // receives an intact token. A stray space ends it, so an
+                // out-of-subset spaced predicate splits and errors downstream.
+                let start = i;
+                while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {
+                    i += 1;
+                }
+                toks.push((Tok::Word(cs[start..i].iter().collect()), start));
+                at_cmd_start = false;
+            }
             '/' => {
                 // A regex literal `/.../` — reads to the closing unescaped `/`,
                 // spanning quotes and spaces (unlike a bare word), so patterns

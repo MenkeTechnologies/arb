@@ -388,15 +388,24 @@ Expect reactions, actors, modules, and the package manager — is in
 ## [0x04] QUERY ENGINE
 
 A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
-`css`/`yq` superset.
+`css`/`yq` superset. You can write the arb-native verbs, or paste the **jq** /
+**xpath** literal directly (it compiles to the same ops):
 
-| jq / xpath / css | arb |
+```
+out { in.json; .users[] | select(.age >= 18) | .name }   # jq literal
+out { in.html; //a/@href }                               # xpath literal
+```
+
+| jq / xpath / css | arb-native |
 | --- | --- |
 | `.users[].name` | `field users; each; field name` |
 | `.items[] \| select(.price>10)` | `field items; each; where(price>10)` |
 | `{name, age}` (projection) | `pick name age` |
 | `//a/@href` | `find a; attr href` |
 | `div.card h2` | `sel {div.card h2}` |
+
+The jq/xpath literal front-ends cover the common path/filter subset; anything
+outside it is a **hard error** (`jq: …` / `xpath: …`), never silently guessed.
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML
