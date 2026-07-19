@@ -438,7 +438,12 @@ impl Parser {
     /// Prefix `not`, binding tighter than `and`/`or` but looser than comparison.
     fn not_expr(&mut self) -> Result<Expr, String> {
         if self.match_kw("not") {
-            return Ok(Expr::Not(Box::new(self.not_expr()?)));
+            // `not not … 1` recurses here, never through `primary`, so guard it
+            // too or a long chain overflows the stack (rc=134).
+            self.deepen()?;
+            let inner = self.not_expr();
+            self.depth -= 1;
+            return Ok(Expr::Not(Box::new(inner?)));
         }
         self.comparison()
     }
@@ -589,20 +594,31 @@ impl Parser {
     fn unary(&mut self) -> Result<Expr, String> {
         if self.peek() == Some('-') {
             self.i += 1;
-            return Ok(Expr::Neg(Box::new(self.unary()?)));
+            // `- - … 1` recurses here, never through `primary`; guard it too.
+            self.deepen()?;
+            let inner = self.unary();
+            self.depth -= 1;
+            return Ok(Expr::Neg(Box::new(inner?)));
         }
         self.primary()
     }
 
-    /// Depth-guarded wrapper: a `(`-nested expression recurses through
-    /// `primary → additive → … → primary`, so cap the recursion here to fail
-    /// closed rather than overflow the stack on adversarial input.
-    fn primary(&mut self) -> Result<Expr, String> {
+    /// Enter one recursion level, failing closed if it exceeds `MAX_EXPR_DEPTH`
+    /// (decrementing itself on that error). Every self-recursive parse point —
+    /// `primary` (paren nesting), `not_expr`, `unary` — calls this then does
+    /// `self.depth -= 1` after its recursive call, so adversarial input errors
+    /// instead of overflowing the stack.
+    fn deepen(&mut self) -> Result<(), String> {
         self.depth += 1;
         if self.depth > MAX_EXPR_DEPTH {
             self.depth -= 1;
             return Err("calc: expression too deeply nested".into());
         }
+        Ok(())
+    }
+
+    fn primary(&mut self) -> Result<Expr, String> {
+        self.deepen()?;
         let r = self.primary_inner();
         self.depth -= 1;
         r

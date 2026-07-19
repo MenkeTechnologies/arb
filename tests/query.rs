@@ -1653,3 +1653,72 @@ fn bins_bucket_count_is_bounded() {
         other => panic!("got {other:?}"),
     }
 }
+
+// Round-5 audit regression: input-decoder correctness (each vs a reference tool).
+#[test]
+fn logfmt_field_keeps_quoted_value_with_spaces() {
+    let ops = pipeline("tail .x\nsource .x { in.logfmt; field msg }");
+    assert_eq!(
+        eval(
+            &ops,
+            &lines(&[r#"ts=2026 msg="hello world" level=info"#]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["hello world"]))
+    );
+}
+
+#[test]
+fn yaml_multidoc_splits_on_marker_with_comment_or_trailing_space() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; field kind }");
+    // `--- # comment` and `--- ` are valid YAML doc-start markers.
+    for sep in ["---", "--- ", "--- # doc2"] {
+        let src = format!("kind: A\n{sep}\nkind: B");
+        let ls: Vec<String> = src.lines().map(String::from).collect();
+        assert_eq!(
+            eval(&ops, &ls, 1.0),
+            QueryResult::Lines(lines(&["A", "B"])),
+            "separator {sep:?} must split into 2 docs"
+        );
+    }
+}
+
+#[test]
+fn toml_datetime_is_a_clean_scalar_not_a_private_marker() {
+    let ops = pipeline("tail .x\nsource .x { in.toml; field created }");
+    let ls = lines(&["created = 1979-05-27T07:32:00Z"]);
+    match eval(&ops, &ls, 1.0) {
+        QueryResult::Lines(l) => {
+            assert_eq!(l, vec!["1979-05-27T07:32:00Z"]);
+            assert!(!l[0].contains("__toml_private"), "marker leaked: {:?}", l);
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn xpath_text_is_direct_children_not_descendant_concat() {
+    // `//a/text()` selects a's direct text nodes; the <b>X</b> child's text is
+    // excluded (real xpath), so `<a>1<b>X</b>2</a>` -> "12", not "1X2".
+    let ops = pipeline("tail .x\nsource .x { in.xml; //a/text() }");
+    assert_eq!(
+        eval(&ops, &lines(&["<r><a>1<b>X</b>2</a></r>"]), 1.0),
+        QueryResult::Lines(lines(&["12"]))
+    );
+}
+
+// Round-5 audit regression: an RFC-4180 quoted field containing a newline must
+// stay one record — the decoder reassembles physical lines whose quotes are
+// unbalanced, instead of tearing the field into corrupt phantom rows.
+#[test]
+fn csv_multiline_quoted_field_is_one_record() {
+    let ops = pipeline("tail .x\nsource .x { in.csv }");
+    let ls = lines(&["id,note", "1,\"hello", "world\"", "2,\"ok\""]);
+    assert_eq!(
+        eval(&ops, &ls, 1.0),
+        QueryResult::Lines(lines(&[
+            "{\"id\":\"1\",\"note\":\"hello\\nworld\"}",
+            "{\"id\":\"2\",\"note\":\"ok\"}",
+        ]))
+    );
+}

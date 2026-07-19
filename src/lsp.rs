@@ -423,7 +423,7 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("in.xml", "Input", "Begin the pipeline reading stdin as XML (marker, same as in).", "source .s { in.xml; find item; text }"),
     ("in.logfmt", "Input", "Begin the pipeline reading stdin as logfmt (marker, same as in).", "source .s { in.logfmt; field level; tally }"),
     ("in.csv", "Input", "Begin the pipeline treating stdin as CSV: the header row keys each data row into a JSON object (field NAME works).", "source .rows { in.csv; field name; tally }"),
-    ("in.tsv", "Input", "Begin the pipeline treating stdin as TSV: a tab-separated header + rows into JSON objects.", "source .rows { in.tsv; field 2; tally }"),
+    ("in.tsv", "Input", "Begin the pipeline treating stdin as TSV: a tab-separated header keys each data row into a JSON object (field NAME works).", "source .rows { in.tsv; field name; tally }"),
     ("in.yaml", "Input", "Begin the pipeline parsing stdin as YAML (--- multi-doc), emitting each document as a JSON line.", "source .s { in.yaml; field status; tally }"),
     ("in.yml", "Input", "Alias of in.yaml: parse stdin as YAML into JSON lines.", "source .s { in.yml; field status; tally }"),
     ("in.toml", "Input", "Begin the pipeline parsing stdin as one TOML document, emitted as a JSON object line.", "source .cfg { in.toml; field version }"),

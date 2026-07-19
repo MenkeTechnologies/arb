@@ -554,7 +554,15 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in cur.iter_mut() {
                     let frag = Html::parse_fragment(l);
                     if let Some(e) = first_element(&frag) {
-                        *l = e.text().collect::<String>().trim().to_string();
+                        // xpath `text()` is the element's DIRECT child text nodes,
+                        // not all descendant text — `e.text()` would also fold in a
+                        // child element's text (e.g. `<a>1<b>X</b>2</a>` -> `1X2`).
+                        *l = e
+                            .children()
+                            .filter_map(|c| c.value().as_text().map(|t| t.to_string()))
+                            .collect::<String>()
+                            .trim()
+                            .to_string();
                     }
                 }
             }
@@ -1411,24 +1419,74 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
     }
 }
 
-/// Parse the stream as a YAML document (or `---`-separated multi-document) and
-/// emit each document as a compact JSON line. Unparseable documents are dropped.
+/// Parse the stream as a YAML document (or multi-document) and emit each document
+/// as a compact JSON line. Uses serde_yaml's document deserializer so every valid
+/// YAML `---` document-start marker splits — including `--- # comment` and a
+/// trailing-space `--- ` (a naive `split("\n---\n")` misses those and then feeds
+/// the whole multi-doc stream to a single-doc parse that errors, dropping it all).
 fn yaml_to_json(lines: &[String]) -> Vec<String> {
+    use serde::Deserialize;
     let doc = lines.join("\n");
-    doc.split("\n---\n")
-        .filter(|c| !c.trim().is_empty())
-        .filter_map(|c| serde_yaml::from_str::<Value>(c).ok())
+    serde_yaml::Deserializer::from_str(&doc)
+        .filter_map(|de| Value::deserialize(de).ok())
+        .filter(|v| !v.is_null())
         .map(|v| v.to_string())
         .collect()
 }
 
 /// Parse the stream as one TOML document and emit it as a JSON object line
-/// (empty if it does not parse).
+/// (empty if it does not parse). Goes through `toml::Value` and converts
+/// explicitly so a TOML datetime becomes a clean scalar string — deserializing
+/// straight into `serde_json::Value` instead leaks the toml crate's internal
+/// `{"$__toml_private_datetime": …}` tagging map into the output.
 fn toml_to_json(lines: &[String]) -> Vec<String> {
-    match toml::from_str::<Value>(&lines.join("\n")) {
-        Ok(v) => vec![v.to_string()],
+    match toml::from_str::<toml::Value>(&lines.join("\n")) {
+        Ok(v) => vec![toml_value_to_json(&v).to_string()],
         Err(_) => Vec::new(),
     }
+}
+
+/// Convert a `toml::Value` to a `serde_json::Value`, rendering datetimes as their
+/// string form (RFC-3339 / date / time) rather than a tagged object.
+fn toml_value_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::Number((*i).into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(dt) => Value::String(dt.to_string()),
+        toml::Value::Array(a) => Value::Array(a.iter().map(toml_value_to_json).collect()),
+        toml::Value::Table(t) => Value::Object(
+            t.iter()
+                .map(|(k, v)| (k.clone(), toml_value_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Reassemble physical lines into logical CSV/TSV records. A quoted field may
+/// contain newlines (RFC 4180), so a line whose double-quotes are unbalanced is
+/// still inside a quoted field and continues on the next line until they balance
+/// — otherwise a multi-line field is torn into corrupt phantom rows. A doubled
+/// `""` (an escaped quote) contributes two quotes, so parity tracks correctly.
+fn join_quoted_records(lines: &[String]) -> Vec<String> {
+    let mut records = Vec::new();
+    let mut buf = String::new();
+    for line in lines {
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        buf.push_str(line);
+        if buf.matches('"').count().is_multiple_of(2) {
+            records.push(std::mem::take(&mut buf));
+        }
+    }
+    if !buf.is_empty() {
+        records.push(buf); // trailing unbalanced record: emit what we have
+    }
+    records
 }
 
 /// Parse a header + data rows of a delimited stream into JSON object strings
@@ -1437,8 +1495,12 @@ fn to_json_records(lines: &[String], delim: char) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();
     }
-    let header = split_delim(&lines[0], delim);
-    lines[1..]
+    let records = join_quoted_records(lines);
+    let Some(header_row) = records.first() else {
+        return Vec::new();
+    };
+    let header = split_delim(header_row, delim);
+    records[1..]
         .iter()
         .map(|row| {
             let vals = split_delim(row, delim);
@@ -1502,13 +1564,49 @@ fn split_delim(line: &str, delim: char) -> Vec<String> {
     fields
 }
 
-/// Extract a `key=value` (logfmt) field from a line; strips surrounding quotes.
+/// Extract a `key=value` (logfmt) field. A value may be double-quoted and then
+/// contain spaces (`msg="hello world"`), so this scans key=value pairs honoring
+/// quotes rather than splitting on whitespace first (which would truncate a
+/// quoted value at its first space).
 fn logfmt_field(line: &str, key: &str) -> Option<String> {
-    line.split_whitespace().find_map(|tok| {
-        tok.split_once('=')
-            .filter(|(k, _)| *k == key)
-            .map(|(_, v)| v.trim_matches('"').to_string())
-    })
+    let cs: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        while i < cs.len() && cs[i].is_whitespace() {
+            i += 1;
+        }
+        let kstart = i;
+        while i < cs.len() && cs[i] != '=' && !cs[i].is_whitespace() {
+            i += 1;
+        }
+        let k: String = cs[kstart..i].iter().collect();
+        if i < cs.len() && cs[i] == '=' {
+            i += 1; // consume '='
+            let val = if cs.get(i) == Some(&'"') {
+                i += 1;
+                let mut v = String::new();
+                while i < cs.len() && cs[i] != '"' {
+                    if cs[i] == '\\' && i + 1 < cs.len() {
+                        i += 1; // keep the escaped char verbatim
+                    }
+                    v.push(cs[i]);
+                    i += 1;
+                }
+                i += 1; // closing quote (or past end)
+                v
+            } else {
+                let vstart = i;
+                while i < cs.len() && !cs[i].is_whitespace() {
+                    i += 1;
+                }
+                cs[vstart..i].iter().collect()
+            };
+            if k == key {
+                return Some(val);
+            }
+        }
+    }
+    None
 }
 
 /// The 1-based whitespace column `n` of `line` ("" if absent; 0 = whole line).

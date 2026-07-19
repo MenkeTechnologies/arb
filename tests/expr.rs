@@ -160,3 +160,21 @@ fn deep_nesting_errors_not_stack_overflow() {
     // The guard must not reject ordinary, modestly-nested expressions.
     assert_eq!(eval(&parse("((((1 + 2))))").unwrap(), 0.0).unwrap(), 3.0);
 }
+
+// Round-5 audit regression: the depth guard lived only in `primary()`, but
+// `not not … 1` recurses through `not_expr` and `- - … 1` through `unary`,
+// bypassing it — a long chain overflowed the stack (rc=134). All three
+// self-recursive points must now fail closed.
+#[test]
+fn deep_unary_and_not_chains_error_not_overflow() {
+    let nots = format!("{}1", "not ".repeat(5000));
+    assert!(parse(&nots)
+        .expect_err("deep not-chain must be rejected")
+        .contains("deeply nested"));
+    let negs = format!("{}1", "-".repeat(5000));
+    assert!(parse(&negs)
+        .expect_err("deep neg-chain must be rejected")
+        .contains("deeply nested"));
+    // Shallow unary/not still parse + eval.
+    assert_eq!(eval(&parse("- -x").unwrap(), 5.0).unwrap(), 5.0);
+}
