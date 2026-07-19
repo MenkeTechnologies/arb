@@ -1,0 +1,67 @@
+#compdef arb
+
+# Zsh completion for arb — visualize and modify Unix pipelines (pipe a stream in,
+# arb spawns a dynamic TUI). Sibling of pythonrs/rubylang/awkrs on fusevm.
+
+# Preset names for -p/--preset/--save/--uninstall: bundled stdlib + ~/.arb/lib,
+# as printed by `arb --list` ("<name> <desc>").
+_arb_presets() {
+  local -a names
+  names=(${(f)"$(arb --list 2>/dev/null | awk '{print $1}')"})
+  _describe -t presets 'preset' names
+}
+
+_arb() {
+  local curcontext="$curcontext" ret=1
+
+  # Registry verbs (SPEC §18) handled before clap: only when they are the FIRST
+  # word do they act as subcommands.
+  if (( CURRENT == 2 )); then
+    local -a verbs=(
+      'install:Install a spec from the registry by name'
+      'add:Alias for install'
+      'uninstall:Remove an installed registry spec by name'
+      'search:Search the registry index for a spec'
+      'update:Refresh the local registry index'
+      'publish:Publish the spec in DIR (default .) to the registry'
+    )
+    _describe -t verbs 'registry verb' verbs
+  fi
+
+  _arguments -s -S \
+    '(-e --eval)'{-e+,--eval=}'[Inline spec source]:spec source:' \
+    '(-p --preset)'{-p+,--preset=}'[Run a preset / stdlib module by name (== import NAME)]:preset:_arb_presets' \
+    '(-l --list)'{-l,--list}'[List available presets (stdlib + ~/.arb/lib) and exit]' \
+    '--save=[Save a spec (FILE or -e SRC) as a named user preset, then exit]:preset name:' \
+    '--install=[Install a .arb spec into the preset library, then exit]:spec file:_files -g "*.arb"' \
+    '--as=[Name to install the spec under (default: file stem)]:name:' \
+    '--uninstall=[Remove a named preset from the library, then exit]:preset:_arb_presets' \
+    '--installed[List installed user-library presets, then exit]' \
+    '(-r --repl)'{-r,--repl}'[Interactive REPL — author and test specs against a sample buffer]' \
+    '--html[Emit a static HTML dashboard from the spec to stdout, then exit]' \
+    '--check[Validate the spec (parse + build) and exit 0/1, no stdin]' \
+    '--test[Run the spec'\''s test { } blocks (TAP output), exit 0/1]' \
+    '--serve[Serve the spec as a live browser dashboard on 127.0.0.1]' \
+    '--port=[Port for --serve (0 = pick a free port)]:port:' \
+    '--lsp[Run the Language Server over stdio (diagnostics/completion/hover)]' \
+    '--dap[Run the Debug Adapter over stdio (step the stream, regex breakpoints)]' \
+    '--json[With an out { } pipeline, emit JSON instead of plain lines]' \
+    '--fzf[fzf mode: filter + select one line, printed to stdout on Enter]' \
+    '--run=[Run '\''PROD | _ | CONS'\'': arb spawns them, stderr -> pane]:pipeline:' \
+    '--preview=[fzf preview: run CMD on the cursor line ({}), output in a pane]:command:' \
+    '--prompt=[fzf prompt string (default '\''> '\'')]:prompt:' \
+    '--header=[fzf header line shown above the list]:header:' \
+    '--exact[fzf: exact substring match (not fuzzy)]' \
+    '--no-sort[fzf: keep input order (no score sort)]' \
+    '--query=[fzf: initial query]:query:' \
+    '(-m --multi)'{-m,--multi}'[fzf: multi-select (Tab marks)]' \
+    '--height=[fzf height: inline in N rows or N% (not full-screen)]:height:' \
+    '(-h --help)'{-h,--help}'[Show help]' \
+    '(-V --version)'{-V,--version}'[Show version]' \
+    '*::spec file or preview -- CMD:_files -g "*.arb"' \
+    && ret=0
+
+  return ret
+}
+
+_arb "$@"

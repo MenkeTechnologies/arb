@@ -1,0 +1,274 @@
+.TH ARB 1 "2026" "arb 0.0.5" "User Commands"
+.SH NAME
+arb \- visualize and modify Unix pipelines: pipe a stream in, arb spawns a dynamic TUI
+.SH SYNOPSIS
+.B arb
+[\fIOPTIONS\fR] [\fIFILE\fR]
+.br
+.B arb
+[\fIOPTIONS\fR] \fB\-e\fR \fISPEC\fR
+.br
+.B arb
+[\fIOPTIONS\fR] \fB\-p\fR \fIPRESET\fR
+.br
+.B arb
+\fIVERB\fR [\fIARGS\fR...]
+.SH DESCRIPTION
+.B arb
+reads a stream on standard input and renders a dynamic TUI built from a
+declarative
+.I .arb
+spec (widgets, \fBsource\fR query pipelines, binds). With no spec it synthesizes a
+full\-screen tail of stdin. With no controlling terminal reachable (piped onward /
+CI) it prints the parsed spec and each source pipeline's evaluated result instead
+of a TUI \[em] the correct headless behavior.
+.PP
+The declarative core (widgets, \fBsource\fR pipelines, \fBout { \[u2026] }\fR
+reshapes, \fBspawn\fR / poll sources, form controls, and key/mouse binds) executes
+on
+.B fusevm
+\[em] expressions lower to a fusevm chunk and run on the bytecode VM with a
+three\-tier Cranelift JIT for hot chunks, the same engine as the sibling frontends
+(zshrs / stryke / rubylang / awkrs).
+.PP
+Parsed specs are transparently cached in
+.I ~/.arb/scripts.rkyv
+(rkyv shard of bincode\-encoded ASTs, keyed by a hash of the source plus a schema
+version); a cache hit skips lex and parse entirely.
+.PP
+.B arb
+also drops in for
+.BR fzf :
+.B \-\-fzf
+turns the stream into an interactive select list and prints the chosen line(s) to
+stdout on Enter. Cosmetic
+.B fzf
+flags are tolerated so
+.B arb \-\-fzf
+can replace the
+.B fzf
+binary.
+.SH OPTIONS
+.SS Spec source
+.TP
+.BR \-e ", " \-\-eval " \fISPEC\fR"
+Inline spec source, e.g.
+.BR "\-e 'gauge .g \-max 100; source .g { in; count }'" .
+.TP
+.BR \-p ", " \-\-preset " \fINAME\fR"
+Run a bundled stdlib module or user preset by name (equivalent to
+.BR "import NAME" ).
+.TP
+.I FILE
+A dashboard spec file
+.RB ( .arb ).
+A positional argument that is itself a pipeline containing the
+.B _
+stage marker
+.RB ( "find / | _ | grep x" )
+is run as a pipeline instead of loaded as a spec.
+.SS Preset library
+.TP
+.BR \-l ", " \-\-list
+List available presets (bundled stdlib +
+.IR ~/.arb/lib )
+and exit.
+.TP
+.BI \-\-save \ NAME
+Save a spec (the
+.I FILE
+argument or
+.BR "\-e SRC" )
+as a named user preset in
+.IR ~/.arb/lib ,
+then exit.
+.TP
+.BI \-\-install \ FILE
+Install a shared
+.B .arb
+spec into the preset library, then exit.
+.TP
+.BI \-\-as \ NAME
+Name to install the spec under (defaults to the file stem).
+.TP
+.BI \-\-uninstall \ NAME
+Remove a named preset from the library, then exit.
+.TP
+.B \-\-installed
+List only installed (user\-library) presets, then exit.
+.SS Modes
+.TP
+.BR \-r ", " \-\-repl
+Interactive REPL \[em] author and test specs against a sample buffer. Also the
+default when
+.B arb
+is run on an interactive terminal with no spec and nothing piped in.
+.TP
+.B \-\-html
+Emit a static HTML dashboard from the spec to stdout, then exit.
+.TP
+.B \-\-check
+Validate the spec (parse + build) and exit 0/1 without reading stdin.
+.TP
+.B \-\-test
+Run the spec's in\-language
+.B test { \[u2026] }
+blocks headlessly (TAP output) and exit 0/1.
+.TP
+.B \-\-serve
+Serve the spec as a live browser dashboard on
+.BR 127.0.0.1 ,
+polling the stream over HTTP.
+.TP
+.BI \-\-port \ N
+Port for
+.BR \-\-serve .
+.B 0
+picks an OS\-assigned free port, printed on start. Default
+.BR 8787 .
+.TP
+.B \-\-lsp
+Speak the Language Server Protocol over stdio (diagnostics, completion, hover) for
+.B .arb
+specs.
+.TP
+.B \-\-dap
+Speak the Debug Adapter Protocol over stdio: step the stream, set regex
+breakpoints, inspect the paused line / stats / controls.
+.TP
+.B \-\-json
+With an
+.B out { \[u2026] }
+pipeline, emit results as JSON (array / number / object) instead of plain lines.
+.SS fzf select mode
+.TP
+.B \-\-fzf
+Interactively filter the stream and pick one line; the chosen line is printed to
+stdout on Enter.
+.TP
+.BI \-\-run \ PIPELINE
+Run a pipeline with
+.B arb
+as the interactive stage, e.g.
+.BR "\-\-run 'find / | _ | grep foo'" .
+.B arb
+spawns the surrounding commands (each via
+.BR "sh \-c" )
+and owns their fds; the producer's stdout feeds the stream, its stderr a pane.
+.TP
+.BI \-\-preview \ CMD
+Run
+.I CMD
+for the line under the cursor
+.RB ( {}
+is the current line, shell\-escaped) and show its output in a right pane.
+.TP
+.BI \-\-prompt \ STR
+fzf prompt string (default
+.BR "> " ).
+.TP
+.BI \-\-header \ STR
+fzf header line shown above the list.
+.TP
+.B \-\-exact
+Exact substring match instead of fuzzy. (Under
+.BR \-\-fzf ,
+.B \-e
+is rewritten to this;
+.BR arb 's
+own
+.B \-e
+is
+.BR \-\-eval .)
+.TP
+.B \-\-no\-sort
+Keep input order (no score sort).
+.TP
+.BI \-\-query \ STR
+Start with this query in the filter.
+.TP
+.BR \-m ", " \-\-multi
+Enable multi\-select (accepted for compat;
+.B arb
+always allows Tab\-marking).
+.TP
+.BI \-\-height \ N|N%
+Render inline in
+.I N
+rows (or
+.IR N% )
+at the bottom instead of full\-screen, keeping the scrollback.
+.TP
+.BI \-\- \ CMD \ \[u2026]
+Trailing preview command: re\-run over
+.BR arb 's
+current post\-filter output whenever the filter changes; its output shows in a pane,
+always in sync with the filter, e.g.
+.BR "find / | arb \-\- grep error" .
+.TP
+.BR \-h ", " \-\-help
+Show help and exit.
+.TP
+.BR \-V ", " \-\-version
+Show version and exit.
+.SH REGISTRY VERBS
+When the first argument is a registry verb it is handled before option parsing:
+.TP
+.BR "install \fINAME\fR, add \fINAME\fR"
+Install a spec from the registry into the preset library.
+.TP
+.BI "uninstall " NAME
+Remove an installed registry spec.
+.TP
+.BI "search " QUERY
+Search the local registry index (run
+.B arb update
+first).
+.TP
+.B update
+Refresh the local registry index.
+.TP
+.BR "publish " [\fIDIR\fR]
+Publish the spec in
+.I DIR
+(default the current directory) to the registry.
+.SH ENVIRONMENT
+.TP
+.B HOME
+Locates
+.RI ( ~/.arb )
+the preset library, script cache, and REPL config.
+.TP
+.B ARB_LIB
+Overrides the preset library directory.
+.SH FILES
+.TP
+.I ~/.arb/scripts.rkyv
+The rkyv parsed\-spec cache shard.
+.TP
+.I ~/.arb/lib
+User preset library
+.RB ( \-\-save ", " \-\-install ", " "\-p NAME" ).
+.TP
+.I ~/.arb/config.toml
+REPL config
+.RB ( "[repl] mode" ).
+.SH EXIT STATUS
+.TP
+.B 0
+Successful completion (or a passing
+.BR \-\-check / \-\-test ).
+.TP
+.B 1
+Error during execution, or a failing
+.BR \-\-check / \-\-test .
+.TP
+.B 2
+Invalid usage (missing required spec / argument).
+.TP
+.B 130
+.B \-\-fzf
+selection aborted (Esc / Ctrl\-C); no output.
+.SH SEE ALSO
+.BR fzf (1),
+.BR jq (1)
