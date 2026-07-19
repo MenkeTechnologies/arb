@@ -144,3 +144,19 @@ fn ternary_on_fusevm_branches() {
     assert_eq!(eval(&sign, -4.0).unwrap(), -1.0);
     assert_eq!(eval(&sign, 0.0).unwrap(), 0.0);
 }
+
+// Adversarial-audit regression: a pathologically deep nesting must fail-closed
+// with an error, never abort the process via a parser stack overflow. A passing
+// run is itself the proof — an unguarded recursive-descent parse of 5000 nested
+// parens overflows the stack and aborts (SIGABRT/SIGSEGV) the whole test binary.
+#[test]
+fn deep_nesting_errors_not_stack_overflow() {
+    let deep = format!("{}x{}", "(".repeat(5000), ")".repeat(5000));
+    let err = parse(&deep).expect_err("deep nesting must be rejected, not parsed");
+    assert!(
+        err.contains("deeply nested"),
+        "expected a depth-limit error, got: {err}"
+    );
+    // The guard must not reject ordinary, modestly-nested expressions.
+    assert_eq!(eval(&parse("((((1 + 2))))").unwrap(), 0.0).unwrap(), 3.0);
+}
