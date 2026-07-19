@@ -159,6 +159,13 @@ pub enum BindAction {
     Seq(Vec<BindAction>),
 }
 
+/// A mouse trigger for a `bind <…> ACTION` (Tk-style events). Extensible; only
+/// `Click` (any button press) ships today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseTrigger {
+    Click,
+}
+
 /// Parse a key spec to its raw byte. Accepts control-key forms (`C-u`, `c-u`,
 /// `^u`) and the Tk named keys `<Enter>`/`<Esc>`/`<Tab>` and `<Key-X>` (a single
 /// letter). Only these forms bind, so a bind never shadows plain filter typing.
@@ -311,6 +318,10 @@ pub struct Spec {
     pub expects: Vec<Expect>,
     /// Idle reactions (`timeout Ns <action>`).
     pub timeouts: Vec<Timeout>,
+    /// Mouse reactions (`bind <Click> <action>`).
+    pub mouse_binds: Vec<(MouseTrigger, BindAction)>,
+    /// Terminal-resize reactions (`bind <Resize> <action>`).
+    pub resize_binds: Vec<BindAction>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -427,6 +438,12 @@ fn prefix_spec(sub: &mut Spec, ns: &str) {
     for t in &mut sub.timeouts {
         prefix_action(&mut t.action, ns);
     }
+    for (_, a) in &mut sub.mouse_binds {
+        prefix_action(a, ns);
+    }
+    for a in &mut sub.resize_binds {
+        prefix_action(a, ns);
+    }
     if let Some(out) = &mut sub.out {
         prefix_pipeline(out, ns);
     }
@@ -438,6 +455,8 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     dst.binds.extend(src.binds);
     dst.expects.extend(src.expects);
     dst.timeouts.extend(src.timeouts);
+    dst.mouse_binds.extend(src.mouse_binds);
+    dst.resize_binds.extend(src.resize_binds);
     if let Some(out) = src.out {
         if dst.out.is_some() {
             return Err(format!("import: `{ns}` defines `out`, but one is already set"));
@@ -535,18 +554,26 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
             let pipeline = pipeline_from_body(body)?;
             set_search(spec, path, pipeline)?;
         } else if c.name == "bind" {
-            // `bind C-<key> ACTION` — ACTION is `set|quit|beep|alert|flash|exec …`
-            // or a `{ … }` block of them.
+            // `bind KEY ACTION` — KEY is a control key (`C-<letter>`, `<Enter>`…),
+            // a mouse event (`<Click>`), or `<Resize>`; ACTION is a single verb or
+            // a `{ … }` block.
             let keyspec = c
                 .args
                 .first()
                 .and_then(Arg::as_str)
-                .ok_or("bind: missing key (e.g. C-u)")?;
-            let key = parse_key(keyspec)
-                .ok_or_else(|| format!("bind: `{keyspec}` is not a bindable key (use C-<letter> or <Enter>/<Esc>/<Tab>/<Key-x>)"))?;
+                .ok_or("bind: missing key (e.g. C-u, <Click>)")?;
             let action =
                 parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("bind: {e}"))?;
-            spec.binds.push(Bind { key, action });
+            match keyspec {
+                "<Click>" | "<Button-1>" => spec.mouse_binds.push((MouseTrigger::Click, action)),
+                "<Resize>" | "<Configure>" => spec.resize_binds.push(action),
+                _ => {
+                    let key = parse_key(keyspec).ok_or_else(|| {
+                        format!("bind: `{keyspec}` is not a bindable key (use C-<letter>, <Enter>/<Esc>/<Tab>/<Key-x>, <Click>, <Resize>)")
+                    })?;
+                    spec.binds.push(Bind { key, action });
+                }
+            }
         } else if c.name == "expect" {
             // `expect /regex/ ACTION` — ACTION as for `bind`.
             let pattern = regex_arg(c)?;

@@ -524,9 +524,8 @@ the terminal or the browser) is complete:
 registry index behind `arb publish` (the client validates + prints PR steps
 today) with native/cdylib packages and multi-version semver resolution, and the
 upstream-**command** sniffing leg (producer argv) — zero-config **data-shape**
-sniffing already ships. Akka-style actors and mouse/resize events are
-**out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
-bytes with no mouse event stream.
+sniffing already ships. Akka-style actors are **out of scope** — dataflow /
+pub-sub belong to `stryke`.
 
 Nothing is faked: unrecognized widget verbs are ignored so specs stay
 forward-compatible, and unbuilt features are absent, not stubbed.

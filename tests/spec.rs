@@ -505,6 +505,25 @@ fn parses_beep_alert_exec_flash_actions() {
 }
 
 #[test]
+fn bind_routes_mouse_and_resize_events() {
+    use arb::spec::{BindAction, MouseTrigger};
+    let s = build(
+        &parse("bind <Click> quit\nbind <Resize> beep\nbind C-q quit\nbind <Click> { alert x; beep }").unwrap(),
+    )
+    .unwrap();
+    // <Click> -> mouse_binds, <Resize> -> resize_binds, C-q -> binds (routing
+    // must precede parse_key so the angle-words never error).
+    assert_eq!(s.mouse_binds.len(), 2);
+    assert_eq!(s.mouse_binds[0], (MouseTrigger::Click, BindAction::Quit));
+    assert!(matches!(s.mouse_binds[1].1, BindAction::Seq(_)));
+    assert_eq!(s.resize_binds, vec![BindAction::Beep]);
+    assert_eq!(s.binds.len(), 1);
+    assert_eq!(s.binds[0].action, BindAction::Quit);
+    // A bogus angle-word still errors.
+    assert!(build(&parse("bind <Bogus> quit").unwrap()).is_err());
+}
+
+#[test]
 fn parses_block_form_action_sequence() {
     use arb::spec::BindAction;
     // `expect /re/ { alert "x"; beep }` -> a Seq of the two actions.

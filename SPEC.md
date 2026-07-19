@@ -245,12 +245,16 @@ timeout 5s alert "stream idle"           # fire when no new line for 5s (Ns/Nms/
 ```
 bind C-q quit                       # a control key → an action (any §13 action)
 bind <Enter> quit                   # Tk named keys: <Enter> <Esc> <Tab> <Key-x>
+bind <Click> beep                   # any mouse press → an action
+bind <Resize> { alert resized }     # terminal size change → an action
 bind C-r { alert reloaded; beep }   # block form
 ```
 
-⬜ Planned: `spawn` + a widget's selection (`.ps.sel`). ❌ Out of scope:
-`<Click>`/`<Resize>` — arb reads raw tty bytes and has no mouse/resize event
-stream.
+**Mouse** (SGR reporting, enabled on the TUI's `/dev/tty`): click a control to
+focus/toggle it (checkbox, facet option), click-drag a `slider`, click an fzf
+row, and the wheel scrolls — decoded from the raw tty byte stream, hit-tested
+against the rendered widget rects. ⬜ Planned: `spawn` + a widget's selection
+(`.ps.sel`), fzf-row click-select, tab-click, and drag text-selection.
 
 ## 15. Actors — Akka-style concurrency
 

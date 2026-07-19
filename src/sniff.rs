@@ -25,7 +25,7 @@ pub fn sniff(first: &[&str]) -> Option<&'static str> {
 
     // 2. Header-line shape (a tool's first line is its column header).
     let toks: Vec<&str> = l0.split_whitespace().collect();
-    let has_tok = |t: &str| toks.iter().any(|x| *x == t);
+    let has_tok = |t: &str| toks.contains(&t);
     if l0.starts_with("CONTAINER") {
         return guard("docker");
     }

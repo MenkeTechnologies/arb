@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -112,6 +113,13 @@ pub struct Controls {
     pub alert: Option<(String, Instant)>,
     /// Active `flash` tints: widget path (no dot) -> (color name, expiry).
     pub flashes: HashMap<String, (String, Instant)>,
+    /// Rendered widget rects (updated each frame), so the key-handler thread can
+    /// hit-test a mouse click without the spec/area.
+    pub hitmap: Vec<HitTarget>,
+    /// Screen row of the first fzf list item (so a click maps to a cursor index).
+    pub fzf_list_start: usize,
+    /// `bind <Click> …` reactions, fired on any mouse press.
+    pub mouse_binds: Vec<(crate::spec::MouseTrigger, BindAction)>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -305,6 +313,21 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                     } else {
                         ControlKind::Text
                     };
+                    // SGR mouse report `ESC[<…M/m` — must precede the arrow branch,
+                    // which would otherwise swallow the `[`. Click/scroll/drag are
+                    // hit-tested + dispatched; a truncated report re-syncs on `i+=1`.
+                    if b == 0x1b && buf.get(i + 1) == Some(&b'[') && buf.get(i + 2) == Some(&b'<') {
+                        if let Some((ev, used)) = parse_sgr_mouse(&buf[..n], i) {
+                            dispatch_mouse(&mut c, ev, fzf);
+                            if c.quit {
+                                break 'read;
+                            }
+                            i += used;
+                            continue;
+                        }
+                        i += 1;
+                        continue;
+                    }
                     // Arrow keys: ESC [ A/B/C/D. fzf moves the cursor; a form slider
                     // adjusts on Left/Right, a facet moves its cursor on Up/Down.
                     if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
@@ -455,6 +478,9 @@ pub fn run(
             t
         }
     };
+    // SGR mouse reporting (button + `?1006`): clicks/scroll/drag arrive as
+    // `ESC[<…M/m` in the /dev/tty byte stream, decoded by the key handler.
+    execute!(terminal.backend_mut(), EnableMouseCapture)?;
 
     controls.lock().unwrap().fzf = fzf;
     spawn_key_handler(controls.clone());
@@ -512,6 +538,8 @@ pub fn run(
     let mut to_last_total: u64 = { state.lock().unwrap().total };
     let mut to_last_activity = Instant::now();
     let mut to_fired = vec![false; spec.timeouts.len()];
+    // `bind <Resize>`: poll the terminal size each frame; fire on a change.
+    let mut last_size = size().unwrap_or((0, 0));
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
@@ -565,6 +593,15 @@ pub fn run(
                 Instant::now(),
                 &mut c,
             );
+        }
+        // `bind <Resize>` reactions: fire on a terminal size change.
+        let cur_size = size().unwrap_or(last_size);
+        if !spec.resize_binds.is_empty() && detect_resize(&mut last_size, cur_size) {
+            let mut c = controls.lock().unwrap();
+            let actions = spec.resize_binds.clone();
+            for a in &actions {
+                apply_bind_action(&mut c, a);
+            }
         }
         // Snapshot the error pane (spawned producer's stderr) — a bordered strip
         // at the bottom, so upstream errors show inside arb, never on the terminal.
@@ -744,19 +781,25 @@ pub fn run(
         let flash_snap: HashMap<String, String> =
             c.flashes.iter().map(|(k, (col, _))| (k.clone(), col.clone())).collect();
         let beep = std::mem::take(&mut c.beep_pending);
+        // Control names (index-aligned to inputs) so the hitmap can point a click
+        // at the right control_meta slot.
+        let control_names: Vec<String> = c.inputs.iter().map(|(n, _)| n.clone()).collect();
         drop(c);
         let st = state.lock().unwrap();
+        let mut hitmap: Vec<HitTarget> = Vec::new();
         let draw = terminal.draw(|f| {
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
             render(
                 f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
-                alert_msg.as_deref(), &flash_snap, &cmeta,
+                alert_msg.as_deref(), &flash_snap, &cmeta, &mut hitmap, &control_names,
             );
         });
         drop(st);
         if let Err(e) = draw {
             break Err(e);
         }
+        // Publish the frame's hit targets so the key handler can hit-test clicks.
+        controls.lock().unwrap().hitmap = hitmap;
         // Ring the terminal bell once after the frame if a `beep` action fired.
         if beep {
             use std::io::Write;
@@ -766,6 +809,7 @@ pub fn run(
         thread::sleep(Duration::from_millis(120));
     };
 
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
     if inline.is_some() {
         // Inline mode never entered the alternate screen; clear the viewport
@@ -793,6 +837,8 @@ fn render(
     alert: Option<&str>,
     flashes: &HashMap<String, String>,
     cmeta: &HashMap<String, ControlMeta>,
+    hitmap: &mut Vec<HitTarget>,
+    control_names: &[String],
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -854,6 +900,17 @@ fn render(
     }
 
     let rects = compute_rects(area, spec);
+    // Publish each widget's rect + identity for mouse hit-testing.
+    hitmap.clear();
+    for (i, w) in spec.widgets.iter().enumerate() {
+        let name = w.path.trim_start_matches('.').to_string();
+        let meta_index = if w.kind.is_control() {
+            control_names.iter().position(|n| *n == name)
+        } else {
+            None
+        };
+        hitmap.push(HitTarget { rect: rects[i], kind: w.kind, control_name: name, meta_index });
+    }
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
         // Control widgets are interactive, not stream views: render the live value
@@ -881,6 +938,212 @@ fn render(
 /// Render an `input .name` widget as an editable field: `label: value▏`, with a
 /// cyan border + reversed caret when focused. `placeholder`/`title` opts supply
 /// the label and dimmed empty-state hint.
+/// The kind of a decoded SGR mouse report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Down,
+    Up,
+    Drag,
+    ScrollUp,
+    ScrollDown,
+    Other,
+}
+
+/// One decoded SGR mouse event. `col`/`row` are 0-based (converted from the
+/// 1-based wire coords) so they index a ratatui `Rect` directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseEvent {
+    pub kind: MouseKind,
+    pub col: u16,
+    pub row: u16,
+    pub button: u8,
+    pub press: bool,
+}
+
+/// A rendered widget's screen rect + identity, so the key-handler thread can
+/// hit-test a click without the spec/area (which live in the render loop).
+#[derive(Debug, Clone)]
+pub struct HitTarget {
+    pub rect: Rect,
+    pub kind: WidgetKind,
+    /// Widget path minus the leading `.` (matches the input-registry key).
+    pub control_name: String,
+    /// Index into `Controls.inputs`/`control_meta` when this is a control.
+    pub meta_index: Option<usize>,
+}
+
+/// Parse one SGR mouse report `ESC [ < b ; x ; y (M|m)` starting at byte `i`.
+/// Returns the decoded event + total bytes consumed, or `None` if the slice from
+/// `i` is not a complete SGR mouse sequence (e.g. truncated at the buffer tail).
+/// Pure — no tty. Wire coords are 1-based; converted to 0-based (saturating).
+pub fn parse_sgr_mouse(bytes: &[u8], i: usize) -> Option<(MouseEvent, usize)> {
+    if bytes.get(i)? != &0x1b || bytes.get(i + 1)? != &b'[' || bytes.get(i + 2)? != &b'<' {
+        return None;
+    }
+    let mut p = i + 3;
+    // A `;`-terminated (or final) decimal field.
+    let field = |p: &mut usize, want_semi: bool| -> Option<u32> {
+        let start = *p;
+        let mut v: u32 = 0;
+        while let Some(&d) = bytes.get(*p) {
+            if d.is_ascii_digit() {
+                v = v.checked_mul(10)?.checked_add((d - b'0') as u32)?;
+                *p += 1;
+            } else {
+                break;
+            }
+        }
+        if *p == start {
+            return None; // empty field
+        }
+        if want_semi {
+            if bytes.get(*p)? != &b';' {
+                return None;
+            }
+            *p += 1;
+        }
+        Some(v)
+    };
+    let b = field(&mut p, true)?;
+    let x = field(&mut p, true)?;
+    let y = field(&mut p, false)?;
+    let press = match bytes.get(p)? {
+        b'M' => true,
+        b'm' => false,
+        _ => return None,
+    };
+    p += 1;
+    let kind = if b & 0x40 != 0 {
+        // Wheel: bit0 picks direction (64 = up, 65 = down).
+        if b & 0x01 == 0 { MouseKind::ScrollUp } else { MouseKind::ScrollDown }
+    } else if !press {
+        MouseKind::Up
+    } else if b & 0x20 != 0 {
+        MouseKind::Drag
+    } else if b & 0b11 == 0 {
+        MouseKind::Down
+    } else {
+        MouseKind::Other
+    };
+    let ev = MouseEvent {
+        kind,
+        col: x.saturating_sub(1).min(u16::MAX as u32) as u16,
+        row: y.saturating_sub(1).min(u16::MAX as u32) as u16,
+        button: (b & 0xff) as u8,
+        press,
+    };
+    Some((ev, p - i))
+}
+
+/// The topmost hit target containing `(col, row)` — last match wins, since a
+/// later widget overdraws an earlier one in the layout.
+pub fn hit(h: &[HitTarget], col: u16, row: u16) -> Option<&HitTarget> {
+    h.iter().rev().find(|t| {
+        let r = t.rect;
+        col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+    })
+}
+
+/// Which facet option row was clicked (`+1` skips the top border); the caller
+/// bounds-checks against the option count.
+pub fn facet_row_to_index(rect_y: u16, row: u16) -> Option<usize> {
+    if row <= rect_y {
+        None
+    } else {
+        Some((row - rect_y - 1) as usize)
+    }
+}
+
+/// A slider value from the clicked x, snapped to `step` and clamped to `[min,max]`.
+pub fn slider_value_from_x(rect_x: u16, rect_w: u16, col: u16, min: f64, max: f64, step: f64) -> String {
+    let inner = (rect_w.saturating_sub(2)).max(1) as f64; // border on both sides
+    let x = col.saturating_sub(rect_x + 1) as f64;
+    let p = (x / inner).clamp(0.0, 1.0);
+    let step = if step > 0.0 { step } else { 1.0 };
+    let raw = min + p * (max - min);
+    let snapped = (min + ((raw - min) / step).round() * step).clamp(min, max);
+    crate::query::fmt_scalar(snapped)
+}
+
+/// Apply a decoded mouse event to `Controls`: scroll moves a cursor; a press/drag
+/// hit-tests to a widget and focuses/toggles/sets it; then any `bind <Click>`
+/// reactions fire. Pure over `Controls` — unit-testable without a tty.
+fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
+    match ev.kind {
+        MouseKind::ScrollUp => {
+            if fzf {
+                c.cursor = c.cursor.saturating_sub(1);
+            } else if let Some(m) = c.control_meta.get_mut(c.focus) {
+                if m.kind == ControlKind::Facet {
+                    m.cursor = m.cursor.saturating_sub(1);
+                }
+            }
+        }
+        MouseKind::ScrollDown => {
+            if fzf {
+                c.cursor = c.cursor.saturating_add(1);
+            } else if let Some(m) = c.control_meta.get_mut(c.focus) {
+                if m.kind == ControlKind::Facet {
+                    m.cursor = m.cursor.saturating_add(1);
+                }
+            }
+        }
+        MouseKind::Down | MouseKind::Drag => {
+            let down = ev.kind == MouseKind::Down;
+            if let Some(t) = hit(&c.hitmap, ev.col, ev.row).cloned() {
+                let mi = t.meta_index.or_else(|| c.inputs.iter().position(|(n, _)| *n == t.control_name));
+                if let Some(mi) = mi {
+                    c.focus = mi; // focus only ever indexes a real control
+                }
+                match t.kind {
+                    WidgetKind::Check if down => {
+                        if let Some(mi) = mi {
+                            c.inputs[mi].1 = toggle_check(&c.inputs[mi].1);
+                        }
+                    }
+                    WidgetKind::Slider => {
+                        if let Some(mi) = mi {
+                            let m = &c.control_meta[mi];
+                            let (mn, mx, sp) = (m.min, m.max, m.step);
+                            c.inputs[mi].1 = slider_value_from_x(t.rect.x, t.rect.width, ev.col, mn, mx, sp);
+                        }
+                    }
+                    WidgetKind::Facet if down => {
+                        if let Some(mi) = mi {
+                            if let Some(idx) = facet_row_to_index(t.rect.y, ev.row) {
+                                if let Some(item) = c.control_meta[mi].opts.get(idx).cloned() {
+                                    c.inputs[mi].1 = toggle_set_member(&c.inputs[mi].1, &item);
+                                    c.control_meta[mi].cursor = idx;
+                                }
+                            }
+                        }
+                    }
+                    WidgetKind::Select if down && ev.row >= t.rect.y => {
+                        c.cursor = c.fzf_list_start + (ev.row - t.rect.y) as usize;
+                    }
+                    _ => {} // input/filter focus set above; view widgets no-op
+                }
+            }
+            // `bind <Click>` reactions fire on a press (not a drag).
+            if down {
+                let actions: Vec<BindAction> = c.mouse_binds.iter().map(|(_, a)| a.clone()).collect();
+                for a in &actions {
+                    apply_bind_action(c, a);
+                }
+            }
+        }
+        MouseKind::Up | MouseKind::Other => {}
+    }
+}
+
+/// Update `last` to `cur` and report whether the terminal size changed — drives
+/// `bind <Resize>` (polled each frame; no SIGWINCH handler needed).
+pub fn detect_resize(last: &mut (u16, u16), cur: (u16, u16)) -> bool {
+    let changed = *last != cur;
+    *last = cur;
+    changed
+}
+
 /// The interaction kind of a control widget (its value always lives in the
 /// string input registry; this drives key handling + render).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1669,6 +1932,90 @@ mod tests {
         tick_timeouts(&timeouts, 1, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(41), &mut c);
         assert!(!fired[0]);
         assert_eq!(c.inputs[0].1, "");
+    }
+
+    #[test]
+    fn parse_sgr_mouse_decodes_reports() {
+        use super::{parse_sgr_mouse, MouseKind};
+        // Left click at 1-based (5,3) -> 0-based (4,2), 'M' press, 9 bytes.
+        let (ev, n) = parse_sgr_mouse(b"\x1b[<0;5;3M", 0).unwrap();
+        assert_eq!((ev.kind, ev.col, ev.row, ev.press), (MouseKind::Down, 4, 2, true));
+        assert_eq!(n, 9);
+        // Release ('m').
+        let (ev, _) = parse_sgr_mouse(b"\x1b[<0;5;3m", 0).unwrap();
+        assert_eq!((ev.kind, ev.press), (MouseKind::Up, false));
+        // Scroll up (button 64) / down (65).
+        assert_eq!(parse_sgr_mouse(b"\x1b[<64;10;20M", 0).unwrap().0.kind, MouseKind::ScrollUp);
+        assert_eq!(parse_sgr_mouse(b"\x1b[<65;1;1M", 0).unwrap().0.kind, MouseKind::ScrollDown);
+        // Drag (bit 32 set, press).
+        assert_eq!(parse_sgr_mouse(b"\x1b[<32;7;8M", 0).unwrap().0.kind, MouseKind::Drag);
+        // Mid-buffer offset.
+        let (ev, n) = parse_sgr_mouse(b"xy\x1b[<0;3;4M", 2).unwrap();
+        assert_eq!((ev.col, ev.row), (2, 3));
+        assert_eq!(n, 9);
+        // Truncated / non-mouse -> None.
+        assert!(parse_sgr_mouse(b"\x1b[<0;5;", 0).is_none());
+        assert!(parse_sgr_mouse(b"\x1b[A", 0).is_none());
+    }
+
+    #[test]
+    fn mouse_hit_and_geometry_helpers() {
+        use super::{detect_resize, facet_row_to_index, hit, slider_value_from_x, HitTarget};
+        use crate::spec::WidgetKind;
+        use ratatui::layout::Rect;
+        let hm = vec![
+            HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 5 }, kind: WidgetKind::Filter, control_name: "q".into(), meta_index: Some(0) },
+            HitTarget { rect: Rect { x: 0, y: 2, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "c".into(), meta_index: Some(1) },
+        ];
+        // Overlap at (3,3): the later (topmost) target wins.
+        assert_eq!(hit(&hm, 3, 3).unwrap().control_name, "c");
+        assert_eq!(hit(&hm, 3, 1).unwrap().control_name, "q"); // only the first covers y=1
+        assert!(hit(&hm, 20, 20).is_none()); // outside
+        // Facet row -> option index (skip the top border).
+        assert_eq!(facet_row_to_index(0, 1), Some(0));
+        assert_eq!(facet_row_to_index(0, 3), Some(2));
+        assert_eq!(facet_row_to_index(5, 5), None);
+        // Slider value from click x (inner width = w-2), clamped + snapped.
+        assert_eq!(slider_value_from_x(0, 12, 6, 0.0, 10.0, 1.0), "5"); // mid
+        assert_eq!(slider_value_from_x(0, 12, 0, 0.0, 10.0, 1.0), "0"); // far left
+        assert_eq!(slider_value_from_x(0, 12, 99, 0.0, 10.0, 1.0), "10"); // clamp right
+        // Resize detector.
+        let mut last = (80, 24);
+        assert!(!detect_resize(&mut last, (80, 24)));
+        assert!(detect_resize(&mut last, (100, 30)));
+        assert_eq!(last, (100, 30));
+    }
+
+    #[test]
+    fn dispatch_mouse_clicks_and_scrolls() {
+        use super::{dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind};
+        use crate::spec::WidgetKind;
+        use ratatui::layout::Rect;
+        let mut c = Controls {
+            inputs: vec![("chk".into(), "0".into()), ("sl".into(), "0".into())],
+            control_meta: vec![
+                ControlMeta { kind: ControlKind::Check, ..Default::default() },
+                ControlMeta { kind: ControlKind::Slider, min: 0.0, max: 10.0, step: 1.0, ..Default::default() },
+            ],
+            hitmap: vec![
+                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0) },
+                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1) },
+            ],
+            ..Default::default()
+        };
+        let ev = |kind, col, row| MouseEvent { kind, col, row, button: 0, press: kind == MouseKind::Down };
+        // Click the checkbox -> toggles + focuses it.
+        dispatch_mouse(&mut c, ev(MouseKind::Down, 2, 1), false);
+        assert_eq!(c.inputs[0].1, "1");
+        assert_eq!(c.focus, 0);
+        // Click mid the slider (inner width 10, x=6 -> ~mid).
+        dispatch_mouse(&mut c, ev(MouseKind::Down, 6, 4), false);
+        assert_eq!(c.inputs[1].1, "5");
+        assert_eq!(c.focus, 1);
+        // Scroll in fzf mode moves the cursor.
+        c.cursor = 5;
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 0, 0), true);
+        assert_eq!(c.cursor, 4);
     }
 
     #[test]

@@ -558,6 +558,8 @@ fn main() -> io::Result<()> {
             }
             // Key bindings (`bind C-<letter> …`) drive the same input values.
             c.binds = spec.binds.clone();
+            // Mouse reactions (`bind <Click> …`).
+            c.mouse_binds = spec.mouse_binds.clone();
             // fzf-compat: exact/no-sort match modes; `--query` seeds the filter.
             c.exact = cli.exact;
             c.no_sort = cli.no_sort;
