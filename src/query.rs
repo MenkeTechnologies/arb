@@ -323,11 +323,18 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 cur = out;
             }
             QueryOp::Where(e) => {
-                cur.retain(|l| {
-                    let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
-                    let resolve = |name: &str| field_num(l, name);
-                    crate::expr::eval_pred_ctx(e, x, &resolve).unwrap_or(false)
-                });
+                // A string predicate (`match(.q)` / `field in .lv`) can't run on
+                // the numeric VM — route it to the Rust evaluator; purely numeric
+                // predicates stay on fusevm.
+                if crate::expr::expr_has_str(e) {
+                    cur.retain(|l| eval_where(e, l));
+                } else {
+                    cur.retain(|l| {
+                        let x = l.trim().parse::<f64>().unwrap_or(f64::NAN);
+                        let resolve = |name: &str| field_num(l, name);
+                        crate::expr::eval_pred_ctx(e, x, &resolve).unwrap_or(false)
+                    });
+                }
             }
             QueryOp::Map(e) => {
                 for l in cur.iter_mut() {
@@ -1485,6 +1492,70 @@ fn field_num(line: &str, name: &str) -> f64 {
     logfmt_field(line, name)
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(f64::NAN)
+}
+
+/// Public wrapper for [`field_str`] — used by the TUI facet control to derive
+/// candidate values from a stream field.
+pub fn field_str_pub(line: &str, name: &str) -> String {
+    field_str(line, name)
+}
+
+/// Format a control scalar: integers without a decimal, else the shortest repr.
+pub fn fmt_scalar(v: f64) -> String {
+    fmt_num(v)
+}
+
+/// A field's value as a string: a JSON object key, else a logfmt `key=value`,
+/// else "". `x` (or `.` the whole line via Var) resolves to the whole line.
+fn field_str(line: &str, name: &str) -> String {
+    if name == "x" {
+        return line.to_string();
+    }
+    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(line) {
+        if let Some(v) = m.get(name) {
+            return json_to_string(v);
+        }
+    }
+    logfmt_field(line, name).unwrap_or_default()
+}
+
+/// The string value of a substituted string node (`Str`), else "".
+fn str_of(e: &crate::expr::Expr) -> String {
+    match e {
+        crate::expr::Expr::Str(s) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Evaluate a string-bearing `where` predicate against one line (Rust, not the
+/// numeric VM). `match`/`in .set` test strings; and/or/not compose; any purely
+/// numeric subtree falls back to the fusevm predicate path.
+fn eval_where(e: &crate::expr::Expr, line: &str) -> bool {
+    use crate::expr::{BinOp, Expr};
+    match e {
+        Expr::Match(inner) => {
+            let q = str_of(inner);
+            q.is_empty() || line.to_lowercase().contains(&q.to_lowercase())
+        }
+        Expr::InSet(field, inner) => {
+            let set = str_of(inner);
+            let items: Vec<&str> = set.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            if items.is_empty() {
+                return true; // empty selection -> no filter
+            }
+            let val = field_str(line, field);
+            items.iter().any(|it| *it == val)
+        }
+        Expr::Not(a) => !eval_where(a, line),
+        Expr::Bin(BinOp::And, a, b) => eval_where(a, line) && eval_where(b, line),
+        Expr::Bin(BinOp::Or, a, b) => eval_where(a, line) || eval_where(b, line),
+        // A numeric subtree: evaluate it on fusevm as usual.
+        _ => {
+            let x = line.trim().parse::<f64>().unwrap_or(f64::NAN);
+            let resolve = |n: &str| field_num(line, n);
+            crate::expr::eval_pred_ctx(e, x, &resolve).unwrap_or(false)
+        }
+    }
 }
 
 fn value_to_f64(v: &Value) -> f64 {

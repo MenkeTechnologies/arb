@@ -11,7 +11,7 @@ use regex::Regex;
 use crate::ast::{Arg, Command};
 use crate::query::{FieldSel, QueryOp};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetKind {
     Text,
     Tail,
@@ -33,6 +33,18 @@ pub enum WidgetKind {
     /// arrows/Ctrl-N/P move the cursor, Tab marks, Enter emits the picked lines.
     /// `-prompt`/`-header` opts set the prompt line and a header above the list.
     Select,
+    /// A text box whose value drives `where match(.name)` / `apply` — a labelled
+    /// filter control (a specialised `input`).
+    Filter,
+    /// A multi-select of candidate values (`-opts {a b c}`, else distinct stream
+    /// `-field` values). Its value is the comma-joined selected set for
+    /// `where <field> in .name`.
+    Facet,
+    /// A numeric control (`-min`/`-max`/`-step`) whose value drives
+    /// `where <field> < .name`; arrows/`+`/`-` adjust it.
+    Slider,
+    /// A boolean toggle (`-label`); its value is `"1"`/`"0"`.
+    Check,
 }
 
 impl WidgetKind {
@@ -52,6 +64,10 @@ impl WidgetKind {
             "frame" => WidgetKind::Frame,
             "input" => WidgetKind::Input,
             "select" => WidgetKind::Select,
+            "filter" => WidgetKind::Filter,
+            "facet" => WidgetKind::Facet,
+            "slider" => WidgetKind::Slider,
+            "check" => WidgetKind::Check,
             _ => return None,
         })
     }
@@ -72,7 +88,20 @@ impl WidgetKind {
             WidgetKind::Frame => "frame",
             WidgetKind::Input => "input",
             WidgetKind::Select => "select",
+            WidgetKind::Filter => "filter",
+            WidgetKind::Facet => "facet",
+            WidgetKind::Slider => "slider",
+            WidgetKind::Check => "check",
         }
+    }
+
+    /// Whether this kind is an interactive control (value lives in the input
+    /// registry and drives `apply`/`where … .name`), not a stream view.
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self,
+            WidgetKind::Input | WidgetKind::Filter | WidgetKind::Facet | WidgetKind::Slider | WidgetKind::Check
+        )
     }
 }
 
@@ -299,10 +328,12 @@ pub fn resolve_pipeline(
     ops: &[QueryOp],
     inputs: &std::collections::HashMap<String, String>,
 ) -> Vec<QueryOp> {
-    // Resolve a control name to its live numeric value (empty/non-numeric -> None).
+    // Resolve a control name to its live numeric value (empty/non-numeric -> None)
+    // or its raw string value (for `match`/`in .set` string predicates).
     let num = |n: &str| -> Option<f64> {
         inputs.get(n).and_then(|v| v.trim().parse::<f64>().ok())
     };
+    let strv = |n: &str| -> Option<String> { inputs.get(n).cloned() };
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
         match op {
@@ -317,23 +348,24 @@ pub fn resolve_pipeline(
                     }
                 }
             }
-            // `where(lat < .th)`: substitute each control-ref with its live value.
-            // If any referenced control is unset/non-numeric, drop the filter
-            // entirely (an unset threshold means "no filter", not "reject all").
+            // `where lat < .th` (numeric) / `where match(.q)` / `where lvl in .lv`
+            // (string). Numeric controls must all resolve or the filter is dropped
+            // (unset threshold = no filter); string controls with an empty value
+            // simply match everything, so they never force a drop.
             QueryOp::Where(e) => {
-                let mut names = Vec::new();
-                crate::expr::control_names(e, &mut names);
-                if names.is_empty() {
+                let (mut nums, mut strs) = (Vec::new(), Vec::new());
+                crate::expr::control_names_typed(e, &mut nums, &mut strs);
+                if nums.is_empty() && strs.is_empty() {
                     out.push(op.clone());
-                } else if names.iter().all(|n| num(n).is_some()) {
-                    out.push(QueryOp::Where(crate::expr::substitute_controls(e, &num)));
+                } else if nums.iter().all(|n| num(n).is_some()) {
+                    out.push(QueryOp::Where(crate::expr::substitute_controls(e, &num, &strv)));
                 }
-                // else: a referenced control is unset -> drop this `where`.
+                // else: a numeric control is unset -> drop this `where`.
             }
             // `map(x * .k)`: substitute resolvable controls; an unresolved one
             // stays a control (-> NaN) rather than dropping the transform.
             QueryOp::Map(e) => {
-                out.push(QueryOp::Map(crate::expr::substitute_controls(e, &num)));
+                out.push(QueryOp::Map(crate::expr::substitute_controls(e, &num, &strv)));
             }
             other => out.push(other.clone()),
         }
@@ -895,6 +927,25 @@ fn first_comment(src: &str) -> String {
 /// Canonical accent color for a widget's `-color NAME` opt, as a `#rrggbb` hex —
 /// the single source of truth shared by the TUI (parsed to an RGB color) and the
 /// web dashboard (used directly in CSS/SVG). Unknown/absent names default to cyan.
+/// Parse a scalar control bound (`-min`/`-max`/`-step`): a plain number, a
+/// duration (`5s`/`500ms`/`2m`/`1h`) as seconds, or a size (`1kb`/`4mb`/`2gb`)
+/// as bytes. Unparseable -> 0.
+pub fn parse_scalar(s: &str) -> f64 {
+    let s = s.trim();
+    if let Some(d) = parse_duration(s) {
+        return d.as_secs_f64();
+    }
+    let lower = s.to_ascii_lowercase();
+    for (suf, mult) in [("kb", 1024.0), ("mb", 1048576.0), ("gb", 1073741824.0)] {
+        if let Some(n) = lower.strip_suffix(suf) {
+            if let Ok(v) = n.trim().parse::<f64>() {
+                return v * mult;
+            }
+        }
+    }
+    s.parse::<f64>().unwrap_or(0.0)
+}
+
 pub fn color_hex(name: Option<&str>) -> &'static str {
     match name.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         Some("green") => "#00e676",

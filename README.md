@@ -487,14 +487,16 @@ the terminal or the browser) is complete:
   `out` interpreter, `.x <- in` binds, `fn`/lambda expressions, and `calc` /
   `where` predicates that lower to `fusevm` bytecode and run on the VM.
 - **Widgets** — `text`, `tail`, `list`, `gauge`, `bars`, `histo`, `spark`,
-  `chart`, `table`, `tabs`, `block`, `frame` render in the TUI; `input` is a live
-  editable field and `select` an fzf-style fuzzy picker. Auto-layout by default,
+  `chart`, `table`, `tabs`, `block`, `frame` render in the TUI; `input`/`filter`
+  fields, a `slider`, a `check` toggle, a `facet` multi-select, and `select` (an
+  fzf-style fuzzy picker) are interactive controls. Auto-layout by default,
   `grid` (with `-span`/`-rowspan`/`-colspan`) to override, per-widget `-color`.
 - **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
   [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
-- **Megafilter/map** — `out { … }` shapes the downstream passthrough; `input`
-  fields feed `apply`/`bind` live, and a numeric control-path predicate
-  (`where lat < .th`) filters by a control's live value.
+- **Megafilter/map** — `out { … }` shapes the downstream passthrough, driven by
+  `input`/`filter`/`facet`/`slider`/`check` controls via `apply` and control-path
+  predicates: numeric `where lat < .th`, string `where match(.q)`, set
+  `where level in .lv`.
 - **Web target** — `arb --serve` hosts the same spec as a live browser dashboard
   built from the `zgui-core` component toolkit (`ZGui.appShell` + per-widget
   components), pushed over a hand-rolled WebSocket (RFC 6455) with a `/data`
@@ -513,12 +515,12 @@ the terminal or the browser) is complete:
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
-**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — dedicated
-`filter`/`facet`/`slider` control widgets and string/set control predicates
-(`match(.q)`, `level in .lv`), the hosted registry index behind `arb publish`
-(the client validates + prints PR steps today) with native/cdylib packages, and
-upstream-command sniffing for the shareable-dashboard ecosystem. Akka-style
-actors and mouse/resize events are
+**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — dynamic
+`-field` facet candidates and web interactivity for the `filter`/`facet`/`slider`
+controls, the hosted registry index behind `arb publish` (the client validates +
+prints PR steps today) with native/cdylib packages, and upstream-command sniffing
+for the shareable-dashboard ecosystem. Akka-style actors and mouse/resize events
+are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty
 bytes with no mouse event stream.
 

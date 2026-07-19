@@ -87,12 +87,21 @@ fn body_text(w: &Widget) -> String {
             Some(c) => format!("table (cols={})", c),
             None => "table".to_string(),
         },
+        WidgetKind::Slider => {
+            format!("slider ({}..{})", opt("min").unwrap_or("0"), opt("max").unwrap_or(""))
+        }
+        WidgetKind::Facet => match opt("opts").or_else(|| opt("field")) {
+            Some(o) => format!("facet ({o})"),
+            None => "facet".to_string(),
+        },
         WidgetKind::Tabs
         | WidgetKind::Block
         | WidgetKind::Frame
         | WidgetKind::Input
+        | WidgetKind::Filter
+        | WidgetKind::Check
         | WidgetKind::Select => {
-            match opt("title").or_else(|| opt("placeholder")).or_else(|| opt("prompt")) {
+            match opt("title").or_else(|| opt("placeholder")).or_else(|| opt("prompt")).or_else(|| opt("label")) {
                 Some(t) => format!("{} ({})", w.kind.label(), t),
                 None => w.kind.label().to_string(),
             }

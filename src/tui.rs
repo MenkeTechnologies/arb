@@ -92,6 +92,10 @@ pub struct Controls {
     /// `input .name` widget values (name, current text) for DSL form mode. When
     /// non-empty the TUI is a form: typing edits the focused input, Tab cycles.
     pub inputs: Vec<(String, String)>,
+    /// Per-control metadata parallel to `inputs` (slider/facet/check bounds), so
+    /// the key handler and renderer know each focused control's kind. Empty for a
+    /// plain `input` form; populated when control widgets are present.
+    pub control_meta: Vec<ControlMeta>,
     /// Index of the focused input in `inputs`.
     pub focus: usize,
     /// Key bindings (`bind C-<letter> …`): a matching control key runs its action
@@ -295,11 +299,28 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                 let mut i = 0;
                 while i < n {
                     let b = buf[i];
-                    // Arrow keys: ESC [ A (up) / B (down).
+                    // The focused control's kind (form mode) drives key handling.
+                    let fk = if form {
+                        c.control_meta.get(c.focus).map(|m| m.kind).unwrap_or(ControlKind::Text)
+                    } else {
+                        ControlKind::Text
+                    };
+                    // Arrow keys: ESC [ A/B/C/D. fzf moves the cursor; a form slider
+                    // adjusts on Left/Right, a facet moves its cursor on Up/Down.
                     if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
                         match buf[i + 2] {
                             b'A' if fzf => c.cursor = c.cursor.saturating_sub(1),
                             b'B' if fzf => c.cursor = c.cursor.saturating_add(1),
+                            b'A' if fk == ControlKind::Facet => {
+                                let f = c.focus;
+                                c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_sub(1);
+                            }
+                            b'B' if fk == ControlKind::Facet => {
+                                let f = c.focus;
+                                c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_add(1);
+                            }
+                            b'C' if fk == ControlKind::Slider => slider_key(&mut c, true),
+                            b'D' if fk == ControlKind::Slider => slider_key(&mut c, false),
                             _ => {}
                         }
                         i += 3;
@@ -353,11 +374,27 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                                 c.cursor = 0;
                             }
                         }
+                        // Slider: `+`/`=`/`l` up, `-`/`h` down (by one step).
+                        b'+' | b'=' | b'l' if fk == ControlKind::Slider => slider_key(&mut c, true),
+                        b'-' | b'h' if fk == ControlKind::Slider => slider_key(&mut c, false),
+                        // Check: Space/Enter toggles the boolean.
+                        0x20 | 0x0d if fk == ControlKind::Check => {
+                            let f = c.focus;
+                            c.inputs[f].1 = toggle_check(&c.inputs[f].1);
+                        }
+                        // Facet: Space toggles the option under the cursor.
+                        0x20 if fk == ControlKind::Facet => {
+                            let f = c.focus;
+                            let cur = c.control_meta[f].cursor;
+                            if let Some(item) = c.control_meta[f].opts.get(cur).cloned() {
+                                c.inputs[f].1 = toggle_set_member(&c.inputs[f].1, &item);
+                            }
+                        }
                         0x20..=0x7e => {
-                            if form {
+                            if form && fk == ControlKind::Text {
                                 let f = c.focus;
                                 c.inputs[f].1.push(b as char);
-                            } else {
+                            } else if !form {
                                 c.filter.push(b as char);
                                 c.cursor = 0;
                             }
@@ -694,6 +731,13 @@ pub fn run(
         let mut c = controls.lock().unwrap();
         let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
         let focus_name = c.inputs.get(c.focus).map(|(n, _)| n.clone());
+        // Control metadata keyed by name (slider/facet/check bounds + facet cursor).
+        let cmeta: HashMap<String, ControlMeta> = c
+            .inputs
+            .iter()
+            .zip(c.control_meta.iter())
+            .map(|((n, _), m)| (n.clone(), m.clone()))
+            .collect();
         let now = Instant::now();
         let alert_msg = c.alert.as_ref().filter(|(_, exp)| *exp > now).map(|(m, _)| m.clone());
         c.flashes.retain(|_, (_, exp)| *exp > now);
@@ -706,7 +750,7 @@ pub fn run(
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
             render(
                 f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
-                alert_msg.as_deref(), &flash_snap,
+                alert_msg.as_deref(), &flash_snap, &cmeta,
             );
         });
         drop(st);
@@ -748,6 +792,7 @@ fn render(
     focus: Option<&str>,
     alert: Option<&str>,
     flashes: &HashMap<String, String>,
+    cmeta: &HashMap<String, ControlMeta>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -811,12 +856,14 @@ fn render(
     let rects = compute_rects(area, spec);
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
-        // Input widgets are interactive fields, not stream views: render the live
-        // value with the focused field highlighted.
-        if w.kind == WidgetKind::Input {
+        // Control widgets are interactive, not stream views: render the live value
+        // (slider bar / facet list / check / text) with the focused one highlighted.
+        if w.kind.is_control() {
             let name = w.path.trim_start_matches('.');
             let val = inputs.get(name).map(String::as_str).unwrap_or("");
-            render_input(f, rects[i], w, val, focus == Some(name));
+            let default_meta = ControlMeta { kind: control_kind(w.kind), ..Default::default() };
+            let meta = cmeta.get(name).unwrap_or(&default_meta);
+            render_control(f, rects[i], w, val, meta, &raw, focus == Some(name));
             continue;
         }
         // Resolve `apply .name` placeholders against the live input values before
@@ -834,6 +881,96 @@ fn render(
 /// Render an `input .name` widget as an editable field: `label: value▏`, with a
 /// cyan border + reversed caret when focused. `placeholder`/`title` opts supply
 /// the label and dimmed empty-state hint.
+/// The interaction kind of a control widget (its value always lives in the
+/// string input registry; this drives key handling + render).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ControlKind {
+    /// `input`/`filter`: free text.
+    #[default]
+    Text,
+    /// `slider`: a number in `[min, max]`, arrows/`+`/`-` adjust by `step`.
+    Slider,
+    /// `check`: a boolean, Space toggles ("1"/"0").
+    Check,
+    /// `facet`: a comma-set selected from `opts`, Up/Down move, Space toggles.
+    Facet,
+}
+
+/// Per-control metadata parallel to `Controls.inputs`, for key handling + render.
+#[derive(Debug, Clone, Default)]
+pub struct ControlMeta {
+    pub kind: ControlKind,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub opts: Vec<String>,
+    pub cursor: usize,
+}
+
+/// Map a widget kind to its control interaction kind.
+pub fn control_kind(k: WidgetKind) -> ControlKind {
+    match k {
+        WidgetKind::Slider => ControlKind::Slider,
+        WidgetKind::Check => ControlKind::Check,
+        WidgetKind::Facet => ControlKind::Facet,
+        _ => ControlKind::Text, // input, filter
+    }
+}
+
+/// Adjust the focused slider control's value by one step.
+fn slider_key(c: &mut Controls, up: bool) {
+    let f = c.focus;
+    if let Some(m) = c.control_meta.get(f) {
+        let (min, max, step) = (m.min, m.max, m.step);
+        c.inputs[f].1 = slider_adjust(&c.inputs[f].1, min, max, step, up);
+    }
+}
+
+/// Adjust a slider value by one step, clamped to `[min, max]`.
+pub fn slider_adjust(cur: &str, min: f64, max: f64, step: f64, up: bool) -> String {
+    let v = cur.trim().parse::<f64>().unwrap_or(min);
+    let step = if step > 0.0 { step } else { 1.0 };
+    let next = if up { v + step } else { v - step }.clamp(min, max);
+    crate::query::fmt_scalar(next)
+}
+
+/// Toggle a boolean control value ("1" <-> "0").
+pub fn toggle_check(cur: &str) -> String {
+    if cur == "1" { "0".to_string() } else { "1".to_string() }
+}
+
+/// Toggle `item`'s membership in a comma-separated set; returns the new set.
+pub fn toggle_set_member(set: &str, item: &str) -> String {
+    let mut items: Vec<String> =
+        set.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+    if let Some(pos) = items.iter().position(|x| x == item) {
+        items.remove(pos);
+    } else {
+        items.push(item.to_string());
+    }
+    items.join(",")
+}
+
+/// A facet's candidate values: explicit `-opts`, else the distinct values of
+/// its `-field` across the current stream (bounded).
+pub fn facet_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
+    if let Some(opts) = w.opts.get("opts") {
+        return opts.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    }
+    let Some(field) = w.opts.get("field") else { return Vec::new() };
+    let mut seen = Vec::new();
+    for line in raw {
+        let v = crate::query::field_str_pub(line, field);
+        if !v.is_empty() && !seen.contains(&v) {
+            seen.push(v);
+            if seen.len() >= 32 {
+                break;
+            }
+        }
+    }
+    seen
+}
+
 fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool) {
     let label = w
         .opts
@@ -860,6 +997,72 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool)
         Line::from(Span::raw(val.to_string()))
     };
     f.render_widget(Paragraph::new(body).block(block), area);
+}
+
+/// Render an interactive control (slider/check/facet); text kinds delegate to
+/// [`render_input`]. `meta` is the control's parallel metadata; `raw` is the live
+/// stream (for a `-field` facet's candidates).
+fn render_control(
+    f: &mut Frame,
+    area: Rect,
+    w: &Widget,
+    val: &str,
+    meta: &ControlMeta,
+    raw: &[String],
+    focused: bool,
+) {
+    let label = w
+        .opts
+        .get("label")
+        .or_else(|| w.opts.get("title"))
+        .map(String::as_str)
+        .unwrap_or_else(|| w.path.trim_start_matches('.'));
+    let border = if focused { Color::Cyan } else { Color::DarkGray };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(format!(" {label} "));
+    match meta.kind {
+        ControlKind::Text => render_input(f, area, w, val, focused),
+        ControlKind::Slider => {
+            let v = val.trim().parse::<f64>().unwrap_or(meta.min);
+            let span = (meta.max - meta.min).max(f64::MIN_POSITIVE);
+            let filled = (((v - meta.min) / span) * 20.0).round().clamp(0.0, 20.0) as usize;
+            let bar: String = "█".repeat(filled) + &"─".repeat(20 - filled);
+            let body = Line::from(vec![
+                Span::styled(bar, Style::default().fg(Color::Cyan)),
+                Span::raw(format!("  {}", crate::query::fmt_scalar(v))),
+            ]);
+            f.render_widget(Paragraph::new(body).block(block), area);
+        }
+        ControlKind::Check => {
+            let on = val == "1";
+            let body = Line::from(Span::styled(
+                format!("[{}] {label}", if on { "x" } else { " " }),
+                Style::default().fg(if on { Color::Cyan } else { Color::Gray }),
+            ));
+            f.render_widget(Paragraph::new(body).block(block), area);
+        }
+        ControlKind::Facet => {
+            let cands = facet_candidates(w, raw);
+            let selected: Vec<&str> =
+                val.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            let items: Vec<ListItem> = cands
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let mark = if selected.contains(&c.as_str()) { "[x] " } else { "[ ] " };
+                    let style = if focused && i == meta.cursor {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(Line::from(Span::styled(format!("{mark}{c}"), style)))
+                })
+                .collect();
+            f.render_widget(List::new(items).block(block), area);
+        }
+    }
 }
 
 /// One rect per widget. Auto vertical stack unless any widget has a grid cell,
@@ -1466,6 +1669,38 @@ mod tests {
         tick_timeouts(&timeouts, 1, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(41), &mut c);
         assert!(!fired[0]);
         assert_eq!(c.inputs[0].1, "");
+    }
+
+    #[test]
+    fn control_helpers_slider_check_facet() {
+        use super::{slider_adjust, toggle_check, toggle_set_member};
+        // Slider: clamps to [min, max], steps by `step`.
+        assert_eq!(slider_adjust("5", 0.0, 10.0, 2.0, true), "7");
+        assert_eq!(slider_adjust("9", 0.0, 10.0, 2.0, true), "10"); // clamp high
+        assert_eq!(slider_adjust("1", 0.0, 10.0, 2.0, false), "0"); // clamp low
+        // Check: boolean flip.
+        assert_eq!(toggle_check("0"), "1");
+        assert_eq!(toggle_check("1"), "0");
+        // Facet set: add then remove, order preserved.
+        assert_eq!(toggle_set_member("", "warn"), "warn");
+        assert_eq!(toggle_set_member("warn", "error"), "warn,error");
+        assert_eq!(toggle_set_member("warn,error", "warn"), "error");
+    }
+
+    #[test]
+    fn facet_candidates_from_opts_and_field() {
+        use super::facet_candidates;
+        // Explicit -opts.
+        let w = &build(&parse("facet .lv -opts {info warn error}").unwrap()).unwrap().widgets[0];
+        assert_eq!(facet_candidates(w, &[]), vec!["info", "warn", "error"]);
+        // Distinct -field values from the stream.
+        let w2 = &build(&parse("facet .lv -field level").unwrap()).unwrap().widgets[0];
+        let raw = vec![
+            r#"{"level":"info"}"#.to_string(),
+            r#"{"level":"error"}"#.to_string(),
+            r#"{"level":"info"}"#.to_string(),
+        ];
+        assert_eq!(facet_candidates(w2, &raw), vec!["info", "error"]);
     }
 
     #[test]

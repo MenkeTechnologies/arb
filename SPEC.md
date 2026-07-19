@@ -397,7 +397,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 0. ✅ **Walking skeleton** — `echo hi | arb -e 'text .t <- in'`: lex→parse→lower→fusevm→one ratatui widget from stdin.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
-3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(numeric control-path predicates `where lat < .th` ✅; string/set predicates `match(.q)`, `level in .lv` ⬜ — need dedicated `filter`/`facet` widgets + a string/set expr layer)*
+3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets, and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`. *(dynamic `-field` facet candidates + web interactivity for these controls: ⬜)*
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION`, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions. *(multi-clause `expect { }`, `spawn`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).

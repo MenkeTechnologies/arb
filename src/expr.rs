@@ -42,6 +42,14 @@ pub enum Expr {
     /// written `.name` in a predicate. `resolve_pipeline` substitutes it with a
     /// `Num` before eval when the control holds a number; unresolved -> NaN.
     Control(String),
+    /// A string literal — only produced by substituting a string control.
+    Str(String),
+    /// `match(.q)` — substring test of the whole line against a control's text.
+    /// Evaluated Rust-side (not on the numeric VM); empty control -> matches all.
+    Match(Box<Expr>),
+    /// `<field> in .lv` — set membership: keep lines whose FIELD value is in the
+    /// control's comma-separated selected set. Empty set -> matches all.
+    InSet(String, Box<Expr>),
     Neg(Box<Expr>),
     /// Logical negation: truthy input -> 0, falsy -> 1.
     Not(Box<Expr>),
@@ -79,8 +87,8 @@ pub fn eval(e: &Expr, x: f64) -> Result<f64, String> {
 pub fn control_names(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::Control(n) => out.push(n.clone()),
-        Expr::Num(_) | Expr::Var | Expr::Field(_) => {}
-        Expr::Neg(a) | Expr::Not(a) => control_names(a, out),
+        Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
+        Expr::Neg(a) | Expr::Not(a) | Expr::Match(a) | Expr::InSet(_, a) => control_names(a, out),
         Expr::InList(l, items) => {
             control_names(l, out);
             items.iter().for_each(|it| control_names(it, out));
@@ -102,13 +110,64 @@ pub fn control_names(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
+/// Split control refs by the type they resolve to: `Match`/`InSet` inners are
+/// string controls, everything else is numeric. Lets `resolve_pipeline` require
+/// numeric controls to resolve (or drop the filter) while string controls with
+/// an empty value simply match everything.
+pub fn control_names_typed(e: &Expr, num: &mut Vec<String>, strv: &mut Vec<String>) {
+    match e {
+        Expr::Control(n) => num.push(n.clone()),
+        Expr::Match(inner) | Expr::InSet(_, inner) => {
+            if let Expr::Control(n) = inner.as_ref() {
+                strv.push(n.clone());
+            } else {
+                control_names_typed(inner, num, strv);
+            }
+        }
+        Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
+        Expr::Neg(a) | Expr::Not(a) => control_names_typed(a, num, strv),
+        Expr::InList(l, items) => {
+            control_names_typed(l, num, strv);
+            items.iter().for_each(|it| control_names_typed(it, num, strv));
+        }
+        Expr::InRange(l, lo, hi) => {
+            control_names_typed(l, num, strv);
+            control_names_typed(lo, num, strv);
+            control_names_typed(hi, num, strv);
+        }
+        Expr::Cond(a, b, c) => {
+            control_names_typed(a, num, strv);
+            control_names_typed(b, num, strv);
+            control_names_typed(c, num, strv);
+        }
+        Expr::Bin(_, a, b) => {
+            control_names_typed(a, num, strv);
+            control_names_typed(b, num, strv);
+        }
+    }
+}
+
+/// Whether `e` contains a string predicate (`match`/`in .set`) — the query layer
+/// routes such a `where` to the Rust evaluator instead of the numeric VM.
+pub fn expr_has_str(e: &Expr) -> bool {
+    match e {
+        Expr::Match(_) | Expr::InSet(..) | Expr::Str(_) => true,
+        Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Control(_) => false,
+        Expr::Neg(a) | Expr::Not(a) => expr_has_str(a),
+        Expr::InList(l, items) => expr_has_str(l) || items.iter().any(expr_has_str),
+        Expr::InRange(l, lo, hi) => expr_has_str(l) || expr_has_str(lo) || expr_has_str(hi),
+        Expr::Cond(a, b, c) => expr_has_str(a) || expr_has_str(b) || expr_has_str(c),
+        Expr::Bin(_, a, b) => expr_has_str(a) || expr_has_str(b),
+    }
+}
+
 /// Rewrite every `Control(name)` in `e` to `Control("{ns}.{name}")`, in place —
 /// used by `import X as Y` to namespace a module's control references.
 pub fn prefix_controls(e: &mut Expr, ns: &str) {
     match e {
         Expr::Control(n) => *n = format!("{ns}.{n}"),
-        Expr::Num(_) | Expr::Var | Expr::Field(_) => {}
-        Expr::Neg(a) | Expr::Not(a) => prefix_controls(a, ns),
+        Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
+        Expr::Neg(a) | Expr::Not(a) | Expr::Match(a) | Expr::InSet(_, a) => prefix_controls(a, ns),
         Expr::InList(l, items) => {
             prefix_controls(l, ns);
             items.iter_mut().for_each(|it| prefix_controls(it, ns));
@@ -130,22 +189,35 @@ pub fn prefix_controls(e: &mut Expr, ns: &str) {
     }
 }
 
-/// Return a copy of `e` with each `Control(name)` replaced by `Num(v)` when
-/// `lookup(name)` yields a value; unresolved controls are left as-is (-> NaN at
-/// emit time).
-pub fn substitute_controls(e: &Expr, lookup: &dyn Fn(&str) -> Option<f64>) -> Expr {
-    let sub = |b: &Expr| Box::new(substitute_controls(b, lookup));
+/// Return a copy of `e` with control refs substituted: a numeric `Control` ->
+/// `Num(num(n))` when resolvable (else left as-is -> NaN); a string control
+/// inside `match`/`in .set` -> `Str(strv(n))` (empty when unset -> matches all).
+pub fn substitute_controls(
+    e: &Expr,
+    num: &dyn Fn(&str) -> Option<f64>,
+    strv: &dyn Fn(&str) -> Option<String>,
+) -> Expr {
+    let sub = |b: &Expr| Box::new(substitute_controls(b, num, strv));
+    // Resolve a control ref to a string node (for match/in-set inners).
+    let sub_str = |b: &Expr| -> Box<Expr> {
+        match b {
+            Expr::Control(n) => Box::new(Expr::Str(strv(n).unwrap_or_default())),
+            other => Box::new(substitute_controls(other, num, strv)),
+        }
+    };
     match e {
-        Expr::Control(n) => match lookup(n) {
+        Expr::Control(n) => match num(n) {
             Some(v) => Expr::Num(v),
             None => Expr::Control(n.clone()),
         },
-        Expr::Num(_) | Expr::Var | Expr::Field(_) => e.clone(),
+        Expr::Match(inner) => Expr::Match(sub_str(inner)),
+        Expr::InSet(field, inner) => Expr::InSet(field.clone(), sub_str(inner)),
+        Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => e.clone(),
         Expr::Neg(a) => Expr::Neg(sub(a)),
         Expr::Not(a) => Expr::Not(sub(a)),
         Expr::InList(l, items) => Expr::InList(
             sub(l),
-            items.iter().map(|it| substitute_controls(it, lookup)).collect(),
+            items.iter().map(|it| substitute_controls(it, num, strv)).collect(),
         ),
         Expr::InRange(l, lo, hi) => Expr::InRange(sub(l), sub(lo), sub(hi)),
         Expr::Cond(a, b, c) => Expr::Cond(sub(a), sub(b), sub(c)),
@@ -201,6 +273,12 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
         // with a Num, or drops the whole `where` op, before we get here.
         Expr::Control(_) => {
             b.emit(Op::LoadFloat(f64::NAN), 0);
+        }
+        // String predicates never reach the numeric VM — the query layer routes a
+        // string-bearing `where` to a Rust evaluator. Emit a neutral 0 so any
+        // stray numeric use degrades gracefully instead of panicking.
+        Expr::Str(_) | Expr::Match(_) | Expr::InSet(..) => {
+            b.emit(Op::LoadFloat(0.0), 0);
         }
         Expr::Neg(a) => {
             emit(a, x, resolve, b);
@@ -385,9 +463,35 @@ impl Parser {
         Ok(left)
     }
 
-    /// Parse the right-hand side of an `in` test: either a `[a, b, c]` list or a
-    /// `lo..hi` range.
+    /// Parse a `.name` control reference into `Expr::Control(name)`.
+    fn control_ref(&mut self) -> Result<Expr, String> {
+        if self.peek() != Some('.') {
+            return Err("expected a control ref `.name`".into());
+        }
+        self.i += 1; // consume '.'
+        let name = self.ident();
+        if name.is_empty() {
+            return Err("expected a control name after `.`".into());
+        }
+        Ok(Expr::Control(name))
+    }
+
+    /// Parse the right-hand side of an `in` test: a `.name` control set, a
+    /// `[a, b, c]` list, or a `lo..hi` range.
     fn in_list(&mut self, left: Expr) -> Result<Expr, String> {
+        // `<field> in .lv` — set membership against a live control's selected set.
+        // Only a `.`+letter is a control ref; `.5` stays a fractional range bound.
+        if self.peek() == Some('.')
+            && matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_')
+        {
+            let field = match &left {
+                Expr::Field(n) => n.clone(),
+                Expr::Var => "x".to_string(),
+                _ => return Err("in .set: left side must be a field".into()),
+            };
+            let ctrl = self.control_ref()?;
+            return Ok(Expr::InSet(field, Box::new(ctrl)));
+        }
         if self.peek() != Some('[') {
             // `lo..hi` range membership.
             let lo = self.additive()?;
@@ -490,6 +594,16 @@ impl Parser {
             }
             Some(c) if c.is_ascii_alphabetic() || c == '_' => {
                 let name = self.ident();
+                // `match(.q)` — a builtin substring test against a control string.
+                if name == "match" && self.peek() == Some('(') {
+                    self.i += 1; // consume '('
+                    let inner = self.control_ref()?;
+                    if self.peek() != Some(')') {
+                        return Err("match: expected `)`".into());
+                    }
+                    self.i += 1;
+                    return Ok(Expr::Match(Box::new(inner)));
+                }
                 Ok(if name == "x" {
                     Expr::Var
                 } else {

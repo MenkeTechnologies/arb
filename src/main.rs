@@ -511,14 +511,31 @@ fn main() -> io::Result<()> {
             // Flags win; else fall back to the `select` widget's -prompt/-header.
             c.prompt = cli.prompt.clone().or(sel_prompt.clone()).unwrap_or_default();
             c.header = cli.header.clone().or(sel_header.clone()).unwrap_or_default();
-            // Form mode: register `input .name` widgets so typing edits them and
-            // `apply .name` resolves against their live values.
-            c.inputs = spec
-                .widgets
-                .iter()
-                .filter(|w| w.kind == spec::WidgetKind::Input)
-                .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
-                .collect();
+            // Form mode: register every control widget (input/filter/facet/
+            // slider/check) so keys edit them and `apply`/`where … .name` resolve
+            // against their live values. `control_meta` carries slider/facet
+            // bounds + the facet cursor, parallel to `inputs`.
+            for w in spec.widgets.iter().filter(|w| w.kind.is_control()) {
+                let name = w.path.trim_start_matches('.').to_string();
+                let opt_f = |k: &str, d: f64| {
+                    w.opts.get(k).map(|s| spec::parse_scalar(s)).unwrap_or(d)
+                };
+                let kind = tui::control_kind(w.kind);
+                let (min, max, step) = (opt_f("min", 0.0), opt_f("max", 100.0), opt_f("step", 1.0));
+                // Initial value: slider = min, check = "0", others = "".
+                let init = match kind {
+                    tui::ControlKind::Slider => format!("{min}"),
+                    tui::ControlKind::Check => "0".to_string(),
+                    _ => String::new(),
+                };
+                let opts: Vec<String> = w
+                    .opts
+                    .get("opts")
+                    .map(|s| s.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
+                    .unwrap_or_default();
+                c.inputs.push((name, init));
+                c.control_meta.push(tui::ControlMeta { kind, min, max, step, opts, cursor: 0 });
+            }
             // Key bindings (`bind C-<letter> …`) drive the same input values.
             c.binds = spec.binds.clone();
             // fzf-compat: exact/no-sort match modes; `--query` seeds the filter.

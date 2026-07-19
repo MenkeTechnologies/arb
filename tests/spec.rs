@@ -347,6 +347,102 @@ fn control_path_numeric_predicate_filters_by_live_value() {
 }
 
 #[test]
+fn where_match_control_filters_by_substring() {
+    use std::collections::HashMap;
+    // `where match(.q)` keeps lines containing the filter control's text.
+    let s = build(&parse("filter .q\nout { in; where match(.q) }").unwrap()).unwrap();
+    let ops = s.out.as_ref().unwrap();
+    let data = vec!["apple".to_string(), "banana".to_string(), "grape".to_string()];
+    let mut inputs = HashMap::new();
+    inputs.insert("q".to_string(), "ap".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["apple", "grape"]),
+        other => panic!("got {other:?}"),
+    }
+    // Empty control -> matches everything (no filter).
+    let empty: HashMap<String, String> = HashMap::new();
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &empty), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, data),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn where_field_in_set_filters_by_facet_selection() {
+    use std::collections::HashMap;
+    // `where level in .lv` keeps records whose `level` is in the selected set.
+    let s = build(&parse("facet .lv -field level\nout { in; where level in .lv }").unwrap()).unwrap();
+    let ops = s.out.as_ref().unwrap();
+    let data = vec![
+        r#"{"level":"info","m":"a"}"#.to_string(),
+        r#"{"level":"error","m":"b"}"#.to_string(),
+        r#"{"level":"warn","m":"c"}"#.to_string(),
+    ];
+    let mut inputs = HashMap::new();
+    inputs.insert("lv".to_string(), "error,warn".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"level":"error","m":"b"}"#, r#"{"level":"warn","m":"c"}"#]);
+        }
+        other => panic!("got {other:?}"),
+    }
+    // Empty selection -> no filter.
+    let empty: HashMap<String, String> = HashMap::new();
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &empty), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, data),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn where_combines_string_and_set_predicates() {
+    use std::collections::HashMap;
+    let s = build(
+        &parse("filter .q\nfacet .lv -field level\nout { in; where match(.q) and level in .lv }").unwrap(),
+    )
+    .unwrap();
+    let ops = s.out.as_ref().unwrap();
+    let data = vec![
+        r#"{"level":"error","m":"disk"}"#.to_string(),
+        r#"{"level":"info","m":"disk"}"#.to_string(),
+        r#"{"level":"error","m":"net"}"#.to_string(),
+    ];
+    let mut inputs = HashMap::new();
+    inputs.insert("q".to_string(), "disk".to_string());
+    inputs.insert("lv".to_string(), "error".to_string());
+    match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
+        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![r#"{"level":"error","m":"disk"}"#]),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_scalar_numbers_durations_sizes() {
+    use arb::spec::parse_scalar;
+    assert_eq!(parse_scalar("42"), 42.0);
+    assert_eq!(parse_scalar("5s"), 5.0);
+    assert_eq!(parse_scalar("500ms"), 0.5);
+    assert_eq!(parse_scalar("2m"), 120.0);
+    assert_eq!(parse_scalar("1kb"), 1024.0);
+    assert_eq!(parse_scalar("bad"), 0.0);
+}
+
+#[test]
+fn control_widgets_recognized() {
+    let s = build(
+        &parse("filter .q\nfacet .lv -opts {a b c}\nslider .th -min 0 -max 5\ncheck .on -label live").unwrap(),
+    )
+    .unwrap();
+    use arb::spec::WidgetKind;
+    assert_eq!(s.widgets[0].kind, WidgetKind::Filter);
+    assert_eq!(s.widgets[1].kind, WidgetKind::Facet);
+    assert_eq!(s.widgets[2].kind, WidgetKind::Slider);
+    assert_eq!(s.widgets[3].kind, WidgetKind::Check);
+    // facet -opts {a b c} lands as a comma-joined option list.
+    assert_eq!(s.widgets[1].opts.get("opts").map(String::as_str), Some("a,b,c"));
+}
+
+#[test]
 fn control_ref_parses_but_plain_field_predicate_still_works() {
     // `.th` is a control ref; a bareword field predicate must be unaffected.
     assert!(build(&parse("input .th\nout { in; where lat < .th }").unwrap()).is_ok());
