@@ -1722,3 +1722,23 @@ fn csv_multiline_quoted_field_is_one_record() {
         ]))
     );
 }
+
+// Round-6 follow-up: YAML merge keys (`<<`) must be applied, with explicit keys
+// winning over merged and, among `<<: [*a, *b]`, the earlier source winning.
+#[test]
+fn yaml_merge_key_is_applied_with_correct_precedence() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; field user }");
+    let src = "base: &b\n  x: 1\n  z: 9\nuser:\n  <<: *b\n  y: 2\n  z: 5";
+    let ls: Vec<String> = src.lines().map(String::from).collect();
+    match eval(&ops, &ls, 1.0) {
+        QueryResult::Lines(l) => {
+            assert_eq!(l.len(), 1);
+            let v: serde_json::Value = serde_json::from_str(&l[0]).unwrap();
+            assert_eq!(v["x"], 1); // merged in
+            assert_eq!(v["y"], 2); // explicit
+            assert_eq!(v["z"], 5); // explicit wins over merged 9
+            assert!(v.get("<<").is_none(), "literal merge key leaked");
+        }
+        other => panic!("got {other:?}"),
+    }
+}

@@ -1430,8 +1430,41 @@ fn yaml_to_json(lines: &[String]) -> Vec<String> {
     serde_yaml::Deserializer::from_str(&doc)
         .filter_map(|de| Value::deserialize(de).ok())
         .filter(|v| !v.is_null())
-        .map(|v| v.to_string())
+        .map(|mut v| {
+            apply_yaml_merge(&mut v);
+            v.to_string()
+        })
         .collect()
+}
+
+/// Apply YAML merge keys (`<<`). serde_yaml expands anchors/aliases but leaves the
+/// `<<` merge key literal, so `<<: *base` would otherwise surface a stray `<<`
+/// key and omit the merged fields. Merge each `<<` source into its parent object
+/// with correct precedence: an explicit key wins over any merged key, and among
+/// several merged sources (`<<: [*a, *b]`) an earlier source wins.
+fn apply_yaml_merge(v: &mut Value) {
+    if let Value::Object(map) = v {
+        if let Some(merge) = map.remove("<<") {
+            let sources = match merge {
+                Value::Array(a) => a,
+                other => vec![other],
+            };
+            for src in sources {
+                if let Value::Object(m) = src {
+                    for (k, val) in m {
+                        // `or_insert` keeps an already-present key, so explicit
+                        // keys and earlier merge sources both take precedence.
+                        map.entry(k).or_insert(val);
+                    }
+                }
+            }
+        }
+    }
+    match v {
+        Value::Object(map) => map.values_mut().for_each(apply_yaml_merge),
+        Value::Array(a) => a.iter_mut().for_each(apply_yaml_merge),
+        _ => {}
+    }
 }
 
 /// Parse the stream as one TOML document and emit it as a JSON object line
