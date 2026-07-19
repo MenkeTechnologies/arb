@@ -1070,3 +1070,18 @@ fn brace_inside_regex_or_string_does_not_truncate_block() {
     let dbg2 = format!("{:?}", s2.widgets[0].source.as_ref().unwrap().pipeline);
     assert!(dbg2.contains("a}b"), "string brace survived: {dbg2}");
 }
+
+// Round-4 audit regression: grid -row/-col/-rowspan/-colspan were parsed as usize
+// with no upper bound, so `compute_rects` overflowed (row+rowspan near usize::MAX)
+// or built a multi-million-cell layout (huge span) that hung the TUI. The parsed
+// coords/spans must be clamped so the layout stays bounded.
+#[test]
+fn grid_coords_and_spans_are_clamped() {
+    let s = build(&parse("gauge .g\ngrid .g -row 18446744073709551615 -colspan 50000000").unwrap())
+        .unwrap();
+    let w = s.widgets.iter().find(|w| w.path == ".g").unwrap();
+    let (row, _col) = w.grid.expect("grid set");
+    let (_rs, cs) = w.span;
+    assert!(row <= 256, "row clamped: {row}");
+    assert!(cs <= 256, "colspan clamped: {cs}");
+}

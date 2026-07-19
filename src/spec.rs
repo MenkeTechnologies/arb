@@ -805,10 +805,17 @@ fn build_into(
                     .and_then(Arg::as_str)
                     .ok_or("grid: missing path")?;
                 let o = parse_opts(&c.args[1..]);
+                // Bound every grid coordinate/span: `compute_rects` sums `row+rowspan`
+                // (unguarded usize add -> overflow panic near usize::MAX) and builds a
+                // per-cell layout constraint vector of that size (a huge span like
+                // `-colspan 50000000` allocates millions of constraints and pegs the
+                // cassowary solver -> hang). No real dashboard grid exceeds this.
+                const MAX_GRID: usize = 256;
                 let opt = |k: &str, d: usize| {
                     o.get(k)
                         .and_then(|s: &String| s.parse::<usize>().ok())
                         .unwrap_or(d)
+                        .min(MAX_GRID)
                 };
                 // `-span` is a colspan shorthand; `-rowspan`/`-colspan` are explicit.
                 let colspan = opt("colspan", opt("span", 1)).max(1);

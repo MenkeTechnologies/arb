@@ -92,6 +92,21 @@ fn line_len_utf16(line: &str) -> u32 {
     line.chars().map(|c| c.len_utf16() as u32).sum()
 }
 
+/// Convert an LSP UTF-16 code-unit column into a char index in `chars`. LSP
+/// `position.character` counts UTF-16 units, so a non-BMP char (2 units but one
+/// `char`) shifts every later token; indexing the char vector by the raw column
+/// lands on the wrong token. Walk until the accumulated UTF-16 length reaches col.
+fn char_idx_from_utf16(chars: &[char], col: u32) -> usize {
+    let mut units = 0u32;
+    for (i, c) in chars.iter().enumerate() {
+        if units >= col {
+            return i;
+        }
+        units += c.len_utf16() as u32;
+    }
+    chars.len()
+}
+
 /// The server's open-document store, keyed by URI.
 #[derive(Default)]
 pub struct Server {
@@ -379,7 +394,7 @@ fn symbol_range(line: u32, len: u32) -> Value {
 fn hover(src: &str, line: u32, ch: u32) -> Option<String> {
     let l = src.lines().nth(line as usize)?;
     let chars: Vec<char> = l.chars().collect();
-    let ci = (ch as usize).min(chars.len());
+    let ci = char_idx_from_utf16(&chars, ch);
     let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut start = ci;
     while start > 0 && is_word(chars[start - 1]) {
@@ -1122,7 +1137,7 @@ fn token_before(src: &str, line: u32, ch: u32) -> String {
         return String::new();
     };
     let chars: Vec<char> = l.chars().collect();
-    let end = (ch as usize).min(chars.len());
+    let end = char_idx_from_utf16(&chars, ch);
     let is_tok = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-';
     let mut i = end;
     while i > 0 && is_tok(chars[i - 1]) {
@@ -1168,7 +1183,7 @@ fn folding_ranges(src: &str) -> Vec<Value> {
 fn word_at(src: &str, line: u32, ch: u32) -> Option<String> {
     let l = src.lines().nth(line as usize)?;
     let cs: Vec<char> = l.chars().collect();
-    let i = (ch as usize).min(cs.len());
+    let i = char_idx_from_utf16(&cs, ch);
     let is_w = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
     let mut s = i;
     while s > 0 && is_w(cs[s - 1]) {
@@ -1418,6 +1433,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn char_idx_from_utf16_handles_non_bmp() {
+        // "🚀ab": rocket is 2 UTF-16 units (1 char), then 'a','b'.
+        let cs: Vec<char> = "🚀ab".chars().collect();
+        assert_eq!(char_idx_from_utf16(&cs, 0), 0); // before rocket
+        assert_eq!(char_idx_from_utf16(&cs, 2), 1); // after rocket -> 'a'
+        assert_eq!(char_idx_from_utf16(&cs, 3), 2); // -> 'b'
+        assert_eq!(char_idx_from_utf16(&cs, 99), 3); // clamps to len
+    }
+
+    #[test]
+    fn word_at_resolves_token_after_non_bmp_prefix() {
+        // Two rockets (4 UTF-16 units) + space, then `gauge` at UTF-16 col 5..10.
+        // Indexing by the raw column (old bug) would land past the word.
+        let src = "🚀🚀 gauge";
+        assert_eq!(word_at(src, 0, 7).as_deref(), Some("gauge"));
+    }
 
     #[test]
     fn corpus_covers_every_input_marker() {

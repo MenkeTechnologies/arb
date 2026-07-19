@@ -1625,3 +1625,31 @@ fn map_does_not_saturate_large_whole_numbers() {
         QueryResult::Lines(lines(&["6"]))
     );
 }
+
+// Round-4 audit regression: pad/lpad width fed into `format!("{:<width$}")` panics
+// ("Formatting argument out of range") at width >= 65536 (the std fmt u16 ceiling).
+// A widget pipeline with a large pad killed the whole /data thread. It must clip.
+#[test]
+fn pad_over_fmt_ceiling_does_not_panic() {
+    let ops = pipeline("tail .x\nsource .x { in; pad 70000 }");
+    match eval(&ops, &lines(&["ab"]), 1.0) {
+        QueryResult::Lines(ls) => assert_eq!(ls[0].chars().count(), 65535),
+        other => panic!("got {other:?}"),
+    }
+    let lp = pipeline("tail .x\nsource .x { in; lpad 70000 }");
+    match eval(&lp, &lines(&["ab"]), 1.0) {
+        QueryResult::Lines(ls) => assert_eq!(ls[0].chars().count(), 65535),
+        other => panic!("got {other:?}"),
+    }
+}
+
+// Round-4 audit regression: `bins N` allocated `vec![0u64; N]` + N pairs, so a huge
+// N (1e8) ballooned memory and hung. The bucket count must be clamped.
+#[test]
+fn bins_bucket_count_is_bounded() {
+    let ops = pipeline("tail .x\nsource .x { in; bins 100000000 }");
+    match eval(&ops, &lines(&["1", "5", "9"]), 1.0) {
+        QueryResult::Pairs(p) => assert!(p.len() <= 65_536, "bins capped: {}", p.len()),
+        other => panic!("got {other:?}"),
+    }
+}

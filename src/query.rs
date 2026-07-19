@@ -761,13 +761,16 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
             }
             QueryOp::Pad(n) => {
-                let n = *n;
+                // `format!` width is a u16 internally: a width >= 65536 panics
+                // ("Formatting argument out of range"). Cap it — no real pane is
+                // that wide and the widget layer clips lines to the pane anyway.
+                let n = (*n).min(u16::MAX as usize);
                 for l in cur.iter_mut() {
                     *l = format!("{:<width$}", l, width = n);
                 }
             }
             QueryOp::Lpad(width) => {
-                let w = *width;
+                let w = (*width).min(u16::MAX as usize);
                 for l in cur.iter_mut() {
                     *l = format!("{:>width$}", l, width = w);
                 }
@@ -1221,7 +1224,10 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::Bins(n) => {
                 let vals = nums(&cur);
-                let n = (*n).max(1);
+                // Bound the bucket count: it allocates `vec![0u64; n]` and builds
+                // n formatted pairs, so an over-large N (e.g. 1e8) balloons memory
+                // and hangs. No histogram display needs more than this many bars.
+                let n = (*n).clamp(1, 65_536);
                 if vals.is_empty() {
                     return QueryResult::Pairs(Vec::new());
                 }
