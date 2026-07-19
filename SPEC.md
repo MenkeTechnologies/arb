@@ -238,7 +238,17 @@ timeout 5s alert "stream idle"           # fire when no new line for 5s (Ns/Nms/
 #          | { … }  (a block runs several in order)
 ```
 
-⬜ Planned: the `expect { /re/ {…} … }` multi-clause block and `spawn`.
+The block form groups several clauses under one `expect`:
+
+```
+expect {
+    /panic|OOM/ { alert "crash"; flash .log red }   # each clause: /re/ ACTION
+    /5\d\d/     beep
+    /shutdown/  quit
+}
+```
+
+⬜ Planned: `spawn`.
 
 ## 14. Events — bind (Tk)
 
@@ -422,7 +432,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
-4. ✅ Expect reactions + events/bind — `expect /re/ ACTION`, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions. *(multi-clause `expect { }`, `spawn`: ⬜)*
+4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions. *(`spawn`: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry client over a git index (`arb update`/`search`/`install`/`add`/`uninstall`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking) ship. *(`arb publish` is client-only pending the hosted index; native/cdylib packages + multi-version semver resolution: ⬜)*

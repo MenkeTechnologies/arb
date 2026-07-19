@@ -632,6 +632,55 @@ fn expect_rejects_unknown_action() {
 }
 
 #[test]
+fn expect_block_two_clauses_two_expects() {
+    use arb::spec::BindAction;
+    // Tcl Expect's multi-pattern block: one `expect { }`, several /re/ ACTION
+    // clauses, each becoming a live Expect.
+    let s = build(
+        &parse("tail .log\nexpect { /panic/ quit\n/5\\d\\d/ flash .log red }").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.expects.len(), 2);
+    assert!(s.expects[0].pattern.is_match("kernel panic"));
+    assert_eq!(s.expects[0].action, BindAction::Quit);
+    assert!(s.expects[1].pattern.is_match("503 unavailable"));
+    assert_eq!(
+        s.expects[1].action,
+        BindAction::Flash { widget: "log".into(), color: "red".into() }
+    );
+}
+
+#[test]
+fn expect_block_nested_action_seq() {
+    use arb::spec::BindAction;
+    // A clause action may itself be a `{ … }` block → a Seq of actions.
+    let s = build(&parse("tail .l\nexpect { /err/ { alert boom; beep } }").unwrap()).unwrap();
+    assert_eq!(s.expects.len(), 1);
+    assert!(matches!(s.expects[0].action, BindAction::Seq(_)));
+}
+
+#[test]
+fn expect_block_bad_regex_errors() {
+    assert!(build(&parse("tail .l\nexpect { /(unterminated/ quit }").unwrap()).is_err());
+}
+
+#[test]
+fn expect_empty_block_no_expects() {
+    let s = build(&parse("tail .l\nexpect { }").unwrap()).unwrap();
+    assert!(s.expects.is_empty());
+}
+
+#[test]
+fn expect_single_clause_still_builds() {
+    use arb::spec::BindAction;
+    // Regression: the single-clause form is unchanged by the block branch.
+    let s = build(&parse("tail .l\nexpect /panic/ quit").unwrap()).unwrap();
+    assert_eq!(s.expects.len(), 1);
+    assert_eq!(s.expects[0].action, BindAction::Quit);
+    assert!(s.expects[0].pattern.is_match("panic!"));
+}
+
+#[test]
 fn interactive_out_maps_stream_with_live_input() {
     use std::collections::HashMap;
     // The megafilter/map: `out { in; apply .x }` resolved against a live input,

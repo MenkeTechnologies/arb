@@ -575,11 +575,28 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
                 }
             }
         } else if c.name == "expect" {
-            // `expect /regex/ ACTION` — ACTION as for `bind`.
-            let pattern = regex_arg(c)?;
-            let action =
-                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("expect: {e}"))?;
-            spec.expects.push(Expect { pattern, action });
+            match c.args.first() {
+                // Block form `expect { /re/ ACTION; /re2/ ACTION }` (Tcl Expect's
+                // multi-pattern block): each inner command is one clause — its
+                // NAME is the /regex/, its args are the ACTION. Emit one Expect
+                // per clause; all fire live per line (tui.rs loops every entry).
+                Some(Arg::Block(clauses)) => {
+                    for clause in clauses {
+                        let pattern =
+                            compile_regex(&clause.name).map_err(|e| format!("expect: {e}"))?;
+                        let action = parse_bind_or_expect_action(&clause.args)
+                            .map_err(|e| format!("expect: {e}"))?;
+                        spec.expects.push(Expect { pattern, action });
+                    }
+                }
+                // Single-clause form `expect /regex/ ACTION` — ACTION as for `bind`.
+                _ => {
+                    let pattern = regex_arg(c)?;
+                    let action = parse_bind_or_expect_action(&c.args[1..])
+                        .map_err(|e| format!("expect: {e}"))?;
+                    spec.expects.push(Expect { pattern, action });
+                }
+            }
         } else if c.name == "timeout" {
             // `timeout Ns ACTION` — fire ACTION when the stream goes idle for Ns.
             let dspec = c
@@ -1531,6 +1548,18 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
     Ok(ops)
 }
 
+/// Compile a `/pattern/` (or bare `pattern`) literal into a `Regex`. Shared by
+/// the arg form (`match /re/`, single-clause `expect /re/ …`) and the
+/// `expect { }` block-clause form, where the `/re/` arrives as the clause
+/// command's *name*.
+fn compile_regex(raw: &str) -> Result<Regex, String> {
+    let pat = raw
+        .strip_prefix('/')
+        .and_then(|s| s.strip_suffix('/'))
+        .unwrap_or(raw);
+    Regex::new(pat).map_err(|e| format!("bad regex: {e}"))
+}
+
 /// Read a regex argument, stripping optional `/…/` delimiters.
 fn regex_arg(c: &Command) -> Result<Regex, String> {
     let raw = c
@@ -1538,11 +1567,7 @@ fn regex_arg(c: &Command) -> Result<Regex, String> {
         .first()
         .and_then(Arg::as_str)
         .ok_or_else(|| format!("{}: expected a pattern", c.name))?;
-    let pat = raw
-        .strip_prefix('/')
-        .and_then(|s| s.strip_suffix('/'))
-        .unwrap_or(raw);
-    Regex::new(pat).map_err(|e| format!("{}: bad regex: {e}", c.name))
+    compile_regex(raw).map_err(|e| format!("{}: {e}", c.name))
 }
 
 /// Parse a required count argument for `take`/`drop`.
