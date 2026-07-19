@@ -1,0 +1,40 @@
+name: Deploy Pages
+
+# Replaces GitHub's legacy (Jekyll) Pages build, which force-clones submodules
+# and fails on the private `lib/zgui-core` ("Repository not found"). docs/ is
+# self-contained static HTML/CSS/JS, so we check out WITHOUT submodules and
+# publish the directory as-is.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; let an in-flight deploy finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        # No `submodules:` key → default false. The private zgui-core submodule
+        # is never fetched; the docs site does not depend on it.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4
