@@ -36,7 +36,7 @@ pub enum WidgetKind {
 }
 
 impl WidgetKind {
-    fn from(verb: &str) -> Option<WidgetKind> {
+    pub(crate) fn from(verb: &str) -> Option<WidgetKind> {
         Some(match verb {
             "text" => WidgetKind::Text,
             "tail" => WidgetKind::Tail,

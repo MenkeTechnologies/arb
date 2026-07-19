@@ -133,6 +133,14 @@ struct Cli {
     #[arg(long = "port", value_name = "N", default_value_t = 8787,
         help = "\x1b[32m//\x1b[0m Port for --serve (0 = pick a free port)")]
     port: u16,
+    /// Run as a Language Server over stdio (JSON-RPC) for `.arb` specs.
+    #[arg(long = "lsp",
+        help = "\x1b[32m//\x1b[0m Run the LSP over stdio (diagnostics/symbols/hover)")]
+    lsp: bool,
+    /// Run as a Debug Adapter over stdio (handshake stub — specs aren't steppable).
+    #[arg(long = "dap",
+        help = "\x1b[32m//\x1b[0m Run the DAP handshake stub over stdio")]
+    dap: bool,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.
     #[arg(long = "json",
@@ -266,6 +274,17 @@ fn main() -> io::Result<()> {
 
     if cli.repl {
         arb::repl::run();
+        return Ok(());
+    }
+
+    // Editor frontends over stdio (stdin is a pipe, so this must come before the
+    // no-args REPL / stdin-tail fallbacks below).
+    if cli.lsp {
+        arb::lsp::run();
+        return Ok(());
+    }
+    if cli.dap {
+        arb::dap::run();
         return Ok(());
     }
 

@@ -455,6 +455,8 @@ take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 | `cmd \| arb -- CMD…` | Preview pane: re-run CMD over the filtered output. |
 | `arb '<PROD> \| _ \| <CONS>'` | Orchestrate a pipeline; `_` is arb's stage, producer stderr → pane. |
 | `arb --run 'PIPELINE'` | Same, explicit flag form. |
+| `arb --lsp` | Language Server over stdio (diagnostics / symbols / hover) for `.arb`. |
+| `arb --dap` | Debug Adapter handshake stub over stdio (specs aren't steppable). |
 | `--version` / `--help` | Version / usage. |
 
 ---
@@ -499,16 +501,18 @@ the terminal or the browser) is complete:
   polling fallback; `arb --html` emits a static snapshot.
 - **Reactions & events** — `expect /re/ ACTION` / `bind C-<key> ACTION` with
   actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk
-  named keys (`<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`); `.w configure -k v` retune.
+  named keys (`<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`); `timeout Ns ACTION` idle
+  reactions; `.w configure -k v` retune.
+- **Editor tooling** — `arb --lsp` (diagnostics via parse+build, `documentSymbol`,
+  `hover`) and `arb --dap` (handshake stub) over stdio JSON-RPC.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution,
   and a local preset library (`--save`/`--install`/`--uninstall`/`--installed`).
 - **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
   pipeline orchestration (`arb 'PROD | _ | CONS'`).
 
-**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — LSP/DAP
-frontends, dedicated `filter`/`facet`/`slider` control widgets and string/set
-control predicates (`match(.q)`, `level in .lv`), `expect` `timeout` reactions,
-a networked package registry
+**Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — dedicated
+`filter`/`facet`/`slider` control widgets and string/set control predicates
+(`match(.q)`, `level in .lv`), a networked package registry
 (`publish`/`search`/native ABI), and upstream-command sniffing for the
 shareable-dashboard ecosystem. Akka-style actors and mouse/resize events are
 **out of scope** — dataflow / pub-sub belong to `stryke`, and arb reads raw tty

@@ -364,6 +364,8 @@ src/web.rs       static HTML snapshot export (--html)
 build.rs         bundle lib/zgui-core/webui/*.js + all.css -> one JS/CSS asset, embedded in serve.rs
 lib/zgui-core/   git submodule: the shared cyberpunk web-component toolkit (window.ZGui.*)
 src/repl.rs      interactive REPL (--repl)
+src/lsp.rs       Language Server over stdio (--lsp): diagnostics/symbols/hover
+src/dap.rs       Debug Adapter handshake stub over stdio (--dap)
 src/banner.rs    startup/help art
 src/main.rs      CLI (clap) + dispatch
 src/lib.rs       crate root
@@ -374,7 +376,7 @@ runs on the VM; declarative widget/layout construction is plain Rust and needs n
 VM. Language design (lexer/parser/ast/interp/semantics) is arb-original.
 
 Planned files (see §21 — specified, not yet in the tree): networked package
-registry, LSP/DAP stdio frontends. (Actors are out of scope — §21.)
+registry. (Actors are out of scope — §21.)
 
 ## 21. Milestones
 
@@ -388,4 +390,4 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) ships; networked registry (`publish`/`search`/native ABI) + ecosystem: ⬜.
-8. ⬜ LSP/DAP.
+8. 🟡 LSP/DAP — `arb --lsp` ships (diagnostics via parse+build, `documentSymbol`, `hover`); `arb --dap` is a handshake-only stub (arb specs have no stepping runtime). *(diagnostics anchor to line 0 — the lexer/parser carry no source spans yet: ⬜)*
