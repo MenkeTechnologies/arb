@@ -2283,7 +2283,7 @@ mod tests {
         assert_eq!(mouse_button(1), MouseButton::Middle);
         assert_eq!(mouse_button(2), MouseButton::Right);
         // Modifiers ride the high bits and don't disturb the button decode.
-        assert_eq!(mouse_button(0 | 0x04 | 0x10), MouseButton::Left);
+        assert_eq!(mouse_button(0x04 | 0x10), MouseButton::Left);
         assert_eq!(mouse_button(2 | 0x08), MouseButton::Right);
         assert!(mouse_shift(0x04) && !mouse_alt(0x04) && !mouse_ctrl(0x04));
         assert!(mouse_alt(0x08) && !mouse_shift(0x08));

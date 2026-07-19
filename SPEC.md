@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (Planned: LSP/DAP stdio frontends. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -399,8 +399,8 @@ build.rs         bundle lib/zgui-core/webui/*.js + all.css -> one JS/CSS asset, 
 lib/zgui-core/   git submodule: the shared cyberpunk web-component toolkit (window.ZGui.*)
 src/repl.rs      interactive REPL (--repl)
 src/pkg.rs       registry client (install/search/update/publish) over a git index
-src/lsp.rs       Language Server over stdio (--lsp): diagnostics/symbols/hover
-src/dap.rs       Debug Adapter handshake stub over stdio (--dap)
+src/lsp.rs       Language Server over stdio (--lsp): diagnostics/symbols/hover/completion/signatureHelp/definition/references/highlight/rename/folding/formatting/semanticTokens
+src/dap.rs       Debug Adapter over stdio (--dap): step the stream, regex breakpoints, inspect the paused line/stats/controls
 src/banner.rs    startup/help art
 src/main.rs      CLI (clap) + dispatch
 src/lib.rs       crate root
@@ -425,4 +425,4 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry client over a git index (`arb update`/`search`/`install`/`add`/`uninstall`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking) ship. *(`arb publish` is client-only pending the hosted index; native/cdylib packages + multi-version semver resolution: ⬜)*
-8. 🟡 LSP/DAP — `arb --lsp` ships (diagnostics via parse+build, `documentSymbol`, `hover`); `arb --dap` is a handshake-only stub (arb specs have no stepping runtime). *(diagnostics carry real source ranges; per-arg precision + LSP UTF-16 columns: ⬜)*
+8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). *(per-arg diagnostic precision: ⬜)*

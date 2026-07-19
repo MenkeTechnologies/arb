@@ -136,14 +136,26 @@ fn unknown_request_is_method_not_found() {
 }
 
 #[test]
-fn dap_initialize_handshake_and_honest_unsupported() {
+fn dap_initialize_advertises_stepping() {
     let mut seq = 0i64;
-    // initialize -> a success response + an `initialized` event.
+    // initialize -> a success response (with real stepping capabilities) + the
+    // `initialized` event.
     let out = arb::dap::handle(&json!({ "seq": 1, "type": "request", "command": "initialize" }), &mut seq);
     assert_eq!(out[0]["type"], "response");
     assert_eq!(out[0]["success"], true);
+    assert_eq!(out[0]["body"]["supportsConditionalBreakpoints"], true);
+    assert_eq!(out[0]["body"]["supportsConfigurationDoneRequest"], true);
     assert_eq!(out[1]["event"], "initialized");
-    // A stepping request is honestly unsupported (not faked).
-    let step = arb::dap::handle(&json!({ "seq": 2, "type": "request", "command": "stepIn" }), &mut seq);
-    assert_eq!(step[0]["success"], false);
+    // scopes are the three arb state sources (Stream/Controls/Pipeline).
+    let sc = arb::dap::handle(&json!({ "seq": 2, "type": "request", "command": "scopes" }), &mut seq);
+    let names: Vec<&str> = sc[0]["body"]["scopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Stream", "Controls", "Pipeline"]);
+    // A stepping request is now a real, supported response.
+    let step = arb::dap::handle(&json!({ "seq": 3, "type": "request", "command": "stepIn" }), &mut seq);
+    assert_eq!(step[0]["success"], true);
 }

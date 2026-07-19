@@ -1,12 +1,15 @@
 //! Language Server (`arb --lsp`): a std-only, no-async LSP over stdio JSON-RPC
 //! for `.arb` specs. It parses + builds each open document and republishes the
-//! parser/interpreter error as a diagnostic, plus `documentSymbol` (the widgets)
-//! and `hover` (verb help). The transport shape is the standard `Content-Length`
-//! framing; the language logic (`diagnose`/`handle`) is pure and unit-testable.
+//! parser/interpreter error as a diagnostic, plus `documentSymbol`, `hover`,
+//! `completion`, `signatureHelp`, `definition`, `references`, `documentHighlight`,
+//! `rename`, `foldingRange`, `formatting`, and `semanticTokens/full`. The
+//! transport shape is the standard `Content-Length` framing; the language logic
+//! (`diagnose`/`handle` + the pure helpers) is unit-testable.
 //!
 //! Diagnostics anchor to the error's real source span (the offending verb token
-//! or lexer position). Columns are char counts, not LSP UTF-16 units, and spans
-//! are per-command (the verb), not per-argument — matching the rest of this file.
+//! or lexer position). Position columns are LSP UTF-16 code units (see
+//! `col_utf16`/`line_len_utf16`); spans are per-command (the verb), not
+//! per-argument.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -1086,5 +1089,133 @@ pub fn run() {
         if is_exit {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corpus_covers_every_input_marker() {
+        // Every stdin format marker `pipeline_from_body` accepts must have a doc.
+        for m in ["in", "in.json", "in.html", "in.xml", "in.logfmt", "in.csv", "in.tsv", "in.yaml", "in.yml", "in.toml"] {
+            assert!(verb_help(m).is_some(), "CORPUS missing input marker `{m}`");
+        }
+    }
+
+    #[test]
+    fn utf16_columns_for_astral() {
+        // A rocket (U+1F680) is one Unicode scalar but two UTF-16 code units.
+        assert_eq!(line_len_utf16("ab"), 2);
+        assert_eq!(line_len_utf16("a🚀b"), 4); // 1 + 2 + 1
+        assert_eq!(col_utf16("a🚀b", 2), 3); // through the astral char
+    }
+
+    #[test]
+    fn classify_disambiguates() {
+        assert_eq!(classify("-3", false), Tok::Number);
+        assert_eq!(classify("-max", false), Tok::Flag);
+        assert_eq!(classify(".cpu", false), Tok::WidgetPath);
+        assert_eq!(classify(".5", false), Tok::Number);
+        assert_eq!(classify("/5\\d\\d/", false), Tok::Regex);
+        assert_eq!(classify("sort", true), Tok::Verb);
+        assert_eq!(classify("gauge", true), Tok::Verb);
+        assert_eq!(classify("foo", true), Tok::Str);
+        assert_eq!(classify("{", false), Tok::Brace);
+    }
+
+    #[test]
+    fn classify_expr_control_and_ops() {
+        assert_eq!(classify_expr("and"), Tok::Verb);
+        assert_eq!(classify_expr(".cpu"), Tok::ControlRef);
+        assert_eq!(classify_expr(">="), Tok::Flag);
+        assert_eq!(classify_expr("42"), Tok::Number);
+    }
+
+    #[test]
+    fn every_sig_verb_is_in_corpus() {
+        for s in SIGS {
+            assert!(verb_help(s.verb).is_some(), "SIGS verb `{}` not in CORPUS", s.verb);
+        }
+    }
+
+    #[test]
+    fn flags_for_known_kinds() {
+        let sl = flags_for("slider");
+        assert!(sl.contains(&"-min") && sl.contains(&"-max") && sl.contains(&"-step"));
+        assert!(flags_for("text").is_empty());
+        assert!(flags_for("nope").is_empty());
+    }
+
+    #[test]
+    fn directive_and_action_sigs_present() {
+        for v in ["bind", "expect", "timeout"] {
+            assert!(DIRECTIVE_SIGS.iter().any(|s| s.verb == v));
+        }
+        for v in ["flash", "alert"] {
+            assert!(ACTION_SIGS.iter().any(|s| s.verb == v));
+        }
+    }
+
+    #[test]
+    fn completion_dot_context_lists_declared_paths() {
+        let src = "gauge .cpu\napply .";
+        // Cursor right after `apply .` (line 1, col 7) -> declared widget paths.
+        let items = completions(src, 1, 7);
+        assert_eq!(items[0]["label"], ".cpu");
+        // A bare position offers the CORPUS verbs.
+        let verbs = completions(src, 0, 0);
+        assert!(verbs.iter().any(|i| i["label"] == "gauge"));
+    }
+
+    #[test]
+    fn completion_dash_context_lists_flags() {
+        let src = "slider .th -";
+        let items = completions(src, 0, 12);
+        let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+        assert!(labels.contains(&"-min") && labels.contains(&"-color"));
+    }
+
+    #[test]
+    fn folding_pairs_braces_not_in_strings() {
+        let folds = folding_ranges("source .x {\n in\n}");
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0]["startLine"], 0);
+        assert_eq!(folds[0]["endLine"], 2);
+        // A brace inside a string never opens a fold.
+        assert!(folding_ranges("expect /x/ alert \"{\"").is_empty());
+    }
+
+    #[test]
+    fn word_occurrences_whole_word_dotpath() {
+        let src = "gauge .cpu\napply .cpu\nsource .cpu2";
+        let occ = word_occurrences(src, ".cpu");
+        assert_eq!(occ.len(), 2); // .cpu twice; .cpu2 is not a whole-word match
+    }
+
+    #[test]
+    fn definition_jumps_to_widget_decl() {
+        let src = "gauge .cpu\napply .cpu";
+        // Cursor on `.cpu` in `apply .cpu`.
+        let loc = word_at(src, 1, 8).and_then(|w| widget_decl_location(src, "file://x", &w));
+        assert_eq!(loc.unwrap()["range"]["start"]["line"], 0);
+    }
+
+    #[test]
+    fn signature_help_for_replace() {
+        let v = signature_help("replace /a/ b", 0).unwrap();
+        assert_eq!(v["signatures"][0]["label"], "replace /RE/ TO");
+    }
+
+    #[test]
+    fn format_indents_nested_blocks() {
+        assert_eq!(format_arb("source .x {\nin\n}"), "source .x {\n  in\n}\n");
+    }
+
+    #[test]
+    fn semantic_tokens_delta_encoding() {
+        // `gauge .cpu` -> Verb(0) then WidgetPath(1), delta-encoded.
+        assert_eq!(semantic_tokens("gauge .cpu"), vec![0, 0, 5, 0, 0, 0, 6, 4, 1, 0]);
     }
 }

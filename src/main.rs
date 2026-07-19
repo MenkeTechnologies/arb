@@ -135,11 +135,12 @@ struct Cli {
     port: u16,
     /// Run as a Language Server over stdio (JSON-RPC) for `.arb` specs.
     #[arg(long = "lsp",
-        help = "\x1b[32m//\x1b[0m Run the LSP over stdio (diagnostics/symbols/hover)")]
+        help = "\x1b[32m//\x1b[0m Run the LSP over stdio (diagnostics/completion/hover/…)")]
     lsp: bool,
-    /// Run as a Debug Adapter over stdio (handshake stub — specs aren't steppable).
+    /// Run as a Debug Adapter over stdio: step the stream, regex breakpoints,
+    /// inspect the paused line / stats / controls (launch with program+input).
     #[arg(long = "dap",
-        help = "\x1b[32m//\x1b[0m Run the DAP handshake stub over stdio")]
+        help = "\x1b[32m//\x1b[0m Run the DAP over stdio (step the stream, regex breakpoints)")]
     dap: bool,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.

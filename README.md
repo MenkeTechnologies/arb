@@ -70,8 +70,8 @@ displays it. Highlights:
   moves onto fusevm as the expression layer grows.
 - **Original, not a port** — an original language in stryke's class, deliberately
   lean (rubylang-scale, not stryke-scale). It reuses mechanics from its siblings
-  (fusevm embedding, the rkyv cache, the LSP/DAP stdio shape, the package-manager
-  ABI) but the lexer, parser, AST, lowering, and semantics are arb's own.
+  (fusevm embedding, the LSP/DAP stdio shape, the package-manager ABI) but the
+  lexer, parser, AST, lowering, and semantics are arb's own.
 - **World-first = synthesis + ecosystem** — no single leg is new (Tcl/Tk, Expect,
   dasel, ratatui, `textual serve` are all prior art); the combination is: a
   pipe-native, dual-target, component-generating UI language with a shareable
@@ -456,8 +456,8 @@ take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 | `cmd \| arb -- CMD…` | Preview pane: re-run CMD over the filtered output. |
 | `arb '<PROD> \| _ \| <CONS>'` | Orchestrate a pipeline; `_` is arb's stage, producer stderr → pane. |
 | `arb --run 'PIPELINE'` | Same, explicit flag form. |
-| `arb --lsp` | Language Server over stdio (diagnostics / symbols / hover) for `.arb`. |
-| `arb --dap` | Debug Adapter handshake stub over stdio (specs aren't steppable). |
+| `arb --lsp` | Language Server over stdio for `.arb` (diagnostics, completion, hover, signatureHelp, definition/references/highlight/rename, folding, formatting, semanticTokens). |
+| `arb --dap` | Debug Adapter over stdio: step the stream line-by-line, regex breakpoints, inspect the paused line / stats / controls. |
 | `--version` / `--help` | Version / usage. |
 
 ---
@@ -471,8 +471,8 @@ stdin  →  lexer  →  parser (AST)  →  Spec interp  →  ratatui TUI  (or se
                               (calc / expressions lower to fusevm bytecode)
 ```
 
-Transfers from siblings are **mechanics only** — fusevm embedding, the rkyv
-cache, the LSP/DAP stdio shape, the package-manager ABI. The language design
+Transfers from siblings are **mechanics only** — fusevm embedding, the LSP/DAP
+stdio shape, the package-manager ABI. The language design
 (lexer / parser / AST / compiler / semantics) is arb-original. The compute core
 already lowers to a `fusevm::Chunk` and runs on the VM; declarative widget and
 layout construction is plain Rust construction and needs no VM.
@@ -513,8 +513,12 @@ the terminal or the browser) is complete:
   and returns to the live tail. Shift/Alt/Ctrl modifier bits are decoded too;
   `bind <Click>` / `bind <Resize>` reactions fire on press/resize. Hold **Shift**
   and drag for native text selection.
-- **Editor tooling** — `arb --lsp` (diagnostics via parse+build, `documentSymbol`,
-  `hover`) and `arb --dap` (handshake stub) over stdio JSON-RPC.
+- **Editor tooling** — `arb --lsp`, a full Language Server (diagnostics with
+  UTF-16 columns, `completion`, `hover`, `signatureHelp`, `definition`/
+  `references`/`documentHighlight`/`rename` over widget `.path` names,
+  `foldingRange`, `formatting`, `semanticTokens`), and `arb --dap`, a real
+  steppable debugger (each stream line is a step, regex breakpoints, the pipeline
+  as the stack, `evaluate` over the paused line) — both over stdio JSON-RPC.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution
   (with `import X as Y` namespacing), a local preset library
   (`--save`/`--install`/`--uninstall`/`--installed`), and a registry client over

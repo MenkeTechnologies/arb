@@ -1500,6 +1500,13 @@ pub fn field_str_pub(line: &str, name: &str) -> String {
     field_str(line, name)
 }
 
+/// Public wrapper for [`field_num`] — used by the DAP `evaluate` request to
+/// resolve `.field` references against the paused stream line (same resolver the
+/// per-line `where`/`map` evaluation uses).
+pub fn field_num_pub(line: &str, name: &str) -> f64 {
+    field_num(line, name)
+}
+
 /// Format a control scalar: integers without a decimal, else the shortest repr.
 pub fn fmt_scalar(v: f64) -> String {
     fmt_num(v)
