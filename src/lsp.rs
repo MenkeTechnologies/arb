@@ -1010,6 +1010,17 @@ fn classify(tok: &str, first_word: bool) -> Tok {
         if crate::spec::WidgetKind::from(tok).is_some() || verb_help(tok).is_some() {
             return Tok::Verb;
         }
+        // A jq/xpath literal at command position (the front-ends): color it as the
+        // query construct it is, not as a bare string.
+        if tok.starts_with("select(") || tok.starts_with("map(") {
+            return Tok::Verb;
+        }
+        if (tok.starts_with('.') && tok.parse::<f64>().is_err())
+            || tok.starts_with('/')
+            || tok.starts_with('@')
+        {
+            return Tok::WidgetPath;
+        }
         return Tok::Str;
     }
     if tok.len() >= 2 && tok.starts_with('/') && tok.ends_with('/') {
@@ -1446,6 +1457,11 @@ mod tests {
         assert_eq!(classify("gauge", true), Tok::Verb);
         assert_eq!(classify("foo", true), Tok::Str);
         assert_eq!(classify("{", false), Tok::Brace);
+        // jq/xpath literals at command position color as the query construct.
+        assert_eq!(classify(".foo.bar", true), Tok::WidgetPath); // jq path
+        assert_eq!(classify("//a", true), Tok::WidgetPath); // xpath
+        assert_eq!(classify("@href", true), Tok::WidgetPath); // xpath attr step
+        assert_eq!(classify("select(.x>1)", true), Tok::Verb); // jq filter
     }
 
     #[test]
