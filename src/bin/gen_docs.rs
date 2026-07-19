@@ -83,18 +83,6 @@ fn read_presets() -> Vec<(String, String)> {
 fn build_body(corpus: &[(&str, &str, &str)], presets: &[(String, String)]) -> String {
     let mut out = String::new();
 
-    let _ = write!(
-        out,
-        "\n      <div class=\"stat-grid\">\n\
-         \x20       <div class=\"stat-card\"><div class=\"stat-val\">{constructs}</div><div class=\"stat-label\">Language constructs</div></div>\n\
-         \x20       <div class=\"stat-card\"><div class=\"stat-val accent\">{presets}</div><div class=\"stat-label\">Stdlib presets</div></div>\n\
-         \x20       <div class=\"stat-card\"><div class=\"stat-val\">{sections}</div><div class=\"stat-label\">Reference sections</div></div>\n\
-         \x20     </div>\n",
-        constructs = corpus.len(),
-        presets = presets.len(),
-        sections = CHAPTER_ORDER.len() + 1,
-    );
-
     for chapter in CHAPTER_ORDER {
         let rows: Vec<_> = corpus.iter().filter(|(_, c, _)| c == chapter).collect();
         if rows.is_empty() {
