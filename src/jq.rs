@@ -345,6 +345,14 @@ mod tests {
     }
 
     #[test]
+    fn iterate_object_yields_values() {
+        // jq `.[]` over an object iterates its VALUES (not passes it through).
+        assert_eq!(run(".[]", &[r#"{"a":1,"b":2}"#]), vec!["1", "2"]);
+        // `map(f)` over an object applies f to each value.
+        assert_eq!(run("map(.+1)", &[r#"{"a":1,"b":2}"#]), vec!["2", "3"]);
+    }
+
+    #[test]
     fn field_then_iterate() {
         assert_eq!(run(".items[]", &[r#"{"items":[1,2]}"#]), vec!["1", "2"]);
     }

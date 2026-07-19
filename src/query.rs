@@ -328,6 +328,10 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         Ok(Value::Array(arr)) => {
                             out.extend(arr.iter().map(json_to_string));
                         }
+                        // jq `.[]` over an object iterates its VALUES.
+                        Ok(Value::Object(m)) => {
+                            out.extend(m.values().map(json_to_string));
+                        }
                         _ => out.push(l.clone()),
                     }
                 }
@@ -1128,11 +1132,16 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let v = if ns.is_empty() {
                     0.0
+                } else if ns.len() == 1 {
+                    ns[0]
                 } else {
-                    // Nearest-rank: smallest value whose rank ≥ p% of the data.
+                    // Linear interpolation between ranks (numpy default), so `p50`
+                    // equals `median` and `p90` of 1..10 is 9.1, matching the docs.
                     let frac = p.clamp(0.0, 100.0) / 100.0;
-                    let rank = ((frac * ns.len() as f64).ceil() as usize).clamp(1, ns.len());
-                    ns[rank - 1]
+                    let pos = frac * (ns.len() - 1) as f64;
+                    let lo = pos.floor() as usize;
+                    let hi = pos.ceil() as usize;
+                    ns[lo] + (ns[hi] - ns[lo]) * (pos - lo as f64)
                 };
                 return QueryResult::Scalar(v);
             }

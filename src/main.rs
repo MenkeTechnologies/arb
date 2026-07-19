@@ -578,9 +578,12 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    // fzf select mode keeps every line (no ring drop), so marks persist and the
-    // cursor stays put as the stream grows; the dashboard uses the bounded ring.
-    let state = Arc::new(Mutex::new(if fzf_mode {
+    // fzf select mode keeps every line (no ring drop), so marks persist as the
+    // stream grows. An `out { … }` reshape also needs every line — its reducers
+    // (`count`/`sum`/`sort`) run over the whole accumulated stream, so a bounded
+    // ring would silently drop the oldest lines and yield a wrong total. The live
+    // TUI/served dashboard uses the bounded ring (only the visible tail matters).
+    let state = Arc::new(Mutex::new(if fzf_mode || spec.out.is_some() {
         StreamState::with_cap(usize::MAX)
     } else {
         StreamState::new()

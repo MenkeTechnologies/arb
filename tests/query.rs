@@ -486,10 +486,11 @@ fn v20_reduces() {
     assert_eq!(f("range", d), QueryResult::Scalar(3.0));
     assert_eq!(f("product", d), QueryResult::Scalar(24.0));
     assert_eq!(f("distinct", &["a", "a", "b"]), QueryResult::Scalar(2.0));
-    assert_eq!(
-        f("p95", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]),
-        QueryResult::Scalar(10.0)
-    );
+    match f("p95", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]) {
+        // Linear interpolation: p95 of 1..10 is 9.55, not 10 (nearest-rank).
+        QueryResult::Scalar(v) => assert!((v - 9.55).abs() < 1e-9, "p95 = {v}"),
+        other => panic!("expected scalar, got {other:?}"),
+    }
     match f("stddev", d) {
         QueryResult::Scalar(v) => assert!((v - 1.118_033_988_749_895).abs() < 1e-9),
         _ => panic!("stddev not scalar"),
@@ -1366,7 +1367,7 @@ fn sparkline_and_numeric_series() {
 }
 
 #[test]
-fn percentile_nearest_rank_and_sugar() {
+fn percentile_linear_interpolation_and_sugar() {
     let f = |v: &str, d: &[&str]| {
         eval(
             &pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")),
@@ -1375,16 +1376,26 @@ fn percentile_nearest_rank_and_sugar() {
         )
     };
     let ten = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
-    // Nearest-rank: ceil(frac * n), 1-indexed.
-    assert_eq!(f("percentile 90", ten), QueryResult::Scalar(9.0));
+    // Interpolated results aren't bit-exact floats, so compare with a tolerance.
+    let approx = |v: &str, want: f64| match f(v, ten) {
+        QueryResult::Scalar(got) => assert!(
+            (got - want).abs() < 1e-9,
+            "{v}: got {got}, want {want}"
+        ),
+        other => panic!("{v}: expected scalar, got {other:?}"),
+    };
+    // Linear interpolation (numpy default): pos = frac*(n-1), lerp neighbors.
+    approx("percentile 90", 9.1);
+    approx("percentile 95", 9.55);
     assert_eq!(f("percentile 100", ten), QueryResult::Scalar(10.0));
     assert_eq!(f("percentile 0", ten), QueryResult::Scalar(1.0));
-    // Sugar aliases agree with the explicit form; p95 keeps its prior value.
+    // p50 now equals median (5.5 for 1..10), and the sugar matches the explicit
+    // form exactly (same code path).
     assert_eq!(f("p50", ten), f("percentile 50", ten));
-    assert_eq!(f("p99", ten), QueryResult::Scalar(10.0));
-    assert_eq!(f("p95", ten), QueryResult::Scalar(10.0));
-    // Empty input → 0.
+    assert_eq!(f("p50", ten), f("median", ten));
+    // Empty input → 0; a single value → itself.
     assert_eq!(f("percentile 99", &[]), QueryResult::Scalar(0.0));
+    assert_eq!(f("p90", &["42"]), QueryResult::Scalar(42.0));
 }
 
 #[test]
