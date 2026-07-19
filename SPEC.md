@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (Planned: LSP/DAP stdio frontends. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (Planned: LSP/DAP stdio frontends. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -283,7 +283,15 @@ set refresh 250            # ms redraw throttle
 
 Ships today as `arb --serve --port N`: a std-only HTTP server renders the same
 spec as a live browser dashboard, pushing widget data over a WebSocket (hand-rolled
-handshake, no dependency) with automatic fallback to polling `/data`.
+handshake, no dependency) with automatic fallback to polling `/data`. The page is
+built from **[`zgui-core`](https://github.com/MenkeTechnologies/zgui-core)** — the
+shared cyberpunk web-component toolkit — vendored as a git submodule at
+`lib/zgui-core` and bundled into the binary at build time (`build.rs` →
+`include_str!`). The page mounts `ZGui.appShell` (splash, filter bar, ⌘K palette,
+settings/colorscheme) and renders each widget with the matching component:
+`gauge`→`ZGui.gauge`, `chart`→`ZGui.chart`, `spark`→`ZGui.sparkline`,
+`bars`/`histo`→`ZGui.statBars`, `table`→`ZGui.dataTable`, containers/log →
+`ZGui.card`+`ZGui.logView`, fed live from `/data`.
 
 ## 17. Modules & presets (presets = stdlib script imports)
 
@@ -334,7 +342,7 @@ Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream comma
 
 ## 20. Architecture (fusevm frontend, original — mechanics ported, semantics fresh)
 
-Deps (rubyrs-lean): `fusevm{jit}`, `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json`/`serde_yaml`/`toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
+Deps (rubyrs-lean): `fusevm{jit}`, `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json`/`serde_yaml`/`toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
 
 Actual tree:
 
@@ -348,8 +356,10 @@ src/query.rs     jq/xpath/css/yq engine (pipeline eval over every format)
 src/expr.rs      expression layer: fn/lambdas/operators → fusevm::Chunk on the VM
 src/stream.rs    stdin ring buffer + stream stats
 src/tui.rs       ratatui backend: render, event loop, fzf mode
-src/serve.rs     live web server + WebSocket push
+src/serve.rs     live web server + WebSocket push; renders via zgui-core (appShell + components)
 src/web.rs       static HTML snapshot export (--html)
+build.rs         bundle lib/zgui-core/webui/*.js + all.css -> one JS/CSS asset, embedded in serve.rs
+lib/zgui-core/   git submodule: the shared cyberpunk web-component toolkit (window.ZGui.*)
 src/repl.rs      interactive REPL (--repl)
 src/banner.rs    startup/help art
 src/main.rs      CLI (clap) + dispatch
@@ -373,7 +383,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics). *(module namespacing `import X as Y`: 🟡)*
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map via `input`/`apply`). *(numeric control-path predicates `where lat < .th` ✅; string/set predicates `match(.q)`, `level in .lv` ⬜ — need dedicated `filter`/`facet` widgets + a string/set expr layer)*
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION`, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`. *(`timeout`, multi-clause `expect { }`, `spawn`: ⬜)*
-5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard; `arb --html` static export.
+5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. 🟡 Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) ships; networked registry (`publish`/`search`/native ABI) + ecosystem: ⬜.
 8. ⬜ LSP/DAP.

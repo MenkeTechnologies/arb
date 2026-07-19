@@ -53,7 +53,8 @@ displays it. Highlights:
 - **Pipe-native** — terminal-invoked, pipe-driven. No daemon; the web target
   spawns a local UI host on demand (like `textual serve`), not a server you run.
 - **Dual target** — the same spec renders to a ratatui TUI or a served web page
-  + WebSocket (`arb --serve`), sharing the cyberpunk HUD scheme with its siblings.
+  + WebSocket (`arb --serve`), the browser dashboard built from the shared
+  [`zgui-core`](https://github.com/MenkeTechnologies/zgui-core) component toolkit.
 - **One query engine** — a `jq`/`xpath`/`css`/`yq` superset over JSON, XML, HTML,
   YAML, TOML, and CSV.
 - **Megafilter/map** — interactive controls render *and* feed `out`, so a
@@ -85,8 +86,9 @@ displays it. Highlights:
 brew tap MenkeTechnologies/menketech
 brew install arb
 
-# Or from source
-git clone https://github.com/MenkeTechnologies/arb
+# Or from source (--recurse-submodules pulls zgui-core for the web dashboard;
+# without it the TUI works fully and the web target shows a one-line notice)
+git clone --recurse-submodules https://github.com/MenkeTechnologies/arb
 cd arb
 cargo build
 find / | ./target/debug/arb
@@ -319,12 +321,20 @@ tail -f metrics.log | arb --serve --port 8787 -e 'gauge .rps -max 1000
 #  → arb: serving dashboard at http://127.0.0.1:8787/
 ```
 
-Every widget's `source` is evaluated server-side and rendered as a real widget:
-`gauge` → a labeled bar, `bars`/`histo`/`spark` → bar rows, everything else →
-text. The data is structured JSON (`{scalar,max}`, `{pairs,top}`, or `{text}`);
-the client builds DOM nodes with numeric bar widths and `textContent` labels —
-never `innerHTML` with stream data, so nothing can inject markup. `--port 0`
-picks a free port and prints it.
+The page is built with [`zgui-core`](https://github.com/MenkeTechnologies/zgui-core)
+— the shared cyberpunk web-component toolkit, vendored as a git submodule at
+`lib/zgui-core` and bundled into the binary at build time (`build.rs` →
+`include_str!`, so the binary stays self-contained). It mounts `ZGui.appShell`
+(splash, filter bar, ⌘K palette, settings/colorscheme) and renders each widget
+with the matching component — `gauge`→`ZGui.gauge`, `chart`→`ZGui.chart`,
+`spark`→`ZGui.sparkline`, `bars`/`histo`→`ZGui.statBars`, `table`→`ZGui.dataTable`,
+containers/log→`ZGui.card`+`ZGui.logView`. Every widget's `source` is evaluated
+server-side and pushed as structured JSON; the client feeds it to the component
+handles (`.set`/`.setSeries`/`.setRows`) — never `innerHTML` with stream data, so
+nothing can inject markup. `--port 0` picks a free port and prints it.
+
+> The web target needs the submodule checked out: `git submodule update --init`.
+> Without it the binary still builds (the dashboard shows a one-line notice).
 
 Updates arrive over a **WebSocket** (`/ws`) — the server pushes a frame every
 250 ms, no polling lag. The handshake and framing are hand-rolled over the same
@@ -481,8 +491,9 @@ the terminal or the browser) is complete:
   fields feed `apply`/`bind` live, and a numeric control-path predicate
   (`where lat < .th`) filters by a control's live value.
 - **Web target** — `arb --serve` hosts the same spec as a live browser dashboard
-  over a hand-rolled WebSocket (RFC 6455), with a `/data` polling fallback;
-  `arb --html` emits a static snapshot.
+  built from the `zgui-core` component toolkit (`ZGui.appShell` + per-widget
+  components), pushed over a hand-rolled WebSocket (RFC 6455) with a `/data`
+  polling fallback; `arb --html` emits a static snapshot.
 - **Reactions & events** — `expect /re/ ACTION` / `bind C-<key> ACTION` with
   actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk
   named keys (`<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`); `.w configure -k v` retune.

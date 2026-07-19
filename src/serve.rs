@@ -19,7 +19,11 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crate::query::{eval, QueryResult};
 use crate::spec::{Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
-use crate::web::{escape, STYLE};
+/// The vendored `zgui-core` toolkit, bundled at build time (see `build.rs`) from
+/// the `lib/zgui-core` submodule. Served as `/zgui.js` + `/zgui.css` and driven
+/// by the dashboard page. Empty if the submodule was not checked out.
+const ZGUI_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/zgui_bundle.js"));
+const ZGUI_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/zgui_bundle.css"));
 
 /// Bind `127.0.0.1:port` and serve the dashboard until the process exits. `port`
 /// 0 lets the OS pick a free port (the chosen address is printed). Blocks.
@@ -85,6 +89,8 @@ fn handle(
     }
     let (ctype, body) = match path.as_str() {
         "/data" => ("application/json", data_json(spec, state)),
+        "/zgui.js" => ("application/javascript; charset=utf-8", ZGUI_JS.to_string()),
+        "/zgui.css" => ("text/css; charset=utf-8", ZGUI_CSS.to_string()),
         "/" => ("text/html; charset=utf-8", page.to_string()),
         _ => {
             let msg = "not found";
@@ -250,6 +256,7 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
             base(json!({ "pairs": pairs, "top": top }))
         }
         WidgetKind::Spark => {
+            // Raw numeric series — the client renders it with `ZGui.sparkline`.
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
@@ -258,7 +265,16 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
             };
             let n = series.len();
             let series = &series[n.saturating_sub(400)..]; // cap points per poll
-            base(json!({ "spark": crate::query::sparkline(series) }))
+            base(json!({ "series": series, "spark": true }))
+        }
+        WidgetKind::Tabs => {
+            // Tab labels from `-tabs {a b}` (stored comma-joined) for a web tab bar.
+            let tabs: Vec<&str> = w
+                .opts
+                .get("tabs")
+                .map(|s| s.split(',').filter(|t| !t.is_empty()).collect())
+                .unwrap_or_default();
+            base(json!({ "tabs": tabs }))
         }
         WidgetKind::Chart => {
             let series: Vec<f64> = match &result {
@@ -312,150 +328,165 @@ fn widget_text(w: &Widget, raw: &[String], _elapsed: f64, result: Option<QueryRe
     }
 }
 
-/// The self-contained dashboard page: the shared cyberpunk stylesheet, one panel
-/// per widget (body identified by index), and a poller that refreshes `/data`.
+/// The dashboard page: it loads the bundled `zgui-core` toolkit (`/zgui.css` +
+/// `/zgui.js`), mounts `ZGui.appShell` (the standard cyberpunk chrome — splash,
+/// filter bar, ⌘K palette, settings/colorscheme), and builds one `ZGui.*`
+/// component per widget, fed live from `/data` (or the `/ws` push). The widget
+/// list is injected as `window.ARB_META`.
 fn render_page(spec: &Spec) -> String {
-    let mut panels = String::new();
-    for (i, w) in spec.widgets.iter().enumerate() {
-        // `-label`/`-title` overrides the widget's display name (the dot-path).
-        let name = w
-            .opts
-            .get("label")
-            .or_else(|| w.opts.get("title"))
-            .map(String::as_str)
-            .unwrap_or(&w.path);
-        panels.push_str(&format!(
-            "<section class=\"panel\">\n\
-             <header class=\"phead\"><span class=\"ppath\">{}</span><span class=\"pkind\">{}</span></header>\n\
-             <div class=\"pbody\" id=\"wb{i}\"></div>\n\
-             </section>\n",
-            escape(name),
-            escape(w.kind.label()),
-        ));
-    }
-    if spec.widgets.is_empty() {
-        panels.push_str("<p class=\"empty\">no widgets</p>\n");
-    }
+    use serde_json::json;
+    let widgets: Vec<serde_json::Value> = spec
+        .widgets
+        .iter()
+        .map(|w| {
+            let name = w
+                .opts
+                .get("label")
+                .or_else(|| w.opts.get("title"))
+                .map(String::as_str)
+                .unwrap_or(&w.path);
+            json!({ "name": name, "kind": w.kind.label() })
+        })
+        .collect();
+    // Embed the metadata as JSON; neutralize any `</script>` inside a widget
+    // name so it can't break out of the inline script.
+    let meta = json!({ "title": "dashboard", "widgets": widgets })
+        .to_string()
+        .replace("</", "<\\/");
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>arb dashboard</title>\n{STYLE}{WIDGET_CSS}\
+         <title>arb dashboard</title>\n\
+         <link rel=\"stylesheet\" href=\"/zgui.css\">\n\
+         <style>\n{ARB_CSS}</style>\n\
          </head>\n<body>\n\
-         <h1>arb dashboard <span id=\"stat\" class=\"pkind\"></span></h1>\n\
-         <main class=\"grid\">\n{panels}</main>\n\
-         <script>\n{POLLER}</script>\n\
+         <div id=\"app\"></div>\n\
+         <script src=\"/zgui.js\"></script>\n\
+         <script>window.ARB_META = {meta};</script>\n\
+         <script>\n{ZINIT}</script>\n\
          </body>\n</html>\n"
     )
 }
 
-/// Extra styles for the live widgets: text bodies, and the label+track+fill bar
-/// rows used by `gauge`/`bars`/`histo`/`spark`.
-const WIDGET_CSS: &str = "<style>\n\
-.pbody { max-height: 16rem; overflow: auto; }\n\
-.txt { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }\n\
-.row { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; }\n\
-.lab { flex: 0 0 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }\n\
-.track { flex: 1; height: 0.8rem; background: rgba(0,229,255,0.08); border-radius: 2px; overflow: hidden; }\n\
-.fill { height: 100%; background: var(--cyan); }\n\
-.tbl { border-collapse: collapse; width: 100%; font-size: 0.9em; }\n\
-.tbl th, .tbl td { border: 1px solid var(--edge); padding: 2px 6px; text-align: left; white-space: nowrap; }\n\
-.tbl th { color: var(--cyan); position: sticky; top: 0; background: var(--panel); }\n\
-.spark { color: var(--cyan); font-size: 2rem; line-height: 1; letter-spacing: 1px; word-break: break-all; }\n\
-.chart { width: 100%; height: 6rem; display: block; }\n\
-</style>\n";
+/// arb-specific layout on top of the zgui theme: the widget grid and the simple
+/// tab strip (`ZGui.*` components style themselves via the bundled stylesheet).
+const ARB_CSS: &str = "\
+html, body { height: 100%; margin: 0; }\n\
+.arb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 12px; }\n\
+.arb-grid > * { min-width: 0; }\n\
+.arb-tabs { display: flex; gap: 4px; flex-wrap: wrap; }\n\
+.arb-tab { padding: 2px 10px; border: 1px solid var(--border, #333); border-radius: 3px; font-size: 0.9em; }\n\
+.arb-tab.sel { background: var(--cyan, #05d9e8); color: #000; font-weight: bold; }\n";
 
-/// Client poller: fetch `/data` on an interval and render each widget by kind.
-/// All labels go through `textContent` and bar widths are numeric — stream data
-/// can never inject markup (no `innerHTML` with data).
-const POLLER: &str = "\
-const stat = document.getElementById('stat');\n\
-function bar(label, pct, color) {\n\
-  const row = document.createElement('div'); row.className = 'row';\n\
-  const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = label;\n\
-  const track = document.createElement('div'); track.className = 'track';\n\
-  const fill = document.createElement('div'); fill.className = 'fill';\n\
-  fill.style.width = Math.max(0, Math.min(100, pct)) + '%';\n\
-  if (color) fill.style.background = color;\n\
-  track.appendChild(fill); row.appendChild(lab); row.appendChild(track);\n\
-  return row;\n\
-}\n\
-function render(el, it) {\n\
-  el.replaceChildren();\n\
-  const color = it.color || '#00e5ff';\n\
-  if (it.kind === 'gauge') {\n\
-    const max = it.max || 100, v = it.scalar || 0;\n\
-    el.appendChild(bar(v.toFixed(0) + ' / ' + max, max ? v / max * 100 : 0, color));\n\
-  } else if (it.spark !== undefined) {\n\
-    const s = document.createElement('div'); s.className = 'spark';\n\
-    s.style.color = color;\n\
-    s.textContent = it.spark || '\\u2014'; el.appendChild(s);\n\
-  } else if (it.series) {\n\
-    const NS = 'http://www.w3.org/2000/svg', W = 100, H = 40;\n\
-    const svg = document.createElementNS(NS, 'svg');\n\
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);\n\
-    svg.setAttribute('class', 'chart'); svg.setAttribute('preserveAspectRatio', 'none');\n\
-    const s = it.series;\n\
-    if (s.length > 1) {\n\
-      const mn = Math.min(...s), mx = Math.max(...s), rng = (mx - mn) || 1;\n\
-      const pts = s.map((v, i) => (i / (s.length - 1) * W) + ',' + (H - (v - mn) / rng * H)).join(' ');\n\
-      const pl = document.createElementNS(NS, 'polyline');\n\
-      pl.setAttribute('points', pts); pl.setAttribute('fill', 'none');\n\
-      pl.setAttribute('stroke', color); pl.setAttribute('stroke-width', '1');\n\
-      pl.setAttribute('vector-effect', 'non-scaling-stroke'); svg.appendChild(pl);\n\
-    }\n\
-    el.appendChild(svg);\n\
-  } else if (it.rows) {\n\
-    const t = document.createElement('table'); t.className = 'tbl';\n\
-    if (it.headers && it.headers.length) {\n\
-      const tr = document.createElement('tr');\n\
-      it.headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; th.style.color = color; tr.appendChild(th); });\n\
-      const thead = document.createElement('thead'); thead.appendChild(tr); t.appendChild(thead);\n\
-    }\n\
-    const tb = document.createElement('tbody');\n\
-    it.rows.forEach(r => {\n\
-      const tr = document.createElement('tr');\n\
-      r.forEach(c => { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); });\n\
-      tb.appendChild(tr);\n\
-    });\n\
-    t.appendChild(tb); el.appendChild(t);\n\
-  } else if (it.pairs) {\n\
-    const rows = it.pairs.slice(0, it.top || 20);\n\
-    const maxv = Math.max(1, ...rows.map(p => p[1]));\n\
-    rows.forEach(([k, v]) => el.appendChild(bar(k + '  ' + v, v / maxv * 100, color)));\n\
-  } else {\n\
-    const pre = document.createElement('pre'); pre.className = 'txt';\n\
-    pre.textContent = it.text || ''; el.appendChild(pre);\n\
-  }\n\
-}\n\
-function paint(items) {\n\
-  items.forEach((it, i) => {\n\
-    const el = document.getElementById('wb' + i);\n\
-    if (el) render(el, it);\n\
-  });\n\
-  stat.textContent = 'live \\u00b7 ' + new Date().toLocaleTimeString();\n\
-}\n\
-let polling = false;\n\
-async function tick() {\n\
-  try {\n\
-    const r = await fetch('/data', {cache: 'no-store'});\n\
-    paint(await r.json());\n\
-  } catch (e) { stat.textContent = 'disconnected'; }\n\
-}\n\
-function startPolling() {\n\
-  if (polling) return; polling = true;\n\
-  tick(); setInterval(tick, 500);\n\
-}\n\
-function connect() {\n\
-  try {\n\
-    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';\n\
-    const ws = new WebSocket(proto + location.host + '/ws');\n\
-    ws.onmessage = (ev) => paint(JSON.parse(ev.data));\n\
-    ws.onerror = () => ws.close();\n\
-    ws.onclose = () => startPolling();\n\
-  } catch (e) { startPolling(); }\n\
-}\n\
-connect();\n";
+/// Client init: mount `ZGui.appShell`, build one `ZGui.*` component per widget
+/// (from `window.ARB_META`), and drive them from the `/ws` push (falling back to
+/// polling `/data`). All data reaches components through their handles / DOM
+/// `textContent`, never `innerHTML`, so stream data can't inject markup.
+const ZINIT: &str = r#"
+(function () {
+  "use strict";
+  var app = document.getElementById('app');
+  if (!window.ZGui || !ZGui.appShell) {
+    app.textContent = 'zgui-core not bundled — run: git submodule update --init, then rebuild';
+    return;
+  }
+  var meta = window.ARB_META || { widgets: [] };
+  var slots = [];
+  var shell = ZGui.appShell(app, {
+    brand: { glyph: '◆', title: 'arb', subtitle: meta.title || 'dashboard' },
+    filterPlaceholder: 'Filter widgets…',
+    onFilter: function (q) {
+      q = (q || '').toLowerCase();
+      slots.forEach(function (s) {
+        var hay = (s.w.name + ' ' + s.w.kind).toLowerCase();
+        s.card.el.style.display = (!q || hay.indexOf(q) >= 0) ? '' : 'none';
+      });
+    }
+  });
+  var grid = document.createElement('div');
+  grid.className = 'arb-grid';
+  shell.body.appendChild(grid);
+
+  function pairsRows(p) { return (p || []).map(function (x) { return { label: String(x[0]), value: Number(x[1]) || 0 }; }); }
+  function cols(h) { return (h || []).map(function (x, i) { return { key: 'c' + i, label: x }; }); }
+  function tblRows(h, r) { return (r || []).map(function (row) { var o = {}; (row || []).forEach(function (c, i) { o['c' + i] = c; }); return o; }); }
+
+  slots = (meta.widgets || []).map(function (w) {
+    var card = ZGui.card({ title: w.name + '  ·  ' + w.kind });
+    grid.appendChild(card.el);
+    return { w: w, host: card.body, card: card, h: null };
+  });
+
+  // Build the right ZGui component for a widget the first time its data arrives;
+  // returns an update(data) closure.
+  function build(slot, it) {
+    var host = slot.host, k = it.kind, color = it.color;
+    if (k === 'gauge') {
+      var g = ZGui.gauge({ value: 0, min: 0, max: it.max || 100, label: slot.w.name, color: color });
+      host.appendChild(g.el);
+      return function (d) { g.set(d.scalar || 0); };
+    }
+    if (k === 'chart') {
+      var c = ZGui.chart(host, { series: [{ data: it.series || [], color: color, type: 'line' }], height: 120, grid: true, axes: true });
+      return function (d) { c.setSeries([{ data: d.series || [], color: color, type: 'line' }]); };
+    }
+    if (k === 'spark') {
+      var s = ZGui.sparkline(host, it.series || [], { type: 'line', color: color });
+      return function (d) { s.set(d.series || []); };
+    }
+    if (k === 'bars' || k === 'histo') {
+      var b = ZGui.statBars(host, pairsRows(it.pairs), {});
+      return function (d) { b.set(pairsRows(d.pairs)); };
+    }
+    if (k === 'table') {
+      var t = ZGui.dataTable(host, { columns: cols(it.headers), rows: tblRows(it.headers, it.rows) });
+      return function (d) { t.setRows(tblRows(d.headers, d.rows)); };
+    }
+    if (k === 'tabs') {
+      var bar = document.createElement('div'); bar.className = 'arb-tabs'; host.appendChild(bar);
+      return function (d) {
+        bar.replaceChildren();
+        (d.tabs || []).forEach(function (t, i) {
+          var sp = document.createElement('span');
+          sp.className = 'arb-tab' + (i === 0 ? ' sel' : '');
+          sp.textContent = t; bar.appendChild(sp);
+        });
+      };
+    }
+    // text / tail / list / block / frame / input / select -> a streaming log view.
+    var lv = ZGui.logView.create(host, { maxLines: 2000, ansi: true });
+    var last = null;
+    return function (d) {
+      var txt = d.text || '';
+      if (txt !== last) { lv.clear(); if (txt) lv.append(txt); last = txt; }
+    };
+  }
+
+  function paint(items) {
+    (items || []).forEach(function (it, i) {
+      var slot = slots[i];
+      if (!slot) return;
+      if (!slot.h) slot.h = build(slot, it);
+      slot.h(it);
+    });
+  }
+
+  var polling = false;
+  function tick() { fetch('/data', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(paint).catch(function () {}); }
+  function startPolling() { if (polling) return; polling = true; tick(); setInterval(tick, 500); }
+  function connect() {
+    try {
+      var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      var ws = new WebSocket(proto + location.host + '/ws');
+      ws.onmessage = function (ev) { try { paint(JSON.parse(ev.data)); } catch (e) {} };
+      ws.onerror = function () { ws.close(); };
+      ws.onclose = function () { startPolling(); };
+    } catch (e) { startPolling(); }
+  }
+  connect();
+})();
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -508,15 +539,13 @@ mod tests {
     }
 
     #[test]
-    fn data_json_spark_carries_sparkline() {
+    fn data_json_spark_carries_series() {
         let spec = build(&parse("spark .s\nsource .s { in }").unwrap()).unwrap();
         let st = state_with(&["1", "2", "3", "4"]);
         let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
         assert_eq!(json[0]["kind"], "spark");
-        // Rising series → first tick lowest, last tick highest.
-        let spark = json[0]["spark"].as_str().unwrap();
-        assert_eq!(spark.chars().count(), 4);
-        assert!(spark.starts_with('▁') && spark.ends_with('█'));
+        // Raw numeric series — the client renders it with ZGui.sparkline.
+        assert_eq!(json[0]["series"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
     }
 
     #[test]
@@ -558,16 +587,18 @@ mod tests {
     }
 
     #[test]
-    fn render_page_has_panel_per_widget_and_poller() {
+    fn render_page_mounts_zgui_appshell_with_widget_meta() {
         let spec = build(&parse("gauge .g -max 100\nlist .l").unwrap()).unwrap();
         let page = render_page(&spec);
         assert!(page.contains("<title>arb dashboard</title>"));
-        assert!(page.contains("id=\"wb0\""));
-        assert!(page.contains("id=\"wb1\""));
-        assert!(page.contains("setInterval"));
-        // Widget paths are escaped into the panel headers.
-        assert!(page.contains(".g"));
-        assert!(page.contains(".l"));
+        // Loads the bundled zgui toolkit and mounts the standard shell.
+        assert!(page.contains("/zgui.js"));
+        assert!(page.contains("/zgui.css"));
+        assert!(page.contains("ZGui.appShell"));
+        // Widget metadata is injected for the client to build components from.
+        assert!(page.contains("ARB_META"));
+        assert!(page.contains("\"kind\":\"gauge\""));
+        assert!(page.contains("\"kind\":\"list\""));
     }
 
     fn hex(bytes: &[u8]) -> String {
