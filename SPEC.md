@@ -206,6 +206,33 @@ outside the documented subset is a hard error** (`jq: …` / `xpath: …`) ancho
 the offending verb — never silently reinterpreted (no reduce, no arithmetic
 beyond compare, no positional/value predicates, no axes, no union).
 
+### In-language unit tests (`arb --test`)
+
+A spec can carry its own tests: a `test "NAME" { … }` block feeds sample lines
+through a query pipeline and asserts the output. `arb --test spec.arb` runs every
+block headlessly and exits 0 (all passed) / 1 (any failed), with
+[TAP](https://testanything.org/) output — so a dashboard's transforms are
+regression-tested in CI, in the same language they're written in.
+
+```
+test "keeps 5xx, drops others" {
+    given "200 ok" "503 down" "404 x" "500 err"   # input lines (one per arg)
+    run { in; match /5\d\d/ }                     # the pipeline (reuses source/out grammar)
+    want "503 down" "500 err"                      # expected output lines
+}
+test "counts errors" {
+    given "e" "e" "ok" "e"
+    run { in; match /e/; count }                  # a reducer → one scalar line
+    want "3"
+}
+test "jq path" { given "{\"u\":{\"name\":\"bob\"}}"; run { in.json; .u.name }; want "bob" }
+```
+
+`run { … }` is the ordinary `source`/`out` body — native verbs and the jq/xpath
+literal front-ends are all testable. The output is flattened for comparison: a
+scalar renders as one line, `tally`/`count_by` pairs as `key\tvalue`. Test blocks
+are ignored by every mode except `--test` (they don't render a widget).
+
 ## 9. Widgets ("Tk" register)
 
 ```

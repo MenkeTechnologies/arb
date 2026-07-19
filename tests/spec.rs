@@ -982,3 +982,19 @@ fn poll_conflicts_with_file() {
 fn poll_double_errors() {
     assert!(build(&parse("! a every 1s\n! b every 2s").unwrap()).is_err());
 }
+
+#[test]
+fn test_blocks_parse_into_spec_tests() {
+    let s = build(
+        &parse("tail .l\ntest \"t1\" { given \"a\" \"b\"; run { in; count }; want \"2\" }").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.tests.len(), 1);
+    assert_eq!(s.tests[0].name, "t1");
+    assert_eq!(s.tests[0].given, vec!["a", "b"]);
+    assert_eq!(s.tests[0].want, vec!["2"]);
+    // A test with no `run` clause is a build error.
+    assert!(build(&parse("test \"x\" { given \"a\"; want \"1\" }").unwrap()).is_err());
+    // An unknown clause errors (fail-closed).
+    assert!(build(&parse("test \"x\" { given \"a\"; run { in }; bogus \"y\" }").unwrap()).is_err());
+}

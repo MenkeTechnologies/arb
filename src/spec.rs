@@ -345,6 +345,21 @@ pub struct Spec {
     /// loop runs in a background thread; the headless path runs CMD once (a
     /// reducer over an endless source can't terminate). `None` = read stdin.
     pub poll: Option<(String, Duration)>,
+    /// In-language unit tests (`test "NAME" { given …; run { … }; want … }`):
+    /// feed sample lines through a query pipeline and assert the output. Run
+    /// headlessly by `arb --test`; ignored by every other mode.
+    pub tests: Vec<TestCase>,
+}
+
+/// One in-language test case: feed `given` lines through the `run` pipeline
+/// (`ops`) and assert the flattened output equals `want`. Purely headless —
+/// evaluated via [`crate::query::eval`], the same path the widgets use.
+#[derive(Debug, Clone)]
+pub struct TestCase {
+    pub name: String,
+    pub given: Vec<String>,
+    pub ops: Vec<QueryOp>,
+    pub want: Vec<String>,
 }
 
 /// True if any single-stream input source (`spawn`/`< file`/`! poll`) is already
@@ -488,6 +503,7 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     dst.timeouts.extend(src.timeouts);
     dst.mouse_binds.extend(src.mouse_binds);
     dst.resize_binds.extend(src.resize_binds);
+    dst.tests.extend(src.tests);
     if let Some(out) = src.out {
         if dst.out.is_some() {
             return Err(format!(
@@ -679,6 +695,20 @@ fn build_into(
                     _ => return Err("out: expected `{ body }`".into()),
                 };
                 spec.out = Some(pipeline_from_body(body)?);
+            } else if c.name == "test" {
+                // `test "NAME" { given …; run { in; … }; want … }` — an
+                // in-language unit test, run headlessly by `arb --test`.
+                let name = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("test: expected a name — `test \"NAME\" { … }`")?
+                    .to_string();
+                let body = match c.args.get(1) {
+                    Some(Arg::Block(b)) => b,
+                    _ => return Err("test: expected `{ given …; run { … }; want … }`".into()),
+                };
+                spec.tests.push(parse_test_case(name, body)?);
             } else if c.name == "spawn" {
                 // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use its
                 // stdout as the stream (input source, in place of stdin).
@@ -1278,6 +1308,40 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
         }
     }
     m
+}
+
+/// Parse a `test "NAME" { … }` body into a [`TestCase`]. Clauses: `given LINES…`
+/// (input, one line per arg), `run { in; … }` (the pipeline, required), and
+/// `want LINES…` (expected output). Unknown clauses / a missing `run` error.
+fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
+    let str_args = |c: &Command| -> Vec<String> {
+        c.args.iter().filter_map(Arg::as_str).map(String::from).collect()
+    };
+    let mut given = Vec::new();
+    let mut want = Vec::new();
+    let mut ops = None;
+    for c in body {
+        match c.name.as_str() {
+            "given" => given = str_args(c),
+            "want" => want = str_args(c),
+            "run" => {
+                let b = match c.args.first() {
+                    Some(Arg::Block(b)) => b,
+                    _ => return Err(format!("test `{name}`: `run` expects `{{ in; … }}`")),
+                };
+                // Reuse the real body compiler, so a test can exercise native
+                // verbs and the jq/xpath front-ends alike.
+                ops = Some(pipeline_from_body(b).map_err(|e| e.msg)?);
+            }
+            other => {
+                return Err(format!(
+                    "test `{name}`: unknown clause `{other}` (use given / run / want)"
+                ))
+            }
+        }
+    }
+    let ops = ops.ok_or_else(|| format!("test `{name}`: missing `run {{ … }}`"))?;
+    Ok(TestCase { name, given, ops, want })
 }
 
 /// Compile a `source { … }` body into a query pipeline. Must start with `in`.

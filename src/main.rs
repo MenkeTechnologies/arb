@@ -155,6 +155,12 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m Validate the spec (parse + build) and exit 0/1, no stdin"
     )]
     check: bool,
+    /// Run the spec's in-language `test { … }` blocks headlessly and exit 0/1.
+    #[arg(
+        long = "test",
+        help = "\x1b[32m//\x1b[0m Run the spec's `test { … }` blocks (TAP output), exit 0/1"
+    )]
+    test: bool,
     /// Serve the spec as a live browser dashboard (polls the stream over HTTP).
     #[arg(
         long = "serve",
@@ -513,6 +519,13 @@ fn main() -> io::Result<()> {
     if cli.html {
         print!("{}", arb::web::render_html(&spec));
         return Ok(());
+    }
+
+    if cli.test {
+        // Run the in-language `test { … }` blocks headlessly (TAP), exit 0/1.
+        let report = arb::testrun::run(&spec.tests);
+        print!("{}", report.text);
+        std::process::exit(if report.failed == 0 { 0 } else { 1 });
     }
 
     if cli.check {

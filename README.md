@@ -473,6 +473,29 @@ to tint its border and accent — both apply in the TUI and the web dashboard, s
 panels read cleanly and can be status-coded (green ok, red errors). `list`/`tail`
 take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 
+### Testing pipelines in the language itself
+
+A spec can carry its own unit tests. A `test "NAME" { … }` block feeds sample
+lines through a query pipeline and asserts the output; `arb --test spec.arb` runs
+every block headlessly with [TAP](https://testanything.org/) output and exits 0
+(all passed) / 1 (any failed) — so a dashboard's transforms are regression-tested
+in CI, in the same language they're written in.
+
+```
+test "keeps 5xx" {
+    given "200 ok" "503 down" "404 x"    # input lines
+    run { in; match /5\d\d/ }            # any source/out pipeline — jq/xpath too
+    want "503 down"                       # expected output
+}
+```
+
+```sh
+$ arb --test dashboard.arb
+1..1
+ok 1 - keeps 5xx
+# 1 passed, 0 failed
+```
+
 ---
 
 ## [0x05] COMMAND LINE
@@ -488,6 +511,8 @@ take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 | `arb --run 'PIPELINE'` | Same, explicit flag form. |
 | `arb --lsp` | Language Server over stdio for `.arb` (diagnostics, completion, hover, signatureHelp, definition/references/highlight/rename, folding, formatting, semanticTokens). |
 | `arb --dap` | Debug Adapter over stdio: step the stream line-by-line, regex breakpoints, inspect the paused line / stats / controls. |
+| `arb --check` | Validate the spec (parse + build) and exit 0/1, no stdin. |
+| `arb --test` | Run the spec's in-language `test { … }` blocks (TAP output), exit 0/1. |
 | `--version` / `--help` | Version / usage. |
 
 ---
