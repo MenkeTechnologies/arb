@@ -74,7 +74,8 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val">153</div><div class="stat-label">Language constructs</div></div>
-        <div class="stat-card"><div class="stat-val accent">5</div><div class="stat-label">Reference sections</div></div>
+        <div class="stat-card"><div class="stat-val accent">152</div><div class="stat-label">Stdlib presets</div></div>
+        <div class="stat-card"><div class="stat-val">6</div><div class="stat-label">Reference sections</div></div>
       </div>
 
       <section class="tutorial-section" id="ch-widgets">
@@ -271,6 +272,168 @@
 <tr><td><code>in.html</code></td><td>Begin the pipeline reading stdin as HTML (marker, same as in; use with sel/find).</td></tr>
 <tr><td><code>in.xml</code></td><td>Begin the pipeline reading stdin as XML (marker, same as in).</td></tr>
 <tr><td><code>in.logfmt</code></td><td>Begin the pipeline reading stdin as logfmt (marker, same as in).</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section" id="ch-presets">
+        <h2>Stdlib presets</h2>
+        <p class="tutorial-note">Prebuilt dashboards shipped with arb; drop one in with <code>import NAME</code> or auto-selected by stream sniffing.</p>
+        <table class="file-table">
+          <thead><tr><th>Preset</th><th>Description</th></tr></thead>
+          <tbody>
+<tr><td><code>activemq</code></td><td>broker queue depth/throughput dashboard from activemq dstat queues</td></tr>
+<tr><td><code>ansible</code></td><td>task recap by status and slowest hosts</td></tr>
+<tr><td><code>apache</code></td><td>access-log status codes, top client IPs, request volume, and live requests</td></tr>
+<tr><td><code>arangodb</code></td><td>server-log dashboard: log-level mix, error count, live log tail</td></tr>
+<tr><td><code>argocd</code></td><td>GitOps app sync-status and health dashboard from `argocd app list`</td></tr>
+<tr><td><code>aws</code></td><td>CloudTrail event names, error counts, and request latency</td></tr>
+<tr><td><code>azure</code></td><td>az CLI activity-log operations, statuses, and durations</td></tr>
+<tr><td><code>beanstalkd</code></td><td>work-queue depth dashboard from the `stats` YAML dump</td></tr>
+<tr><td><code>btrfs</code></td><td>subvolume dashboard from btrfs subvolume list</td></tr>
+<tr><td><code>buildah</code></td><td>OCI image inventory dashboard from buildah images output</td></tr>
+<tr><td><code>buildkite</code></td><td>build/job state dashboard from Buildkite builds JSON</td></tr>
+<tr><td><code>caddy</code></td><td>HTTP status/latency/level dashboard from Caddy JSON access logs</td></tr>
+<tr><td><code>cassandra</code></td><td>cluster node status dashboard from nodetool status</td></tr>
+<tr><td><code>cdk</code></td><td>CloudFormation resource-status dashboard from cdk deploy output</td></tr>
+<tr><td><code>celery</code></td><td>task events by state, runtimes, and slow-task tail</td></tr>
+<tr><td><code>chef</code></td><td>chef-client run resource-action dashboard from converge output</td></tr>
+<tr><td><code>cilium</code></td><td>endpoint policy/status dashboard from cilium endpoint list</td></tr>
+<tr><td><code>circleci</code></td><td>self-hosted runner fleet dashboard from circleci runner instance list --json</td></tr>
+<tr><td><code>clickhouse</code></td><td>query_log dashboard from clickhouse-client TSV output</td></tr>
+<tr><td><code>cloudformation</code></td><td>stack status dashboard from list-stacks output</td></tr>
+<tr><td><code>cockroachdb</code></td><td>node liveness/health dashboard from cockroach node status</td></tr>
+<tr><td><code>collectd</code></td><td>live metric dashboard from collectd PUTVAL plaintext protocol</td></tr>
+<tr><td><code>concourse</code></td><td>CI build status dashboard from fly builds output</td></tr>
+<tr><td><code>conntrack</code></td><td>live NAT/connection tracking by protocol, state, and byte volume</td></tr>
+<tr><td><code>consul</code></td><td>service health check status and top failing checks</td></tr>
+<tr><td><code>containerd</code></td><td>task status dashboard from ctr tasks ls</td></tr>
+<tr><td><code>couchdb</code></td><td>log-level, error count, and request dashboard from CouchDB logs</td></tr>
+<tr><td><code>crictl</code></td><td>CRI container state dashboard from crictl ps</td></tr>
+<tr><td><code>curl</code></td><td>HTTP status distribution, avg transfer time, live request log</td></tr>
+<tr><td><code>datadog</code></td><td>agent check status dashboard from datadog-agent status</td></tr>
+<tr><td><code>dgraph</code></td><td>server-log dashboard (glog severity tally + error count) from Dgraph Alpha/Zero logs</td></tr>
+<tr><td><code>dig</code></td><td>record types and TTLs from dig answer-section output</td></tr>
+<tr><td><code>dmesg</code></td><td>kernel ring buffer: subsystem activity, error count, live log</td></tr>
+<tr><td><code>docker</code></td><td>container CPU/memory dashboard from live docker stats</td></tr>
+<tr><td><code>doctl</code></td><td>droplet fleet dashboard from doctl compute droplet list</td></tr>
+<tr><td><code>drone</code></td><td>Drone CI build dashboard from drone build ls output</td></tr>
+<tr><td><code>duckdb</code></td><td>query-result dashboard from duckdb CSV output</td></tr>
+<tr><td><code>dynamodb</code></td><td>item dashboard from a DynamoDB scan/query JSON item stream</td></tr>
+<tr><td><code>elasticsearch</code></td><td>JSON log levels, mean query duration, and live log tail</td></tr>
+<tr><td><code>envoy</code></td><td>response codes, upstream latency, and top authorities</td></tr>
+<tr><td><code>etcd</code></td><td>cluster log levels, error/warn count, and live message tail (zap JSON)</td></tr>
+<tr><td><code>fail2ban</code></td><td>banned IPs, jail activity, and ban-attempt counts from the log</td></tr>
+<tr><td><code>fluxcd</code></td><td>reconciliation health from flux get output (ready/suspended tally, resource count, messages)</td></tr>
+<tr><td><code>fly</code></td><td>live dashboard from Fly.io machine logs (level + region tally, raw tail)</td></tr>
+<tr><td><code>gcloud</code></td><td>compute instance states and error-log severity mix</td></tr>
+<tr><td><code>gh</code></td><td>pull-request states, open count, and recent titles</td></tr>
+<tr><td><code>git</code></td><td>recent commit activity from git log</td></tr>
+<tr><td><code>gitlabrunner</code></td><td>CI job dashboard from gitlab-runner JSON structured logs</td></tr>
+<tr><td><code>grafana</code></td><td>server log dashboard from Grafana JSON structured logs</td></tr>
+<tr><td><code>gunicorn</code></td><td>response status codes, slow requests, and live access log</td></tr>
+<tr><td><code>haproxy</code></td><td>JSON access log: status codes, backend latency, live requests</td></tr>
+<tr><td><code>hcloud</code></td><td>server status dashboard from hcloud server list</td></tr>
+<tr><td><code>helm</code></td><td>release status dashboard from helm list JSON</td></tr>
+<tr><td><code>heroku</code></td><td>router-log dashboard: HTTP status mix, per-dyno traffic, platform error codes</td></tr>
+<tr><td><code>htop</code></td><td>process state mix, mean CPU load, and busiest processes</td></tr>
+<tr><td><code>http</code></td><td>access-log dashboard: status codes, top paths, live tail (JSON logs).</td></tr>
+<tr><td><code>icinga</code></td><td>service check-state dashboard from icingacli monitoring list</td></tr>
+<tr><td><code>iftop</code></td><td>bandwidth-by-host dashboard from iftop text-mode output</td></tr>
+<tr><td><code>influxdb</code></td><td>Flux query dashboard from influx annotated-CSV output</td></tr>
+<tr><td><code>iostat</code></td><td>per-device I/O: tps by device, peak read throughput, raw stream</td></tr>
+<tr><td><code>iptables</code></td><td>packet counts by target and high-traffic source addresses</td></tr>
+<tr><td><code>istioctl</code></td><td>proxy sync-status dashboard from istioctl proxy-status</td></tr>
+<tr><td><code>jaeger</code></td><td>span dashboard from Jaeger JSON trace output</td></tr>
+<tr><td><code>jenkins</code></td><td>CI job status dashboard from Jenkins REST API job JSON</td></tr>
+<tr><td><code>journalctl</code></td><td>syslog priority levels, top units, and error count</td></tr>
+<tr><td><code>json</code></td><td>shape of a JSON-lines stream: key frequency + live tail.</td></tr>
+<tr><td><code>k8s</code></td><td>pod status breakdown from kubectl get pods</td></tr>
+<tr><td><code>kafka</code></td><td>consumer-group lag: per-topic message counts, peak lag, raw rows</td></tr>
+<tr><td><code>kubectx</code></td><td>Kubernetes context inventory dashboard from kubectx output</td></tr>
+<tr><td><code>kustomize</code></td><td>resource kind/apiVersion dashboard from kustomize build YAML</td></tr>
+<tr><td><code>lighttpd</code></td><td>HTTP status + client dashboard from combined access logs</td></tr>
+<tr><td><code>linkerd</code></td><td>mesh success-rate &amp; RPS dashboard from linkerd viz stat</td></tr>
+<tr><td><code>linode</code></td><td>instance status/region dashboard from linode-cli text output</td></tr>
+<tr><td><code>logs</code></td><td>level breakdown + live tail for a JSON log stream.</td></tr>
+<tr><td><code>loki</code></td><td>log-level dashboard from logcli query output</td></tr>
+<tr><td><code>mariadb</code></td><td>connection command mix from SHOW PROCESSLIST output</td></tr>
+<tr><td><code>memcached</code></td><td>command mix and slow-item sizes from stats output</td></tr>
+<tr><td><code>mongodb</code></td><td>mongod JSON log: severity mix, components, and slow-op messages</td></tr>
+<tr><td><code>mssql</code></td><td>live session/request dashboard from sqlcmd output</td></tr>
+<tr><td><code>mtr</code></td><td>per-hop latency and packet-loss dashboard from an mtr report</td></tr>
+<tr><td><code>mysql</code></td><td>live SHOW PROCESSLIST: command mix, longest query time, running SELECTs</td></tr>
+<tr><td><code>nagios</code></td><td>service-state dashboard (OK/WARNING/CRITICAL/UNKNOWN) from Nagios status output</td></tr>
+<tr><td><code>nats</code></td><td>subject traffic dashboard from a live nats subscription</td></tr>
+<tr><td><code>neo4j</code></td><td>node-label distribution from cypher-shell CSV query results</td></tr>
+<tr><td><code>netdata</code></td><td>realtime health-alarm dashboard from the alarms JSON stream</td></tr>
+<tr><td><code>nethogs</code></td><td>per-process bandwidth dashboard from tracemode output</td></tr>
+<tr><td><code>netstat</code></td><td>TCP/UDP connection dashboard from netstat -an</td></tr>
+<tr><td><code>newrelic</code></td><td>APM entity health dashboard from newrelic CLI JSON output</td></tr>
+<tr><td><code>nginx</code></td><td>access-log dashboard from JSON access logs</td></tr>
+<tr><td><code>nmap</code></td><td>port/state/service dashboard from a standard nmap scan</td></tr>
+<tr><td><code>nomad</code></td><td>allocation client statuses and slow evals from event-stream JSON</td></tr>
+<tr><td><code>nsq</code></td><td>topic/channel depth + throughput from nsq_stat polling output</td></tr>
+<tr><td><code>nums</code></td><td>quick stats for a numeric stream.</td></tr>
+<tr><td><code>nvme</code></td><td>NVMe device inventory dashboard from `nvme list`</td></tr>
+<tr><td><code>opensearch</code></td><td>cluster index health dashboard from _cat/indices output</td></tr>
+<tr><td><code>packer</code></td><td>build dashboard from machine-readable output</td></tr>
+<tr><td><code>pgbouncer</code></td><td>connection-pool log: severity mix, top databases, error rate</td></tr>
+<tr><td><code>phpfpm</code></td><td>worker-state dashboard from a PHP-FPM full status dump</td></tr>
+<tr><td><code>podman</code></td><td>rootless container status/image dashboard from podman ps</td></tr>
+<tr><td><code>postgres</code></td><td>jsonlog severity mix, slowest query duration, live message tail</td></tr>
+<tr><td><code>prometheus</code></td><td>exposition metrics: sample counts by name and value range</td></tr>
+<tr><td><code>ps</code></td><td>process snapshot: process count, owners, total CPU load</td></tr>
+<tr><td><code>pulsar</code></td><td>live event dashboard from JSON messages consumed off a Pulsar topic</td></tr>
+<tr><td><code>pulumi</code></td><td>resource operation dashboard from pulumi preview output</td></tr>
+<tr><td><code>puma</code></td><td>HTTP status/throughput dashboard from Puma's common-log request output</td></tr>
+<tr><td><code>puppet</code></td><td>severity/change dashboard from a puppet agent run</td></tr>
+<tr><td><code>questdb</code></td><td>query-result dashboard from CSV exported via the /exp REST endpoint</td></tr>
+<tr><td><code>rabbitmq</code></td><td>queue depths, consumer totals, and per-queue state from rabbitmqctl</td></tr>
+<tr><td><code>rclone</code></td><td>object-store listing dashboard from rclone ls output</td></tr>
+<tr><td><code>redis</code></td><td>command frequency from redis-cli MONITOR</td></tr>
+<tr><td><code>riak</code></td><td>cluster membership dashboard from riak-admin member-status</td></tr>
+<tr><td><code>salt</code></td><td>minion return dashboard from salt CLI output</td></tr>
+<tr><td><code>sar</code></td><td>CPU utilization, load, and memory pressure from sar samples</td></tr>
+<tr><td><code>scaleway</code></td><td>instance server state dashboard from scw list output</td></tr>
+<tr><td><code>scylla</code></td><td>ScyllaDB cluster node status dashboard from nodetool status</td></tr>
+<tr><td><code>sentry</code></td><td>error/event dashboard from sentry-cli event listings</td></tr>
+<tr><td><code>sidekiq</code></td><td>job throughput by class, failures, and slow-job durations</td></tr>
+<tr><td><code>skopeo</code></td><td>copy progress dashboard from live skopeo copy output</td></tr>
+<tr><td><code>smartctl</code></td><td>SMART attribute health dashboard from smartctl -A output</td></tr>
+<tr><td><code>spinnaker</code></td><td>pipeline execution status dashboard from spin CLI execution JSON</td></tr>
+<tr><td><code>sqlite</code></td><td>query-result dashboard from pipe-separated sqlite3 output</td></tr>
+<tr><td><code>ss</code></td><td>TCP socket connection states and recv-queue backlog</td></tr>
+<tr><td><code>statsd</code></td><td>metric-type and top-metric tally plus live stream from the statsd line protocol</td></tr>
+<tr><td><code>stern</code></td><td>per-container log volume + error count from live multi-pod tail</td></tr>
+<tr><td><code>supervisor</code></td><td>process states, uptime, and event stream</td></tr>
+<tr><td><code>systemd</code></td><td>journal priority breakdown from journalctl JSON</td></tr>
+<tr><td><code>table</code></td><td>columnar view of whitespace-delimited input (ps aux, ls -l, df, …).</td></tr>
+<tr><td><code>tcpdump</code></td><td>live packet dashboard (protocol mix, packet rate, raw capture)</td></tr>
+<tr><td><code>teamcity</code></td><td>build status/state dashboard from TeamCity REST builds JSON</td></tr>
+<tr><td><code>tekton</code></td><td>pipelinerun status dashboard from tkn pipelinerun list</td></tr>
+<tr><td><code>telegraf</code></td><td>InfluxDB line-protocol dashboard from telegraf --test</td></tr>
+<tr><td><code>tempo</code></td><td>trace-backend log dashboard (level tally + error count) from JSON logs</td></tr>
+<tr><td><code>terraform</code></td><td>plan change types, resource providers, and apply durations</td></tr>
+<tr><td><code>tidb</code></td><td>cluster component status/role dashboard from tiup cluster display</td></tr>
+<tr><td><code>timescaledb</code></td><td>hypertable chunk &amp; compression dashboard from timescaledb_information.chunks</td></tr>
+<tr><td><code>tomcat</code></td><td>HTTP status/request dashboard from Tomcat access logs</td></tr>
+<tr><td><code>top</code></td><td>process stats (feed `ps aux`): total %CPU gauge + live process list.</td></tr>
+<tr><td><code>traefik</code></td><td>reverse-proxy dashboard from Traefik JSON access logs</td></tr>
+<tr><td><code>tshark</code></td><td>protocol mix and top talkers from default packet output</td></tr>
+<tr><td><code>uwsgi</code></td><td>worker status and request dashboard from JSON stats output</td></tr>
+<tr><td><code>vagrant</code></td><td>VM state and provider dashboard from vagrant global-status</td></tr>
+<tr><td><code>varnish</code></td><td>cache hit/miss distribution and slow backend responses</td></tr>
+<tr><td><code>vault</code></td><td>audit-log request paths, latency, and error rate</td></tr>
+<tr><td><code>velero</code></td><td>backup status dashboard from velero backup get</td></tr>
+<tr><td><code>victoriametrics</code></td><td>TSDB self-metrics dashboard from the /metrics exposition endpoint</td></tr>
+<tr><td><code>vmstat</code></td><td>CPU idle %, free memory, and run-queue length distribution</td></tr>
+<tr><td><code>vnstat</code></td><td>live rx/tx network rate dashboard from traffic sampling</td></tr>
+<tr><td><code>vultr</code></td><td>instance status/region dashboard from vultr-cli instance list</td></tr>
+<tr><td><code>woodpecker</code></td><td>pipeline status/branch dashboard from woodpecker pipeline list output</td></tr>
+<tr><td><code>zabbix</code></td><td>problem/alert dashboard from exported Zabbix problem JSON</td></tr>
+<tr><td><code>zfs</code></td><td>dataset dashboard from zfs list (pool tally, count, dataset names)</td></tr>
+<tr><td><code>zipkin</code></td><td>span dashboard from Zipkin JSON spans (name, kind, duration)</td></tr>
           </tbody>
         </table>
       </section>

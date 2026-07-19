@@ -21,8 +21,11 @@ const CHAPTER_ORDER: &[&str] = &["Widget", "Query", "Directive", "Action", "Inpu
 
 fn main() {
     let corpus = arb::lsp::corpus();
+    // Presets are a filesystem catalog (stdlib/*.arb), enumerated at generation
+    // time so the reference never goes stale when a preset is added or removed.
+    let presets = read_presets();
 
-    let page = format!("{HEAD}{}{FOOT}", build_body(corpus))
+    let page = format!("{HEAD}{}{FOOT}", build_body(corpus, &presets))
         // Stamp the current crate version so the page never falls behind
         // Cargo.toml (the meta version-sync gate compares docs/*.html to it).
         .replace("__ARB_VERSION__", env!("CARGO_PKG_VERSION"));
@@ -32,21 +35,64 @@ fn main() {
         eprintln!("gen-docs: cannot write {out}: {e}");
         std::process::exit(1);
     }
-    println!("wrote {out} ({} constructs, {} chapters)", corpus.len(), CHAPTER_ORDER.len());
+    println!(
+        "wrote {out} ({} constructs + {} presets, {} sections)",
+        corpus.len(),
+        presets.len(),
+        CHAPTER_ORDER.len() + 1,
+    );
+}
+
+/// Read the stdlib preset catalog: for each `stdlib/*.arb`, the file stem and
+/// the description from its leading `# <name> — <desc>` header comment (falling
+/// back to the raw comment, then a generic line). Sorted by name.
+fn read_presets() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let dir = match std::fs::read_dir("stdlib") {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("gen-docs: cannot read stdlib/: {e}");
+            std::process::exit(1);
+        }
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("arb") {
+            continue;
+        }
+        let name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let body = std::fs::read_to_string(&path).unwrap_or_default();
+        let first = body.lines().next().unwrap_or("").trim_start_matches('#').trim();
+        // Header form is `name — description`; keep only the description.
+        let desc = first
+            .split_once(" — ")
+            .or_else(|| first.split_once(" - "))
+            .map(|(_, d)| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| format!("prebuilt dashboard preset for {name}"));
+        out.push((name, desc));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Render the stat grid plus one section/table per chapter, in display order.
-fn build_body(corpus: &[(&str, &str, &str)]) -> String {
+fn build_body(corpus: &[(&str, &str, &str)], presets: &[(String, String)]) -> String {
     let mut out = String::new();
 
     let _ = write!(
         out,
         "\n      <div class=\"stat-grid\">\n\
          \x20       <div class=\"stat-card\"><div class=\"stat-val\">{constructs}</div><div class=\"stat-label\">Language constructs</div></div>\n\
-         \x20       <div class=\"stat-card\"><div class=\"stat-val accent\">{chapters}</div><div class=\"stat-label\">Reference sections</div></div>\n\
+         \x20       <div class=\"stat-card\"><div class=\"stat-val accent\">{presets}</div><div class=\"stat-label\">Stdlib presets</div></div>\n\
+         \x20       <div class=\"stat-card\"><div class=\"stat-val\">{sections}</div><div class=\"stat-label\">Reference sections</div></div>\n\
          \x20     </div>\n",
         constructs = corpus.len(),
-        chapters = CHAPTER_ORDER.len(),
+        presets = presets.len(),
+        sections = CHAPTER_ORDER.len() + 1,
     );
 
     for chapter in CHAPTER_ORDER {
@@ -78,6 +124,28 @@ fn build_body(corpus: &[(&str, &str, &str)]) -> String {
         }
         out.push_str("          </tbody>\n        </table>\n      </section>\n");
     }
+
+    // Presets chapter — the shipped stdlib dashboards you `import` by name.
+    if !presets.is_empty() {
+        out.push_str(
+            "\n      <section class=\"tutorial-section\" id=\"ch-presets\">\n\
+             \x20       <h2>Stdlib presets</h2>\n\
+             \x20       <p class=\"tutorial-note\">Prebuilt dashboards shipped with arb; drop one in with <code>import NAME</code> or auto-selected by stream sniffing.</p>\n\
+             \x20       <table class=\"file-table\">\n\
+             \x20         <thead><tr><th>Preset</th><th>Description</th></tr></thead>\n\
+             \x20         <tbody>\n",
+        );
+        for (name, desc) in presets {
+            let _ = writeln!(
+                out,
+                "<tr><td><code>{}</code></td><td>{}</td></tr>",
+                html_escape(name),
+                html_escape(desc),
+            );
+        }
+        out.push_str("          </tbody>\n        </table>\n      </section>\n");
+    }
+
     out
 }
 
