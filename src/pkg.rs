@@ -232,53 +232,58 @@ fn install_rec(
     if !visited.insert(name.to_string()) {
         return Ok(()); // cycle or diamond — already handled this run
     }
-    if pkg_dir.join(name).exists() {
-        return Ok(()); // skip an already-installed dep
+    // Install the package unless it is already on disk; either way, its deps are
+    // still walked below (a pre-existing mid-tree package must not hide a
+    // transitive dep that this run needs).
+    if !pkg_dir.join(name).exists() {
+        let entry = idx
+            .get(name)
+            .ok_or_else(|| format!("package `{name}` not in the registry"))?;
+        install_from(&entry.repo, name, pkg_dir)?; // clone + validate + rollback-if-broken
+        installed.push(name.to_string());
     }
-    let entry = idx
-        .get(name)
-        .ok_or_else(|| format!("package `{name}` not in the registry"))?;
-    install_from(&entry.repo, name, pkg_dir)?; // clone + validate + rollback-if-broken
-    installed.push(name.to_string());
-    // Re-read the freshly-installed manifest to discover its deps.
+    // Read the INSTALLED manifest (on disk) — its version + deps are the truth,
+    // not the index metadata, which can drift from the package repo.
     let src = std::fs::read_to_string(pkg_dir.join(name).join("arb.toml"))
-        .map_err(|_| format!("`{name}`: missing arb.toml after install"))?;
+        .map_err(|_| format!("`{name}`: missing arb.toml"))?;
     let manifest = parse_manifest(&src)?;
     for (dep, constraint) in &manifest.deps {
-        check_constraint(name, dep, constraint, idx)?;
+        // Install the dep first, then check the INSTALLED dep's version against
+        // the constraint — the artifact is authoritative, not the index entry.
         install_rec(dep, idx, pkg_dir, visited, installed)?;
+        check_installed_constraint(name, dep, constraint, pkg_dir)?;
     }
     Ok(())
 }
 
-/// Verify the index version of `dep` satisfies `requirer`'s `[deps]` constraint.
-/// An unknown dep is left to `install_rec` (which errors on the missing entry);
-/// an unparseable index version we don't own is a warning, not a hard failure.
-fn check_constraint(
+/// Verify the INSTALLED version of `dep` (its on-disk `arb.toml`) satisfies
+/// `requirer`'s `[deps]` constraint. Checking the installed artifact — not the
+/// index metadata, which can lie — is what makes the constraint sound.
+fn check_installed_constraint(
     requirer: &str,
     dep: &str,
     constraint: &str,
-    idx: &Index,
+    pkg_dir: &Path,
 ) -> Result<(), String> {
-    let Some(entry) = idx.get(dep) else {
-        return Ok(());
-    };
     let req = semver::VersionReq::parse(constraint).map_err(|e| {
         format!("package `{requirer}`: bad version constraint `{constraint}` for `{dep}`: {e}")
     })?;
-    let ver = match semver::Version::parse(&entry.version) {
+    let src = std::fs::read_to_string(pkg_dir.join(dep).join("arb.toml"))
+        .map_err(|_| format!("`{dep}`: missing arb.toml after install"))?;
+    let installed = parse_manifest(&src)?;
+    let ver = match semver::Version::parse(&installed.version) {
         Ok(v) => v,
         Err(_) => {
             eprintln!(
-                "arb: registry version `{}` for `{dep}` is not semver — skipping check",
-                entry.version
+                "arb: installed version `{}` for `{dep}` is not semver — skipping check",
+                installed.version
             );
             return Ok(());
         }
     };
     if !req.matches(&ver) {
         return Err(format!(
-            "package `{requirer}` requires `{dep}` {constraint} but the registry has `{dep}` {ver}"
+            "package `{requirer}` requires `{dep}` {constraint} but the installed `{dep}` is {ver}"
         ));
     }
     Ok(())

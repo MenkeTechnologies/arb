@@ -3,8 +3,8 @@
 bars .status
 source .status { in.json; field status; tally }
 
-bars .top_requests
-source .top_requests { in.json; field request; tally; sort; take 10 }
+bars .top_requests -top 10
+source .top_requests { in.json; field request; tally }
 
 tail .requests
 source .requests { in.json; field request }
@@ -15,8 +15,9 @@ test "status tally" {
   want "200\t2" "404\t1"
 }
 
-test "top requests" {
-  given "{\"request\":\"GET /a\"}" "{\"request\":\"GET /a\"}" "{\"request\":\"GET /b\"}"
-  run { in.json; field request; tally; sort; take 10 }
-  want "GET /a\t2" "GET /b\t1"
+test "top requests by count" {
+  # tally sorts by count desc, then key asc — the bars widget caps via -top 10.
+  given "{\"request\":\"GET /a\"}" "{\"request\":\"GET /b\"}" "{\"request\":\"GET /a\"}" "{\"request\":\"GET /c\"}" "{\"request\":\"GET /a\"}" "{\"request\":\"GET /b\"}"
+  run { in.json; field request; tally }
+  want "GET /a\t3" "GET /b\t2" "GET /c\t1"
 }

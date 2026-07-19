@@ -169,7 +169,14 @@ fn evaluate_body(st: &DapState, expr: &str) -> String {
     if let Some((_, v)) = st.controls.iter().find(|(k, _)| k == expr) {
         return v.clone();
     }
-    match crate::expr::parse(expr) {
+    // In the DAP context `.field` means a stream field of the paused line (the
+    // doc's promise), not a TUI control — so turn `.name` refs into bare field
+    // names before parsing (`.lat` -> `lat`), which resolve via `field_num_pub`.
+    // A decimal like `.5` is untouched (identifiers start with a letter/`_`).
+    let normalized = Regex::new(r"\.([A-Za-z_]\w*)")
+        .map(|re| re.replace_all(expr, "$1").into_owned())
+        .unwrap_or_else(|_| expr.to_string());
+    match crate::expr::parse(&normalized) {
         Ok(e) => {
             let line = st.matched_line.clone();
             let x = line.trim().parse::<f64>().unwrap_or(f64::NAN);
@@ -502,6 +509,19 @@ mod tests {
         // A control name resolves from the snapshot directly.
         st.controls = vec![("th".into(), "9".into())];
         assert_eq!(evaluate_body(&st, "th"), "9");
+    }
+
+    #[test]
+    fn evaluate_resolves_json_fields_dotted_or_bare() {
+        let st = DapState {
+            matched_line: r#"{"lat":9,"code":500}"#.into(),
+            ..Default::default()
+        };
+        // `.field` (jq-style) and the bare name both resolve to the stream field.
+        assert_eq!(evaluate_body(&st, ".lat"), "9");
+        assert_eq!(evaluate_body(&st, "lat"), "9");
+        assert_eq!(evaluate_body(&st, ".lat > 5"), "1");
+        assert_eq!(evaluate_body(&st, ".code - .lat"), "491");
     }
 
     #[test]

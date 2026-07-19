@@ -476,3 +476,83 @@ fn publish_rejects_invalid_package() {
     assert!(publish_with(&pkg, "https://example.com/badpkg.git", &reg, &reg_url, true).is_err());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn install_checks_installed_version_not_the_index_lie() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("deps-indexlie");
+    // arb-a requires arb-b ^5. The index CLAIMS arb-b 5.0.0, but the repo's
+    // arb.toml actually builds 0.1.0 — the install must validate the artifact and
+    // reject (the old code trusted the index and installed a violating dep).
+    let url_a = make_pkg_repo(
+        &base.join("a"),
+        "arb-a",
+        "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"5\"\n",
+        "gauge .g",
+    );
+    let url_b = make_pkg_repo(
+        &base.join("b"),
+        "arb-b",
+        "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n", // real version is 0.1.0
+        "tail .b",
+    );
+    let mut idx = Index::new();
+    idx.insert("arb-a".into(), entry(&url_a));
+    // The index entry LIES: version 5.0.0 while the repo is 0.1.0.
+    idx.insert(
+        "arb-b".into(),
+        IndexEntry {
+            repo: url_b,
+            version: "5.0.0".into(),
+            desc: String::new(),
+        },
+    );
+    let pkgdir = base.join("pkgs");
+    let e = install_with_index("arb-a", &idx, &pkgdir).unwrap_err();
+    assert!(e.contains("installed") && e.contains("0.1.0"), "err: {e}");
+    assert!(!pkgdir.join("arb-a").exists(), "must roll back");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn install_walks_deps_of_a_preexisting_mid_tree_package() {
+    if !have_git() {
+        return;
+    }
+    let base = tmp("deps-preexist");
+    let url_c = make_pkg_repo(
+        &base.join("c"),
+        "arb-c",
+        "[package]\nname = \"arb-c\"\nversion = \"0.1.0\"\n",
+        "tail .c",
+    );
+    let url_b = make_pkg_repo(
+        &base.join("b"),
+        "arb-b",
+        "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n\n[deps]\narb-c = \"0.1\"\n",
+        "tail .b",
+    );
+    let url_a = make_pkg_repo(
+        &base.join("a"),
+        "arb-a",
+        "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"0.1\"\n",
+        "gauge .g",
+    );
+    let mut idx = Index::new();
+    for (n, u) in [("arb-a", url_a), ("arb-b", url_b), ("arb-c", url_c)] {
+        idx.insert(n.into(), entry(&u));
+    }
+    let pkgdir = base.join("pkgs");
+    // Install arb-b (pulls arb-c), then remove arb-c so it's a gap.
+    install_with_index("arb-b", &idx, &pkgdir).expect("b ok");
+    std::fs::remove_dir_all(pkgdir.join("arb-c")).unwrap();
+    // Installing arb-a must re-fill arb-c through the pre-existing arb-b.
+    install_with_index("arb-a", &idx, &pkgdir).expect("a ok");
+    assert!(
+        pkgdir.join("arb-c").exists(),
+        "transitive dep must be installed"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
