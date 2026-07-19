@@ -314,7 +314,7 @@ pub struct Spec {
 }
 
 /// Build a `Spec` from a parsed command tree.
-pub fn build(cmds: &[Command]) -> Result<Spec, String> {
+pub fn build(cmds: &[Command]) -> Result<Spec, crate::err::SpecError> {
     let mut spec = Spec::default();
     build_into(&mut spec, cmds, 0)?;
     Ok(spec)
@@ -449,11 +449,14 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
 
 /// Process `cmds` into `spec`. `import NAME` resolves and inlines a module
 /// (stdlib preset or user file); `depth` guards against import cycles.
-fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), String> {
+fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), crate::err::SpecError> {
     if depth > 16 {
         return Err("import: module nesting too deep (cycle?)".into());
     }
     for c in cmds {
+        // Process one command; a returned error with no span yet is anchored to
+        // this command's verb (its char offset) so the LSP points at the line.
+        let res: Result<(), crate::err::SpecError> = (|| -> Result<(), crate::err::SpecError> {
         if c.name == "import" {
             let name = c
                 .args
@@ -470,7 +473,7 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                     .and_then(Arg::as_str)
                     .ok_or("import: `as` requires an alias (import X as Y)")?;
                 if alias.is_empty() || alias.contains(['.', '/', ' ']) {
-                    return Err(format!("import: invalid namespace alias `{alias}`"));
+                    return Err(format!("import: invalid namespace alias `{alias}`").into());
                 }
                 let src = resolve_module(name)?;
                 let sub_cmds = crate::parser::parse(&src)?;
@@ -493,7 +496,8 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
                 return Err(format!(
                     "{}: widget path must start with '.', got `{path}`",
                     c.name
-                ));
+                )
+                .into());
             }
             spec.widgets.push(Widget {
                 path: path.to_string(),
@@ -597,6 +601,9 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             }
         }
         // Unknown verbs are ignored.
+        Ok(())
+        })();
+        res.map_err(|e| e.or_span(c.pos, c.name.chars().count()))?;
     }
     Ok(())
 }

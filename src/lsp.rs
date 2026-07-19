@@ -4,9 +4,9 @@
 //! and `hover` (verb help). The transport shape is the standard `Content-Length`
 //! framing; the language logic (`diagnose`/`handle`) is pure and unit-testable.
 //!
-//! Limitation: arb parse/build errors are position-less `String`s, so every
-//! diagnostic anchors to the first line. Per-token ranges need source spans
-//! threaded through the lexer/parser (out of scope here).
+//! Diagnostics anchor to the error's real source span (the offending verb token
+//! or lexer position). Columns are char counts, not LSP UTF-16 units, and spans
+//! are per-command (the verb), not per-argument — matching the rest of this file.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -22,21 +22,49 @@ pub struct Diag {
     pub end_col: u32,
 }
 
-/// Parse + build `src`; map the first error (if any) to a diagnostic. Empty when
-/// the spec is valid. Anchored to line 0 (arb errors carry no source span).
+/// Parse + build `src`; map the first error (if any) to a diagnostic, anchored
+/// to its source span when the error carries one (else the first line). Empty
+/// when the spec is valid.
 pub fn diagnose(src: &str) -> Vec<Diag> {
-    let end_col = src.lines().next().map(|l| l.chars().count() as u32).unwrap_or(0);
-    let one = |message: String| {
-        vec![Diag { message, line: 0, start_col: 0, end_col: end_col.max(1) }]
+    let err = match crate::parser::parse(src) {
+        Ok(cmds) => match crate::spec::build(&cmds) {
+            Ok(_) => return Vec::new(),
+            Err(e) => e,
+        },
+        Err(e) => e,
     };
-    let cmds = match crate::parser::parse(src) {
-        Ok(c) => c,
-        Err(m) => return one(m),
+    let diag = match err.span {
+        Some((start, end)) => {
+            let (line, start_col) = offset_to_line_col(src, start);
+            // Clamp the end to the same line so the range stays on one line.
+            let (eline, ecol) = offset_to_line_col(src, end);
+            let end_col = if eline == line { ecol } else { start_col + 1 };
+            Diag { message: err.msg, line, start_col, end_col: end_col.max(start_col + 1) }
+        }
+        None => {
+            let ec = src.lines().next().map(|l| l.chars().count() as u32).unwrap_or(0);
+            Diag { message: err.msg, line: 0, start_col: 0, end_col: ec.max(1) }
+        }
     };
-    match crate::spec::build(&cmds) {
-        Ok(_) => Vec::new(),
-        Err(m) => one(m),
+    vec![diag]
+}
+
+/// Map a char offset to (0-based line, 0-based column). Columns are char counts
+/// (matching the rest of this file), not LSP UTF-16 units.
+fn offset_to_line_col(src: &str, off: usize) -> (u32, u32) {
+    let (mut line, mut col) = (0u32, 0u32);
+    for (i, ch) in src.chars().enumerate() {
+        if i >= off {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
     }
+    (line, col)
 }
 
 /// The server's open-document store, keyed by URI.

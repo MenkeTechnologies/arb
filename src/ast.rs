@@ -5,6 +5,8 @@
 pub struct Command {
     pub name: String,
     pub args: Vec<Arg>,
+    /// Char offset of the verb token in the whole source (for LSP diagnostics).
+    pub pos: usize,
 }
 
 #[derive(Debug, Clone)]

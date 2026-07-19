@@ -21,6 +21,23 @@ fn diagnose_maps_parse_and_build_errors() {
 }
 
 #[test]
+fn diagnostics_anchor_to_the_real_line_and_column() {
+    // Build error on line index 2 -> the diagnostic points at that line, not 0.
+    let d = diagnose("tail .t\nlist .l\ngauge foo");
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("must start with"));
+    assert_eq!(d[0].line, 2);
+    assert_eq!(d[0].start_col, 0); // the `gauge` verb
+    assert_eq!(d[0].end_col, 5);
+    // A lexer error (unterminated block) on line index 2 anchors to the `{`.
+    let d2 = diagnose("tail .t\nlist .l\ntext .x {");
+    assert_eq!(d2[0].line, 2);
+    assert_eq!(d2[0].start_col, 8); // the `{` char index within the line
+    // Single-line error still reports line 0 (fallback + offset math agree).
+    assert_eq!(diagnose("gauge foo")[0].line, 0);
+}
+
+#[test]
 fn framing_round_trips() {
     let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
     let mut buf: Vec<u8> = Vec::new();

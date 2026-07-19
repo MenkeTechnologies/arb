@@ -750,7 +750,7 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
         // Zero-config default: a select list under `--fzf`, else a stream tail.
         default_spec_src(cli.fzf).to_string()
     };
-    spec::build(&parser::parse(&src)?)
+    spec::build(&parser::parse(&src).map_err(String::from)?).map_err(String::from)
 }
 
 /// The synthesized spec source when the user gave no spec/`-e`/`-p`. `--fzf`

@@ -18,8 +18,10 @@ pub enum Tok {
     Sep,
 }
 
-/// Tokenize a spec source string.
-pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
+/// Tokenize a spec source string. Each token carries its start char-offset (used
+/// by the LSP to anchor a diagnostic); errors carry the offending span.
+pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
+    use crate::err::SpecError;
     let cs: Vec<char> = src.chars().collect();
     let n = cs.len();
     let mut i = 0;
@@ -32,7 +34,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
         match c {
             ' ' | '\t' | '\r' => i += 1,
             '\n' | ';' => {
-                toks.push(Tok::Sep);
+                toks.push((Tok::Sep, i));
                 i += 1;
                 at_cmd_start = true;
             }
@@ -42,6 +44,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 }
             }
             '"' => {
+                let q = i;
                 i += 1;
                 let mut s = String::new();
                 while i < n && cs[i] != '"' {
@@ -58,13 +61,14 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                     i += 1;
                 }
                 if i >= n {
-                    return Err("unterminated string".into());
+                    return Err(SpecError { msg: "unterminated string".into(), span: Some((q, n)) });
                 }
                 i += 1; // closing quote
-                toks.push(Tok::Str(s));
+                toks.push((Tok::Str(s), q));
                 at_cmd_start = false;
             }
             '{' => {
+                let open = i;
                 let mut depth = 1;
                 i += 1;
                 let start = i;
@@ -80,11 +84,11 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                     i += 1;
                 }
                 if depth != 0 {
-                    return Err("unterminated block".into());
+                    return Err(SpecError { msg: "unterminated block".into(), span: Some((open, n)) });
                 }
                 let inner: String = cs[start..i].iter().collect();
                 i += 1; // closing brace
-                toks.push(Tok::Block(inner));
+                toks.push((Tok::Block(inner), open));
                 at_cmd_start = false;
             }
             '/' => {
@@ -110,14 +114,14 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 }
                 if closed {
                     let w: String = cs[start..j].iter().collect();
-                    toks.push(Tok::Word(w));
+                    toks.push((Tok::Word(w), start));
                     i = j;
                 } else {
                     while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {
                         i += 1;
                     }
                     let w: String = cs[start..i].iter().collect();
-                    toks.push(Tok::Word(w));
+                    toks.push((Tok::Word(w), start));
                 }
                 at_cmd_start = false;
             }
@@ -127,7 +131,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, String> {
                     i += 1;
                 }
                 let w: String = cs[start..i].iter().collect();
-                toks.push(Tok::Word(w));
+                toks.push((Tok::Word(w), start));
                 at_cmd_start = false;
             }
         }
