@@ -1190,10 +1190,14 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
 }
 
 /// Compile a `source { … }` body into a query pipeline. Must start with `in`.
-fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
+fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::SpecError> {
     let mut ops = Vec::new();
     let mut saw_in = false;
     for c in cmds {
+        // Process one op; on error, anchor the diagnostic to THIS (nested) verb's
+        // source position, not the outer `source`/`out` command (the IIFE lets the
+        // arms' `return Err` unwind to the per-command span attach below).
+        let step = (|| -> Result<(), crate::err::SpecError> {
         match c.name.as_str() {
             "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
             "in.csv" => {
@@ -1633,8 +1637,11 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, String> {
                     .unwrap_or(usize::MAX);
                 ops.push(QueryOp::Slice(a, b));
             }
-            other => return Err(format!("source: unknown verb `{other}`")),
+            other => return Err(format!("source: unknown verb `{other}`").into()),
         }
+        Ok(())
+        })();
+        step.map_err(|e| e.or_span(c.pos, c.name.chars().count()))?;
     }
     if !saw_in {
         return Err("source: pipeline must start with `in`".into());
@@ -1668,14 +1675,17 @@ fn block_to_shell(cmds: &[Command]) -> String {
         .join("; ")
 }
 
-/// Read a regex argument, stripping optional `/…/` delimiters.
-fn regex_arg(c: &Command) -> Result<Regex, String> {
+/// Read a regex argument, stripping optional `/…/` delimiters. The error carries
+/// this command's source span so a bad regex anchors to the offending verb (e.g.
+/// `match` inside a `source { … }` body), not the enclosing directive.
+fn regex_arg(c: &Command) -> Result<Regex, crate::err::SpecError> {
+    let span = |msg: String| crate::err::SpecError::from(msg).or_span(c.pos, c.name.chars().count());
     let raw = c
         .args
         .first()
         .and_then(Arg::as_str)
-        .ok_or_else(|| format!("{}: expected a pattern", c.name))?;
-    compile_regex(raw).map_err(|e| format!("{}: {e}", c.name))
+        .ok_or_else(|| span(format!("{}: expected a pattern", c.name)))?;
+    compile_regex(raw).map_err(|e| span(format!("{}: {e}", c.name)))
 }
 
 /// Parse a required count argument for `take`/`drop`.

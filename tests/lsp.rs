@@ -38,6 +38,21 @@ fn diagnostics_anchor_to_the_real_line_and_column() {
 }
 
 #[test]
+fn diagnostics_anchor_to_the_nested_verb_not_the_outer_directive() {
+    // A bad regex inside a `source { … }` body must anchor to the inner `match`
+    // (line 3), not the enclosing `source` verb (line 1).
+    let src = "tail .x\nsource .x {\n  in\n  match /(/\n}";
+    let d = diagnose(src);
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("bad regex"), "got: {}", d[0].message);
+    assert_eq!(d[0].line, 3); // the `match` line, not `source` (line 1)
+    assert_eq!(d[0].start_col, 2); // the `match` verb column
+    // An unknown nested verb also anchors to the nested verb's line.
+    let d2 = diagnose("tail .x\nsource .x {\n  in\n  bogusverb\n}");
+    assert_eq!(d2[0].line, 3);
+}
+
+#[test]
 fn framing_round_trips() {
     let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
     let mut buf: Vec<u8> = Vec::new();
