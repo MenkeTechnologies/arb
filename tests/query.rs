@@ -1378,10 +1378,9 @@ fn percentile_linear_interpolation_and_sugar() {
     let ten = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
     // Interpolated results aren't bit-exact floats, so compare with a tolerance.
     let approx = |v: &str, want: f64| match f(v, ten) {
-        QueryResult::Scalar(got) => assert!(
-            (got - want).abs() < 1e-9,
-            "{v}: got {got}, want {want}"
-        ),
+        QueryResult::Scalar(got) => {
+            assert!((got - want).abs() < 1e-9, "{v}: got {got}, want {want}")
+        }
         other => panic!("{v}: expected scalar, got {other:?}"),
     };
     // Linear interpolation (numpy default): pos = frac*(n-1), lerp neighbors.

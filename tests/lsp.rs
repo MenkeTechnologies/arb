@@ -196,3 +196,17 @@ fn dap_initialize_advertises_stepping() {
     );
     assert_eq!(step[0]["success"], true);
 }
+
+#[test]
+fn corpus_examples_use_semicolon_not_pipe_separator() {
+    // No example may use ` | ` as an op separator: arb chains ops with `;`, and a
+    // stray `|` is silently swallowed (only the jq/xpath front-ends accept it as
+    // an arg). The served docs + completion feed off these examples, so a `|`
+    // here would teach broken syntax — the exact bug this guards against.
+    for (name, _cat, _doc, ex) in arb::lsp::corpus() {
+        assert!(
+            !ex.contains(" | "),
+            "CORPUS `{name}` example uses `|`: {ex}"
+        );
+    }
+}
