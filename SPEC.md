@@ -251,10 +251,13 @@ bind C-r { alert reloaded; beep }   # block form
 ```
 
 **Mouse** (SGR reporting, enabled on the TUI's `/dev/tty`): click a control to
-focus/toggle it (checkbox, facet option), click-drag a `slider`, click an fzf
-row, and the wheel scrolls — decoded from the raw tty byte stream, hit-tested
-against the rendered widget rects. ⬜ Planned: `spawn` + a widget's selection
-(`.ps.sel`), fzf-row click-select, tab-click, and drag text-selection.
+focus/toggle it (checkbox, facet option), click-drag a `slider`, click a `tabs`
+label to select it, click an fzf row to move the cursor, and the wheel scrolls —
+decoded from the raw tty byte stream, hit-tested against the rendered widget
+rects. To copy text, hold **Shift** and drag for your terminal's native
+char-precise selection (arb captures the mouse for its widgets). ⬜ Planned:
+`spawn` + a widget's selection (`.ps.sel`); OSC-52 whole-widget copy is
+deferred (line-granular, terminal-gated — Shift+drag is the better copy path).
 
 ## 15. Actors — Akka-style concurrency
 

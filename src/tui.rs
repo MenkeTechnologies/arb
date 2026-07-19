@@ -120,6 +120,9 @@ pub struct Controls {
     pub fzf_list_start: usize,
     /// `bind <Click> …` reactions, fired on any mouse press.
     pub mouse_binds: Vec<(crate::spec::MouseTrigger, BindAction)>,
+    /// `tabs` widget selection: widget name (no dot) -> selected tab index, set by
+    /// a tab-bar click and read by the Tabs render arm.
+    pub tab_sel: HashMap<String, usize>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -739,12 +742,20 @@ pub fn run(
                 (d.lines.iter().cloned().collect(), label.clone())
             });
             let prev_ref = prev_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
+            let mut hitmap: Vec<HitTarget> = Vec::new();
+            let mut fzf_start = 0usize;
             let draw = terminal.draw(|f| {
-                render_fzf(
+                fzf_start = render_fzf(
                     f, matched, &filter, sel, &marks, total, err_ref, prev_ref, &fzf_prompt,
-                    &fzf_header,
-                )
+                    &fzf_header, &mut hitmap,
+                );
             });
+            // Publish the fzf list hit target so a click moves the cursor.
+            {
+                let mut c = controls.lock().unwrap();
+                c.hitmap = hitmap;
+                c.fzf_list_start = fzf_start;
+            }
             if let Err(e) = draw {
                 break Err(e);
             }
@@ -780,6 +791,7 @@ pub fn run(
         c.flashes.retain(|_, (_, exp)| *exp > now);
         let flash_snap: HashMap<String, String> =
             c.flashes.iter().map(|(k, (col, _))| (k.clone(), col.clone())).collect();
+        let tab_sel_snap: HashMap<String, usize> = c.tab_sel.clone();
         let beep = std::mem::take(&mut c.beep_pending);
         // Control names (index-aligned to inputs) so the hitmap can point a click
         // at the right control_meta slot.
@@ -791,7 +803,7 @@ pub fn run(
             let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
             render(
                 f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
-                alert_msg.as_deref(), &flash_snap, &cmeta, &mut hitmap, &control_names,
+                alert_msg.as_deref(), &flash_snap, &cmeta, &mut hitmap, &control_names, &tab_sel_snap,
             );
         });
         drop(st);
@@ -839,6 +851,7 @@ fn render(
     cmeta: &HashMap<String, ControlMeta>,
     hitmap: &mut Vec<HitTarget>,
     control_names: &[String],
+    tab_sel: &HashMap<String, usize>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -909,7 +922,17 @@ fn render(
         } else {
             None
         };
-        hitmap.push(HitTarget { rect: rects[i], kind: w.kind, control_name: name, meta_index });
+        // Tabs carry their split labels so a click can map a column to an index
+        // (filtered like the render arm so indices align).
+        let tabs = if w.kind == WidgetKind::Tabs {
+            w.opts
+                .get("tabs")
+                .map(|s| s.split(',').filter(|t| !t.is_empty()).map(str::to_string).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        hitmap.push(HitTarget { rect: rects[i], kind: w.kind, control_name: name, meta_index, tabs });
     }
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
@@ -931,7 +954,8 @@ fn render(
         });
         // A live `flash` action tints this widget's border/accent.
         let flash = flashes.get(w.path.trim_start_matches('.')).map(String::as_str);
-        render_widget(f, rects[i], w, st, &raw, result, flash);
+        let tsel = tab_sel.get(w.path.trim_start_matches('.')).copied().unwrap_or(0);
+        render_widget(f, rects[i], w, st, &raw, result, flash, tsel);
     }
 }
 
@@ -970,6 +994,9 @@ pub struct HitTarget {
     pub control_name: String,
     /// Index into `Controls.inputs`/`control_meta` when this is a control.
     pub meta_index: Option<usize>,
+    /// `-tabs {a b c}` labels for a Tabs widget (empty otherwise), so a tab-bar
+    /// click can resolve a column to an index without the spec.
+    pub tabs: Vec<String>,
 }
 
 /// Parse one SGR mouse report `ESC [ < b ; x ; y (M|m)` starting at byte `i`.
@@ -1054,6 +1081,33 @@ pub fn facet_row_to_index(rect_y: u16, row: u16) -> Option<usize> {
     }
 }
 
+/// The fzf cursor index for a clicked list row: `start` (the scroll offset of the
+/// first visible row) plus the rows below `list_top`.
+pub fn fzf_row_to_cursor(list_top: u16, start: usize, row: u16) -> usize {
+    start + row.saturating_sub(list_top) as usize
+}
+
+/// Which tab a click at `col` landed on. ratatui `Tabs` render each label as
+/// ` label ` (a space each side) joined by a `|` divider, inside the block's
+/// left border — so tab `i` spans `label.len()+2` cols, `+1` for the divider
+/// between tabs.
+pub fn tab_index_from_x(labels: &[&str], rect_x: u16, col: u16) -> Option<usize> {
+    let inner_x = rect_x.saturating_add(1); // block left border
+    if col < inner_x {
+        return None;
+    }
+    let mut x = inner_x;
+    for (i, label) in labels.iter().enumerate() {
+        let last = i + 1 == labels.len();
+        let span = label.chars().count() as u16 + if last { 2 } else { 3 };
+        if col < x.saturating_add(span) {
+            return Some(i);
+        }
+        x = x.saturating_add(span);
+    }
+    None
+}
+
 /// A slider value from the clicked x, snapped to `step` and clamped to `[min,max]`.
 pub fn slider_value_from_x(rect_x: u16, rect_w: u16, col: u16, min: f64, max: f64, step: f64) -> String {
     let inner = (rect_w.saturating_sub(2)).max(1) as f64; // border on both sides
@@ -1119,7 +1173,13 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool) {
                         }
                     }
                     WidgetKind::Select if down && ev.row >= t.rect.y => {
-                        c.cursor = c.fzf_list_start + (ev.row - t.rect.y) as usize;
+                        c.cursor = fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row);
+                    }
+                    WidgetKind::Tabs if down => {
+                        let labels: Vec<&str> = t.tabs.iter().map(String::as_str).collect();
+                        if let Some(idx) = tab_index_from_x(&labels, t.rect.x, ev.col) {
+                            c.tab_sel.insert(t.control_name.clone(), idx);
+                        }
                     }
                     _ => {} // input/filter focus set above; view widgets no-op
                 }
@@ -1439,7 +1499,8 @@ fn render_fzf(
     preview: Option<(&[String], &str)>,
     prompt: &str,
     header: &str,
-) {
+    hitmap: &mut Vec<HitTarget>,
+) -> usize {
     // Reserve a bottom strip for the stderr pane when present.
     let (top, err_area) = match err {
         Some((lines, _)) => {
@@ -1527,6 +1588,17 @@ fn render_fzf(
         .highlight_symbol("\u{25b6} ")
         .highlight_style(Style::default().bg(Color::Rgb(38, 38, 46)).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, chunks[2], &mut state);
+    // Publish the list body so a click maps to a cursor row (see dispatch_mouse
+    // Select arm). `start` is the scroll offset of the first visible row.
+    hitmap.clear();
+    hitmap.push(HitTarget {
+        rect: chunks[2],
+        kind: WidgetKind::Select,
+        control_name: String::new(),
+        meta_index: None,
+        tabs: Vec::new(),
+    });
+    start
 }
 
 /// Render the captured downstream output (`arb -- CMD`) as a tailed list pane —
@@ -1609,6 +1681,7 @@ fn hex_color(hex: &str) -> Color {
     Color::Cyan
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_widget(
     f: &mut Frame,
     area: Rect,
@@ -1617,6 +1690,7 @@ fn render_widget(
     lines: &[String],
     result: Option<QueryResult>,
     flash: Option<&str>,
+    tab_sel: usize,
 ) {
     // `-label`/`-title` overrides the widget's display name (the dot-path).
     let name = w
@@ -1801,8 +1875,8 @@ fn render_widget(
             f.render_widget(table, area);
         }
         WidgetKind::Tabs => {
-            // `-tabs {a b}` -> a tab bar; the first tab is selected (there is no
-            // per-tab content model yet, so this is a labelled selector).
+            // `-tabs {a b}` -> a tab bar; `tab_sel` (set by a tab-bar click) marks
+            // the selected label (a labelled selector — no per-tab content yet).
             let titles: Vec<Line> = w
                 .opts
                 .get("tabs")
@@ -1813,13 +1887,14 @@ fn render_widget(
                         .collect()
                 })
                 .unwrap_or_default();
+            let sel = tab_sel.min(titles.len().saturating_sub(1));
             let tabs = Tabs::new(titles)
                 .block(block)
                 .style(Style::default().fg(accent))
                 .highlight_style(
                     Style::default().fg(accent).add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 )
-                .select(0);
+                .select(sel);
             f.render_widget(tabs, area);
         }
         // Containers (`block`/`frame`) and any remaining kind render their bound
@@ -1903,7 +1978,7 @@ mod tests {
         let st = StreamState::new();
         let data = vec!["one".to_string(), "two".to_string()];
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
-        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None)).unwrap();
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0)).unwrap();
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
     }
 
@@ -1964,8 +2039,8 @@ mod tests {
         use crate::spec::WidgetKind;
         use ratatui::layout::Rect;
         let hm = vec![
-            HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 5 }, kind: WidgetKind::Filter, control_name: "q".into(), meta_index: Some(0) },
-            HitTarget { rect: Rect { x: 0, y: 2, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "c".into(), meta_index: Some(1) },
+            HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 5 }, kind: WidgetKind::Filter, control_name: "q".into(), meta_index: Some(0), tabs: Vec::new() },
+            HitTarget { rect: Rect { x: 0, y: 2, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "c".into(), meta_index: Some(1), tabs: Vec::new() },
         ];
         // Overlap at (3,3): the later (topmost) target wins.
         assert_eq!(hit(&hm, 3, 3).unwrap().control_name, "c");
@@ -1998,8 +2073,8 @@ mod tests {
                 ControlMeta { kind: ControlKind::Slider, min: 0.0, max: 10.0, step: 1.0, ..Default::default() },
             ],
             hitmap: vec![
-                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0) },
-                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1) },
+                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0), tabs: Vec::new() },
+                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1), tabs: Vec::new() },
             ],
             ..Default::default()
         };
@@ -2016,6 +2091,57 @@ mod tests {
         c.cursor = 5;
         dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 0, 0), true);
         assert_eq!(c.cursor, 4);
+    }
+
+    #[test]
+    fn fzf_row_and_tab_geometry() {
+        use super::{fzf_row_to_cursor, tab_index_from_x};
+        // fzf row -> cursor = scroll offset + rows below the list top.
+        assert_eq!(fzf_row_to_cursor(2, 10, 2), 10);
+        assert_eq!(fzf_row_to_cursor(2, 10, 4), 12);
+        assert_eq!(fzf_row_to_cursor(0, 0, 5), 5);
+        assert_eq!(fzf_row_to_cursor(2, 10, 1), 10); // saturates above the body
+        // Tab bar: ` a | bb | ccc ` inside the left border at rect_x.
+        let labels = ["a", "bb", "ccc"];
+        assert_eq!(tab_index_from_x(&labels, 0, 0), None); // on the border
+        assert_eq!(tab_index_from_x(&labels, 0, 1), Some(0)); // ` a `
+        assert_eq!(tab_index_from_x(&labels, 0, 5), Some(1)); // ` bb `
+        assert_eq!(tab_index_from_x(&labels, 0, 10), Some(2)); // ` ccc `
+        assert_eq!(tab_index_from_x(&labels, 0, 99), None); // past the last tab
+    }
+
+    #[test]
+    fn dispatch_mouse_fzf_row_and_tab_click() {
+        use super::{dispatch_mouse, Controls, HitTarget, MouseEvent, MouseKind};
+        use crate::spec::WidgetKind;
+        use ratatui::layout::Rect;
+        // fzf: clicking a list row sets the cursor via the scroll offset.
+        let mut c = Controls {
+            fzf_list_start: 10,
+            hitmap: vec![HitTarget {
+                rect: Rect { x: 0, y: 2, width: 20, height: 10 },
+                kind: WidgetKind::Select,
+                control_name: String::new(),
+                meta_index: None,
+                tabs: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, true);
+        assert_eq!(c.cursor, 12); // 10 + (4 - 2)
+        // tabs: clicking a label selects it.
+        let mut c = Controls {
+            hitmap: vec![HitTarget {
+                rect: Rect { x: 0, y: 0, width: 20, height: 3 },
+                kind: WidgetKind::Tabs,
+                control_name: "t".into(),
+                meta_index: None,
+                tabs: vec!["a".into(), "bb".into(), "ccc".into()],
+            }],
+            ..Default::default()
+        };
+        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 5, row: 0, button: 0, press: true }, false);
+        assert_eq!(c.tab_sel.get("t"), Some(&1));
     }
 
     #[test]
