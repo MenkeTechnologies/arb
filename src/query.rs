@@ -422,10 +422,18 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Toml => cur = toml_to_json(&cur),
             QueryOp::Sort { numeric, reverse } => {
                 if *numeric {
+                    // Like Unix `sort -n`: order by each line's LEADING numeric
+                    // token (the first whitespace-delimited field), so mixed rows
+                    // such as `2.1 claude` sort by 2.1 — not the whole line, which
+                    // would parse as NaN and leave the order untouched.
+                    let key = |s: &str| {
+                        s.split_whitespace()
+                            .next()
+                            .and_then(|t| t.parse::<f64>().ok())
+                            .unwrap_or(f64::NAN)
+                    };
                     cur.sort_by(|a, b| {
-                        let na = a.trim().parse::<f64>().unwrap_or(f64::NAN);
-                        let nb = b.trim().parse::<f64>().unwrap_or(f64::NAN);
-                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                        key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
                     });
                 } else {
                     cur.sort();

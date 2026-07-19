@@ -167,6 +167,17 @@ fn numeric_sort_reverse_top_n() {
 }
 
 #[test]
+fn numeric_sort_orders_by_leading_token_like_unix_sort_n() {
+    // `sort -n` keys on each line's LEADING number (Unix `sort -n`), so mixed
+    // `<num> <text>` rows (ps/df output) sort by the number, not the whole line.
+    let ops = pipeline("tail .x\nsource .x { in; sort -n -r }");
+    assert_eq!(
+        eval(&ops, &lines(&["2.1 claude", "45.8 mds", "0.0 caffeinate", "13.2 zsh"]), 1.0),
+        QueryResult::Lines(lines(&["45.8 mds", "13.2 zsh", "2.1 claude", "0.0 caffeinate"]))
+    );
+}
+
+#[test]
 fn take_and_drop() {
     assert_eq!(
         eval(
