@@ -817,3 +817,39 @@ fn spawn_conflict_across_imports_errors() {
     assert!(build(&parse(&spec_src).unwrap()).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn file_sets_source() {
+    let s = build(&parse("tail .t\n< file.log").unwrap()).unwrap();
+    assert_eq!(s.source_file.as_deref(), Some("file.log"));
+}
+
+#[test]
+fn file_empty_errors() {
+    assert!(build(&parse("<").unwrap()).is_err());
+}
+
+#[test]
+fn file_double_errors() {
+    assert!(build(&parse("< a.log\n< b.log").unwrap()).is_err());
+}
+
+#[test]
+fn file_conflicts_with_spawn() {
+    // Only one stream source allowed, in either order.
+    assert!(build(&parse("spawn seq 1 3\n< a.log").unwrap()).is_err());
+    assert!(build(&parse("< a.log\nspawn seq 1 3").unwrap()).is_err());
+}
+
+#[test]
+fn file_from_import_merges() {
+    let dir = temp_lib("file-import");
+    std::fs::create_dir_all(&dir).unwrap();
+    let module = dir.join("src.arb");
+    std::fs::write(&module, "< data.log\n").unwrap();
+    // Quote the absolute path (unquoted `/a/b` collides with `/…/` regex lexing).
+    let spec_src = format!("tail .t\nimport \"{}\" as m", module.display());
+    let s = build(&parse(&spec_src).unwrap()).unwrap();
+    assert_eq!(s.source_file.as_deref(), Some("data.log"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

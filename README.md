@@ -530,7 +530,8 @@ the terminal or the browser) is complete:
 - **Self-sourcing specs** — `spawn CMD` (or `spawn { … }`) makes a spec launch
   its own producer: arb runs CMD via `sh -c` and feeds its stdout into the
   stream in place of stdin, so a dashboard preset needs nothing piped in
-  (`arb top.arb` with `spawn top -b`). A CLI `--run` producer wins if both given.
+  (`arb top.arb` with `spawn top -b`); `< FILE` reads a file as the stream
+  instead. One stream source per spec; a CLI `--run` producer wins if both given.
 - **Zero-config sniffing** — `cmd | arb` (no spec) peeks the stream and
   auto-picks a preset by data shape (JSON→`json`/`logs`, `docker`/`top`/`k8s`
   headers, git-log, CSV→`table`); a non-blocking `poll` peek never hangs, and

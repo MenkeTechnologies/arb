@@ -328,6 +328,16 @@ pub struct Spec {
     /// if both are given. The interactive `send`/PTY react leg + `.ps.sel`
     /// selection widget are deferred. `None` = read stdin.
     pub spawn: Option<String>,
+    /// Input-source file (`< FILE`, SPEC §7): read FILE as the stream in place
+    /// of stdin. Folded into the producer as `cat -- FILE` in main. Mutually
+    /// exclusive with `spawn` (and `--run`). `None` = read stdin.
+    pub source_file: Option<String>,
+}
+
+/// True if any single-stream input source (`spawn`/`< file`) is already set —
+/// only one may feed the stream.
+fn stream_source_set(s: &Spec) -> bool {
+    s.spawn.is_some() || s.source_file.is_some()
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -470,10 +480,16 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
         dst.out = Some(out);
     }
     if let Some(sp) = src.spawn {
-        if dst.spawn.is_some() {
+        if stream_source_set(dst) {
             return Err(format!("import: `{ns}` defines a spawn source, but one is already set"));
         }
         dst.spawn = Some(sp);
+    }
+    if let Some(f) = src.source_file {
+        if stream_source_set(dst) {
+            return Err(format!("import: `{ns}` defines a `<` file source, but one is already set"));
+        }
+        dst.source_file = Some(f);
     }
     Ok(())
 }
@@ -637,10 +653,24 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
             if cmd.trim().is_empty() {
                 return Err("spawn: missing command".into());
             }
-            if spec.spawn.is_some() {
+            if stream_source_set(spec) {
                 return Err("spawn: a stream source is already declared".into());
             }
             spec.spawn = Some(cmd);
+        } else if c.name == "<" {
+            // `< FILE`: read FILE as the stream (input source, in place of stdin).
+            // An unquoted absolute path (`/var/log/x`) is truncated by the lexer's
+            // `/…/` regex branch — quote it (`< "/var/log/x"`).
+            let file = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .filter(|f| !f.trim().is_empty())
+                .ok_or("`<`: missing file path")?;
+            if stream_source_set(spec) {
+                return Err("`<`: a stream source is already declared".into());
+            }
+            spec.source_file = Some(file.to_string());
         } else if c.name == "grid" {
             let path = c
                 .args

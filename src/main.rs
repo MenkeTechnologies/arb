@@ -434,10 +434,12 @@ fn main() -> io::Result<()> {
         }
         None => (None, None),
     };
-    // A spec-level `spawn CMD` (§7) is an input source like `--run`'s producer;
-    // CLI `--run` wins if both are given. Either way the producer's stdout feeds
-    // the stream in place of stdin.
-    let producer = run_producer.or_else(|| spec.spawn.clone());
+    // A spec-level `spawn CMD` or `< FILE` (§7) is an input source like `--run`'s
+    // producer; CLI `--run` wins, then `spawn`, then `< FILE` (as `cat -- FILE`).
+    // Either way the producer's stdout feeds the stream in place of stdin.
+    let producer = run_producer
+        .or_else(|| spec.spawn.clone())
+        .or_else(|| spec.source_file.as_deref().map(|f| format!("cat -- {}", shell_quote(f))));
 
     let needs_stdin =
         fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
@@ -628,6 +630,13 @@ fn main() -> io::Result<()> {
     } else {
         dump(&spec, &state)
     }
+}
+
+/// POSIX single-quote a string so it survives `sh -c` as one literal argument
+/// (used to fold `< FILE` into a `cat -- FILE` producer). Any embedded `'` is
+/// closed, escaped, and reopened (`'\''`).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Run `producer` (`sh -c`) and drain its stdout into `state` synchronously,
