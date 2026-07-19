@@ -291,7 +291,10 @@ shared cyberpunk web-component toolkit — vendored as a git submodule at
 settings/colorscheme) and renders each widget with the matching component:
 `gauge`→`ZGui.gauge`, `chart`→`ZGui.chart`, `spark`→`ZGui.sparkline`,
 `bars`/`histo`→`ZGui.statBars`, `table`→`ZGui.dataTable`, containers/log →
-`ZGui.card`+`ZGui.logView`, fed live from `/data`.
+`ZGui.card`+`ZGui.logView`, fed live from `/data`. `input` widgets render as
+editable fields that `POST /set?name=..&value=..` on change; the server holds a
+live input store and re-resolves each widget's pipeline against it every frame,
+so a typed field reshapes the browser dashboard just like the TUI megafilter.
 
 ## 17. Modules & presets (presets = stdlib script imports)
 

@@ -331,7 +331,10 @@ with the matching component — `gauge`→`ZGui.gauge`, `chart`→`ZGui.chart`,
 containers/log→`ZGui.card`+`ZGui.logView`. Every widget's `source` is evaluated
 server-side and pushed as structured JSON; the client feeds it to the component
 handles (`.set`/`.setSeries`/`.setRows`) — never `innerHTML` with stream data, so
-nothing can inject markup. `--port 0` picks a free port and prints it.
+nothing can inject markup. `input` widgets render as editable fields that
+`POST /set` on change, so the server re-resolves the bound pipelines live — the
+browser drives the megafilter/map just like the terminal. `--port 0` picks a free
+port and prints it.
 
 > The web target needs the submodule checked out: `git submodule update --init`.
 > Without it the binary still builds (the dashboard shows a one-line notice).

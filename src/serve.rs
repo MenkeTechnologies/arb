@@ -1,13 +1,14 @@
 //! Web target: serve the same [`Spec`] as a live browser dashboard. A std-only
 //! HTTP server (no async runtime, no framework) binds a local port, serves one
-//! self-contained page at `/`, and answers `GET /data` with the current widget
-//! values as JSON. The page polls `/data` and swaps each panel's text — so the
+//! page at `/` built from the vendored `zgui-core` toolkit, and answers
+//! `GET /data` (and a `/ws` push) with the current widget values as JSON — so the
 //! same spec that drives the ratatui TUI drives a browser, live.
 //!
-//! v1 renders every widget's evaluated body as text (the server does the eval and
-//! formatting; the client just displays it). Richer per-widget rendering and a
-//! WebSocket push path can replace polling later without changing the spec.
+//! Interactive: `input` widgets `POST /set?name=..&value=..`; the server holds a
+//! live input store and re-resolves each widget's pipeline against it every
+//! frame, so a typed field reshapes the dashboard like the TUI megafilter.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -15,10 +16,16 @@ use std::thread;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use percent_encoding::percent_decode_str;
 
 use crate::query::{eval, QueryResult};
-use crate::spec::{Spec, Widget, WidgetKind};
+use crate::spec::{resolve_pipeline, Spec, Widget, WidgetKind};
 use crate::stream::StreamState;
+
+/// Live control values (`input .name` widgets) the browser writes via `POST
+/// /set`; every `/data` and `/ws` frame re-resolves each widget's pipeline
+/// against this store, so a typed field reshapes the dashboard live.
+type Inputs = Arc<Mutex<HashMap<String, String>>>;
 /// The vendored `zgui-core` toolkit, bundled at build time (see `build.rs`) from
 /// the `lib/zgui-core` submodule. Served as `/zgui.js` + `/zgui.css` and driven
 /// by the dashboard page. Empty if the submodule was not checked out.
@@ -36,12 +43,21 @@ pub fn serve(spec: Spec, state: Arc<Mutex<StreamState>>, port: u16) -> std::io::
 
     let spec = Arc::new(spec);
     let page = Arc::new(render_page(&spec));
+    // Live input store, seeded like the TUI (main.rs): each `input .name` -> "".
+    let inputs: Inputs = Arc::new(Mutex::new(
+        spec.widgets
+            .iter()
+            .filter(|w| w.kind == WidgetKind::Input)
+            .map(|w| (w.path.trim_start_matches('.').to_string(), String::new()))
+            .collect(),
+    ));
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
-        let (spec, state, page) = (spec.clone(), state.clone(), page.clone());
+        let (spec, state, page, inputs) =
+            (spec.clone(), state.clone(), page.clone(), inputs.clone());
         // One thread per connection so a slow/holding client never blocks others.
         thread::spawn(move || {
-            let _ = handle(conn, &spec, &state, &page);
+            let _ = handle(conn, &spec, &state, &page, &inputs);
         });
     }
     Ok(())
@@ -54,6 +70,7 @@ fn handle(
     spec: &Spec,
     state: &Arc<Mutex<StreamState>>,
     page: &str,
+    inputs: &Inputs,
 ) -> std::io::Result<()> {
     // Read the request line + headers (needed for the WebSocket upgrade key).
     let (path, headers) = {
@@ -84,11 +101,23 @@ fn handle(
     // `GET /ws` with a WebSocket key: upgrade and push updates (no more polling).
     if path == "/ws" {
         if let Some(key) = header("Sec-WebSocket-Key") {
-            return ws_serve(conn, spec, state, &key);
+            return ws_serve(conn, spec, state, inputs, &key);
         }
     }
+    // `POST /set?name=..&value=..`: a browser control writes a live input value.
+    // Data rides in the request-line query, so no request-body/masked-frame read.
+    if let Some(q) = path.strip_prefix("/set?") {
+        let (name, value) = parse_set_query(q);
+        if !name.is_empty() {
+            inputs.lock().unwrap().insert(name, value);
+        }
+        return conn.write_all(
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+    }
+    let snap = inputs.lock().unwrap().clone();
     let (ctype, body) = match path.as_str() {
-        "/data" => ("application/json", data_json(spec, state)),
+        "/data" => ("application/json", data_json(spec, state, &snap)),
         "/zgui.js" => ("application/javascript; charset=utf-8", ZGUI_JS.to_string()),
         "/zgui.css" => ("text/css; charset=utf-8", ZGUI_CSS.to_string()),
         "/" => ("text/html; charset=utf-8", page.to_string()),
@@ -114,6 +143,7 @@ fn ws_serve(
     mut conn: TcpStream,
     spec: &Spec,
     state: &Arc<Mutex<StreamState>>,
+    inputs: &Inputs,
     key: &str,
 ) -> std::io::Result<()> {
     let resp = format!(
@@ -122,13 +152,34 @@ fn ws_serve(
     );
     conn.write_all(resp.as_bytes())?;
     loop {
-        let frame = ws_text_frame(&data_json(spec, state));
+        // Snapshot the live input store each tick (released before write/sleep),
+        // so a `POST /set` between ticks shows on the next push.
+        let snap = inputs.lock().unwrap().clone();
+        let frame = ws_text_frame(&data_json(spec, state, &snap));
         if conn.write_all(&frame).is_err() {
             break;
         }
         thread::sleep(Duration::from_millis(250));
     }
     Ok(())
+}
+
+/// Parse a `POST /set?name=..&value=..` query string, percent-decoding both.
+/// `encodeURIComponent` on the client escapes literal `&`/`=` in the value, so
+/// the `&`/`=` split is unambiguous.
+fn parse_set_query(q: &str) -> (String, String) {
+    let dec = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
+    let (mut name, mut value) = (String::new(), String::new());
+    for kv in q.split('&') {
+        if let Some((k, v)) = kv.split_once('=') {
+            match k {
+                "name" => name = dec(v),
+                "value" => value = dec(v),
+                _ => {}
+            }
+        }
+    }
+    (name, value)
 }
 
 /// RFC 6455 handshake response token: `base64(SHA1(key + magic GUID))`.
@@ -213,19 +264,25 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 /// JSON array in spec order (the page maps by index). Each item is shaped by kind
 /// so the client can render a real widget: `gauge` → `{scalar,max}`, `bars`/
 /// `histo`/`spark` → `{pairs,top}`, everything else → `{text}`.
-fn data_json(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> String {
+fn data_json(spec: &Spec, state: &Arc<Mutex<StreamState>>, inputs: &HashMap<String, String>) -> String {
     let (raw, elapsed): (Vec<String>, f64) = {
         let st = state.lock().unwrap();
         (st.lines.iter().cloned().collect(), st.start.elapsed().as_secs_f64())
     };
     let items: Vec<serde_json::Value> =
-        spec.widgets.iter().map(|w| widget_json(w, &raw, elapsed)).collect();
+        spec.widgets.iter().map(|w| widget_json(w, &raw, elapsed, inputs)).collect();
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// One widget's data as JSON, shaped by kind so the client renders a bar/gauge/
-/// text rather than a flat string.
-fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
+/// text rather than a flat string. `inputs` are the live control values, so a
+/// bound `apply .name` / `where … .name` reflects what the browser typed.
+fn widget_json(
+    w: &Widget,
+    raw: &[String],
+    elapsed: f64,
+    inputs: &HashMap<String, String>,
+) -> serde_json::Value {
     use serde_json::json;
     let color = crate::spec::color_hex(w.opts.get("color").map(String::as_str));
     let base = |extra: serde_json::Value| {
@@ -238,7 +295,11 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
         m
     };
     let opt_f64 = |k: &str, d: f64| w.opts.get(k).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
-    let result = w.source.as_ref().map(|s| eval(&s.pipeline, raw, elapsed));
+    // Resolve control placeholders against live input values (mirrors tui.rs).
+    let result = w
+        .source
+        .as_ref()
+        .map(|s| eval(&resolve_pipeline(&s.pipeline, inputs), raw, elapsed));
     match w.kind {
         WidgetKind::Gauge => {
             let scalar = match &result {
@@ -275,6 +336,16 @@ fn widget_json(w: &Widget, raw: &[String], elapsed: f64) -> serde_json::Value {
                 .map(|s| s.split(',').filter(|t| !t.is_empty()).collect())
                 .unwrap_or_default();
             base(json!({ "tabs": tabs }))
+        }
+        WidgetKind::Input => {
+            // A live editable field: the client POSTs /set on change.
+            let name = w.path.trim_start_matches('.');
+            base(json!({
+                "name": name,
+                "value": inputs.get(name).cloned().unwrap_or_default(),
+                "placeholder": w.opts.get("placeholder").or_else(|| w.opts.get("title")).cloned().unwrap_or_default(),
+                "input": true,
+            }))
         }
         WidgetKind::Chart => {
             let series: Vec<f64> = match &result {
@@ -454,7 +525,25 @@ const ZINIT: &str = r#"
         });
       };
     }
-    // text / tail / list / block / frame / input / select -> a streaming log view.
+    if (k === 'input') {
+      // A live editable field: debounced POST /set on change reshapes the pipe.
+      var inp = document.createElement('input');
+      inp.type = 'text'; inp.className = 'zg-input';
+      inp.placeholder = it.placeholder || slot.w.name;
+      inp.value = it.value || '';
+      var tmr = null;
+      inp.addEventListener('input', function () {
+        clearTimeout(tmr);
+        var name = it.name, val = inp.value;
+        tmr = setTimeout(function () {
+          fetch('/set?name=' + encodeURIComponent(name) + '&value=' + encodeURIComponent(val), { method: 'POST' }).catch(function () {});
+        }, 120);
+      });
+      host.appendChild(inp);
+      // Don't clobber the field the user is editing when /data refreshes.
+      return function (d) { if (document.activeElement !== inp && d.value != null) inp.value = d.value; };
+    }
+    // text / tail / list / block / frame / select -> a streaming log view.
     var lv = ZGui.logView.create(host, { maxLines: 2000, ansi: true });
     var last = null;
     return function (d) {
@@ -512,7 +601,7 @@ mod tests {
         )
         .unwrap();
         let st = state_with(&["a", "b", "c"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         // Gauge carries the count scalar + its max for the client bar.
@@ -529,7 +618,7 @@ mod tests {
         let spec =
             build(&parse("histo .h\nsource .h { in; tally }").unwrap()).unwrap();
         let st = state_with(&["x", "y", "x", "x", "y"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         let pairs = json[0]["pairs"].as_array().unwrap();
         // tally counts occurrences → x:3, y:2 (order is count-desc).
         assert_eq!(pairs[0][0], "x");
@@ -542,7 +631,7 @@ mod tests {
     fn data_json_spark_carries_series() {
         let spec = build(&parse("spark .s\nsource .s { in }").unwrap()).unwrap();
         let st = state_with(&["1", "2", "3", "4"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "spark");
         // Raw numeric series — the client renders it with ZGui.sparkline.
         assert_eq!(json[0]["series"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
@@ -552,7 +641,7 @@ mod tests {
     fn data_json_chart_carries_series() {
         let spec = build(&parse("chart .c\nsource .c { in }").unwrap()).unwrap();
         let st = state_with(&["3", "1", "4", "1", "5"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "chart");
         assert_eq!(json[0]["series"], serde_json::json!([3.0, 1.0, 4.0, 1.0, 5.0]));
     }
@@ -562,7 +651,7 @@ mod tests {
         let spec =
             build(&parse("table .t -cols \"a,b\"\nsource .t { in }").unwrap()).unwrap();
         let st = state_with(&["1 2", "3 4"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "table");
         assert_eq!(json[0]["headers"], serde_json::json!(["a", "b"]));
         assert_eq!(json[0]["rows"], serde_json::json!([["1", "2"], ["3", "4"]]));
@@ -572,7 +661,7 @@ mod tests {
     fn list_limit_caps_rows() {
         let spec = build(&parse("list .l -limit 3\nsource .l { in }").unwrap()).unwrap();
         let st = state_with(&["1", "2", "3", "4", "5"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         // Only the last 3 lines are shown.
         assert_eq!(json[0]["text"], "3\n4\n5");
     }
@@ -645,7 +734,52 @@ mod tests {
     #[test]
     fn widget_without_source_tails_latest_line() {
         let spec = build(&parse("text .t").unwrap()).unwrap();
-        let val = widget_json(&spec.widgets[0], &["x".into(), "y".into()], 0.0);
+        let val = widget_json(&spec.widgets[0], &["x".into(), "y".into()], 0.0, &HashMap::new());
         assert_eq!(val["text"], "y");
+    }
+
+    #[test]
+    fn parse_set_query_percent_decodes() {
+        // %20 -> space, %26 -> & survive the &/= split of the query string.
+        assert_eq!(parse_set_query("name=q&value=a%20b%26c"), ("q".into(), "a b&c".into()));
+        assert_eq!(parse_set_query("value=v&name=n"), ("n".into(), "v".into()));
+    }
+
+    #[test]
+    fn widget_json_input_carries_value_and_placeholder() {
+        let spec = build(&parse("input .q -placeholder P").unwrap()).unwrap();
+        let mut m = HashMap::new();
+        m.insert("q".to_string(), "hi".to_string());
+        let v = widget_json(&spec.widgets[0], &[], 0.0, &m);
+        assert_eq!(v["input"], true);
+        assert_eq!(v["value"], "hi");
+        assert_eq!(v["placeholder"], "P");
+    }
+
+    #[test]
+    fn set_route_value_resolves_apply_in_data_json() {
+        // The client->server->dashboard loop, minus the socket: a POSTed input
+        // value flows through resolve_pipeline into the served /data.
+        let spec = build(&parse("list .l\nsource .l { in; apply .q }").unwrap()).unwrap();
+        let st = state_with(&["1", "2", "3", "4"]);
+        // Empty store -> apply is a no-op, all lines pass.
+        let j0: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        assert_eq!(j0[0]["text"], "1\n2\n3\n4");
+        // Simulate POST /set?name=q&value=over 2, then re-resolve.
+        let (name, value) = parse_set_query("name=q&value=over%202");
+        let mut store = HashMap::new();
+        store.insert(name, value);
+        let j1: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &store)).unwrap();
+        assert_eq!(j1[0]["text"], "3\n4");
+    }
+
+    #[test]
+    fn served_page_wires_input_post_set() {
+        let spec = build(&parse("input .q").unwrap()).unwrap();
+        let page = render_page(&spec);
+        assert!(page.contains("/set"));
+        assert!(page.contains("addEventListener"));
+        assert!(page.contains("zg-input"));
     }
 }
