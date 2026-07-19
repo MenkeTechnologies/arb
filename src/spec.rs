@@ -4,6 +4,7 @@
 //! forward-compatible.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use regex::Regex;
 
@@ -158,12 +159,37 @@ pub fn parse_key(spec: &str) -> Option<u8> {
     Some((ch.to_ascii_uppercase() as u8) & 0x1f)
 }
 
+/// Parse a `Ns`/`Nms`/`Nm` duration literal (SPEC §3) into a `Duration`.
+/// `ms` is matched before the bare `s` so `500ms` is not read as `500` seconds.
+pub fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("ms") {
+        return n.trim().parse::<u64>().ok().map(Duration::from_millis);
+    }
+    if let Some(n) = s.strip_suffix('s') {
+        return n.trim().parse::<f64>().ok().map(Duration::from_secs_f64);
+    }
+    if let Some(n) = s.strip_suffix('m') {
+        return n.trim().parse::<f64>().ok().map(|m| Duration::from_secs_f64(m * 60.0));
+    }
+    None
+}
+
 /// An event-driven reaction: when a stream line matches `pattern`, fire `action`.
 /// Declared `expect /regex/ <action>` — the "react" half of Expect. Reuses
 /// [`BindAction`], so a matching line can set a control or quit.
 #[derive(Debug, Clone)]
 pub struct Expect {
     pub pattern: Regex,
+    pub action: BindAction,
+}
+
+/// An idle reaction (SPEC §13): when the input stream produces no new line for
+/// `dur`, fire `action`. Latched once per idle span, re-armed on the next line.
+/// Reuses [`BindAction`] exactly like [`Expect`], so `timeout 5s quit` works.
+#[derive(Debug, Clone)]
+pub struct Timeout {
+    pub dur: Duration,
     pub action: BindAction,
 }
 
@@ -254,6 +280,8 @@ pub struct Spec {
     pub binds: Vec<Bind>,
     /// Event-driven reactions (`expect /re/ <action>`).
     pub expects: Vec<Expect>,
+    /// Idle reactions (`timeout Ns <action>`).
+    pub timeouts: Vec<Timeout>,
 }
 
 /// Build a `Spec` from a parsed command tree.
@@ -403,6 +431,18 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), Str
             let action =
                 parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("expect: {e}"))?;
             spec.expects.push(Expect { pattern, action });
+        } else if c.name == "timeout" {
+            // `timeout Ns ACTION` — fire ACTION when the stream goes idle for Ns.
+            let dspec = c
+                .args
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("timeout: missing duration (e.g. 5s, 500ms)")?;
+            let dur = parse_duration(dspec)
+                .ok_or_else(|| format!("timeout: `{dspec}` is not a duration (use Ns/Nms/Nm)"))?;
+            let action =
+                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("timeout: {e}"))?;
+            spec.timeouts.push(Timeout { dur, action });
         } else if c.name == "out" {
             let body = match c.args.first() {
                 Some(Arg::Block(b)) => b,

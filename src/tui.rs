@@ -29,7 +29,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use rayon::prelude::*;
 
 use crate::query::{eval, is_line_streamable, QueryOp, QueryResult};
-use crate::spec::{Bind, BindAction, Spec, Widget, WidgetKind};
+use crate::spec::{Bind, BindAction, Spec, Timeout, Widget, WidgetKind};
 use crate::stream::StreamState;
 
 /// Whether an interactive TUI can run: key events need a controlling terminal.
@@ -245,6 +245,33 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
     }
 }
 
+/// Advance idle-timeout state one render tick. If the stream advanced since the
+/// last tick, reset the idle clock and re-arm every latch. Otherwise fire any
+/// timeout whose idle span has elapsed and latch it (once until the next line).
+fn tick_timeouts(
+    timeouts: &[Timeout],
+    now_total: u64,
+    last_total: &mut u64,
+    last_activity: &mut Instant,
+    fired: &mut [bool],
+    now: Instant,
+    c: &mut Controls,
+) {
+    if now_total != *last_total {
+        *last_total = now_total;
+        *last_activity = now;
+        fired.iter_mut().for_each(|f| *f = false);
+        return;
+    }
+    let idle = now.saturating_duration_since(*last_activity);
+    for (i, t) in timeouts.iter().enumerate() {
+        if !fired[i] && idle >= t.dur {
+            apply_bind_action(c, &t.action);
+            fired[i] = true;
+        }
+    }
+}
+
 /// Read key bytes from `/dev/tty` and drive `Controls`: printable chars build
 /// the filter live, Backspace/Ctrl-U edit it, Esc clears it (or quits when it is
 /// already empty), Ctrl-C quits. Raw mode delivers each keypress immediately.
@@ -443,6 +470,12 @@ pub fn run(
         (p, c.header.clone(), c.exact, c.no_sort)
     };
 
+    // `timeout Ns …` idle reactions: track the last stream `total` and when it
+    // last advanced; each timeout fires once per idle span, re-armed on a new line.
+    let mut to_last_total: u64 = { state.lock().unwrap().total };
+    let mut to_last_activity = Instant::now();
+    let mut to_fired = vec![false; spec.timeouts.len()];
+
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
     // flowing regardless of keypresses).
@@ -480,6 +513,21 @@ pub fn run(
                     }
                 }
             }
+        }
+        // `timeout Ns …` idle reactions — same lock discipline as expect (read
+        // state, drop it, then lock controls; never hold both at once).
+        if !spec.timeouts.is_empty() {
+            let now_total = { state.lock().unwrap().total };
+            let mut c = controls.lock().unwrap();
+            tick_timeouts(
+                &spec.timeouts,
+                now_total,
+                &mut to_last_total,
+                &mut to_last_activity,
+                &mut to_fired,
+                Instant::now(),
+                &mut c,
+            );
         }
         // Snapshot the error pane (spawned producer's stderr) — a bordered strip
         // at the bottom, so upstream errors show inside arb, never on the terminal.
@@ -1391,6 +1439,46 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
         term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None)).unwrap();
         term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn tick_timeouts_fires_once_per_idle_span() {
+        use super::{tick_timeouts, Controls};
+        use crate::spec::{BindAction, Timeout};
+        use std::time::{Duration, Instant};
+        let mut c = Controls { inputs: vec![("x".into(), String::new())], ..Default::default() };
+        let timeouts = vec![Timeout {
+            dur: Duration::from_millis(10),
+            action: BindAction::SetInput { name: "x".into(), value: "hot".into() },
+        }];
+        let base = Instant::now();
+        let (mut last_total, mut last_activity, mut fired) = (0u64, base, vec![false]);
+        // Idle 20ms past the 10ms threshold -> fires.
+        tick_timeouts(&timeouts, 0, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(20), &mut c);
+        assert_eq!(c.inputs[0].1, "hot");
+        assert!(fired[0]);
+        // Same idle span -> latched, does not re-fire (clear the value, confirm it stays clear).
+        c.inputs[0].1.clear();
+        tick_timeouts(&timeouts, 0, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(40), &mut c);
+        assert_eq!(c.inputs[0].1, "");
+        // Stream advances (new line) -> re-arms and resets the idle clock; an
+        // immediate tick does not fire.
+        tick_timeouts(&timeouts, 1, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(41), &mut c);
+        assert!(!fired[0]);
+        assert_eq!(c.inputs[0].1, "");
+    }
+
+    #[test]
+    fn tick_timeouts_quit_action() {
+        use super::{tick_timeouts, Controls};
+        use crate::spec::{BindAction, Timeout};
+        use std::time::{Duration, Instant};
+        let mut c = Controls::default();
+        let timeouts = vec![Timeout { dur: Duration::from_millis(5), action: BindAction::Quit }];
+        let base = Instant::now();
+        let (mut lt, mut la, mut fired) = (0u64, base, vec![false]);
+        tick_timeouts(&timeouts, 0, &mut lt, &mut la, &mut fired, base + Duration::from_millis(10), &mut c);
+        assert!(c.quit);
     }
 
     #[test]

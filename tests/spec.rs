@@ -371,6 +371,39 @@ fn parses_block_form_action_sequence() {
 }
 
 #[test]
+fn timeout_parses_duration_and_action() {
+    use arb::spec::BindAction;
+    use std::time::Duration;
+    let s = build(
+        &parse("timeout 5s quit\ntimeout 500ms beep\ntimeout 2m alert idle\ntimeout 3s { alert x; beep }").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.timeouts.len(), 4);
+    assert_eq!(s.timeouts[0].dur, Duration::from_secs(5));
+    assert_eq!(s.timeouts[0].action, BindAction::Quit);
+    assert_eq!(s.timeouts[1].dur, Duration::from_millis(500));
+    assert_eq!(s.timeouts[1].action, BindAction::Beep);
+    assert_eq!(s.timeouts[2].dur, Duration::from_secs(120));
+    assert_eq!(s.timeouts[2].action, BindAction::Alert("idle".into()));
+    assert!(matches!(s.timeouts[3].action, BindAction::Seq(ref v) if v.len() == 2));
+    // errors: bad duration, unknown action, missing action.
+    assert!(build(&parse("timeout xyz quit").unwrap()).is_err());
+    assert!(build(&parse("timeout 5s frobnicate").unwrap()).is_err());
+    assert!(build(&parse("timeout 5s").unwrap()).is_err());
+}
+
+#[test]
+fn parse_duration_units() {
+    use arb::spec::parse_duration;
+    use std::time::Duration;
+    assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+    assert_eq!(parse_duration("1.5s"), Some(Duration::from_secs_f64(1.5)));
+    assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+    assert_eq!(parse_duration("bad"), None);
+    assert_eq!(parse_duration(""), None);
+}
+
+#[test]
 fn bind_parses_set_and_quit() {
     use arb::spec::BindAction;
     let s = build(
