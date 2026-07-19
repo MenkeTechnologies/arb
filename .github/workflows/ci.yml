@@ -61,3 +61,28 @@ jobs:
         run: cargo test --workspace --locked
       - name: Doc tests
         run: cargo test --workspace --locked --doc
+      - name: In-language self-tests (arb --test on every stdlib preset)
+        shell: bash
+        run: |
+          # Dogfood the real CLI: every bundled preset ships `test { … }` blocks;
+          # run them through the actual `arb --test` and fail CI on any failure or
+          # a preset that carries no tests. Complements the Rust
+          # `every_stdlib_preset_carries_passing_self_tests` (which drives
+          # testrun::run directly) by exercising the binary + flag + exit code.
+          # Build the `arb` bin here so the step is self-contained (a no-op after
+          # the Build step above); it lands at target/debug/arb — no install.
+          cargo build --bin arb --locked
+          arb=target/debug/arb
+          test -x "$arb" || { echo "::error::arb binary not found at $arb"; exit 1; }
+          fail=0
+          count=0
+          for f in stdlib/*.arb; do
+            if ! out=$("$arb" --test "$f" 2>&1); then
+              echo "::error file=$f::self-tests failed"; echo "$out"; fail=1
+            elif printf '%s\n' "$out" | grep -q '^1\.\.0$'; then
+              echo "::error file=$f::no test { } blocks"; fail=1
+            fi
+            count=$((count + 1))
+          done
+          echo "ran arb --test on $count stdlib presets"
+          exit $fail
