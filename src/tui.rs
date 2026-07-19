@@ -381,6 +381,25 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         continue;
                     }
                     match b {
+                        // A declared `bind` wins over the hardwired editing/control
+                        // keys for any control byte (C-u/C-h/Esc/…) — otherwise
+                        // e.g. `bind C-u …` (documented in the README) is silently
+                        // shadowed by the clear-input handler and never fires.
+                        // Printable bytes (>= 0x20) still fall through so filter and
+                        // input typing is never shadowed.
+                        _ if b < 0x20 && c.binds.iter().any(|bd| bd.key == b) => {
+                            let action = c
+                                .binds
+                                .iter()
+                                .find(|bd| bd.key == b)
+                                .map(|bd| bd.action.clone());
+                            if let Some(action) = action {
+                                apply_bind_action(&mut c, &action);
+                                if c.quit {
+                                    break 'read;
+                                }
+                            }
+                        }
                         0x03 => {
                             c.quit = true;
                             break 'read;

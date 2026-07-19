@@ -49,3 +49,23 @@ impl Default for StreamState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_bounds_retention_to_cap_but_counts_all() {
+        let mut s = StreamState::with_cap(3);
+        for i in 0..10 {
+            s.push(format!("line{i}"));
+        }
+        // Only the last `cap` lines are retained (oldest dropped)...
+        assert_eq!(s.lines.len(), 3);
+        assert_eq!(s.lines.front().map(String::as_str), Some("line7"));
+        assert_eq!(s.lines.back().map(String::as_str), Some("line9"));
+        // ...but `total` counts every line ever pushed, so a finite cap bounds
+        // memory without losing the cumulative count.
+        assert_eq!(s.total, 10);
+    }
+}

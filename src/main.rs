@@ -583,8 +583,16 @@ fn main() -> io::Result<()> {
     // (`count`/`sum`/`sort`) run over the whole accumulated stream, so a bounded
     // ring would silently drop the oldest lines and yield a wrong total. The live
     // TUI/served dashboard uses the bounded ring (only the visible tail matters).
+    //
+    // The retention is a large FINITE cap, not `usize::MAX`: a live producer
+    // (`spawn tail -f`, a `! poll` source) is an unbounded stream, and an
+    // uncapped buffer would grow until the process OOMs. This ceiling keeps every
+    // line for any realistic finite input (a piped file/command that ends) — so
+    // reducers stay exact — while windowing a genuinely infinite stream to its
+    // most recent lines instead of exhausting memory.
+    const MAX_RETAIN: usize = 2_000_000;
     let state = Arc::new(Mutex::new(if fzf_mode || spec.out.is_some() {
-        StreamState::with_cap(usize::MAX)
+        StreamState::with_cap(MAX_RETAIN)
     } else {
         StreamState::new()
     }));

@@ -83,10 +83,13 @@ fn handle(
     page: &str,
     inputs: &Inputs,
 ) -> std::io::Result<()> {
-    // A read timeout so a client that opens a socket and stalls mid-request (a
-    // slowloris) cannot pin this connection's thread forever — the blocked
-    // read_line below returns an error and the thread unwinds, closing the conn.
+    // Read + write timeouts so a client that stalls cannot pin this connection's
+    // thread forever: the read timeout covers a slowloris that never finishes its
+    // request; the write timeout covers a client that stops reading, so the
+    // response `write_all` (and the 250ms `/ws` push loop) unblocks and the thread
+    // unwinds instead of blocking on a full socket send buffer indefinitely.
     let _ = conn.set_read_timeout(Some(Duration::from_secs(15)));
+    let _ = conn.set_write_timeout(Some(Duration::from_secs(15)));
     // Read the request line + headers (needed for the WebSocket upgrade key).
     // Cap the total bytes buffered for the request line + headers: an attacker
     // streaming megabytes with no newline would otherwise grow `read_line`'s
@@ -129,8 +132,13 @@ fn handle(
     // Data rides in the request-line query, so no request-body/masked-frame read.
     if let Some(q) = path.strip_prefix("/set?") {
         let (name, value) = parse_set_query(q);
+        // Only a declared control (seeded into the store at startup) may be
+        // written — update in place rather than insert, so an undeclared name is
+        // ignored and a client cannot grow the map without bound.
         if !name.is_empty() {
-            inputs.lock().unwrap().insert(name, value);
+            if let Some(slot) = inputs.lock().unwrap().get_mut(&name) {
+                *slot = value;
+            }
         }
         return conn.write_all(
             b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
