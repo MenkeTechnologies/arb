@@ -18,7 +18,11 @@ fn filter_case_insensitive_substring() {
 #[test]
 fn filter_narrows_a_line_set() {
     let lines = ["GET /api 200", "GET /health 200", "POST /api 500"];
-    let kept: Vec<&str> = lines.iter().copied().filter(|l| filter_matches(l, "/api")).collect();
+    let kept: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| filter_matches(l, "/api"))
+        .collect();
     assert_eq!(kept, vec!["GET /api 200", "POST /api 500"]);
 }
 
@@ -41,11 +45,17 @@ fn fuzzy_ranks_contiguous_and_boundary_higher() {
     // contiguous "main" scores higher than scattered m..a..i..n
     let contig = fuzzy_score("main.rs", "main").unwrap();
     let scattered = fuzzy_score("m_a_i_n", "main").unwrap();
-    assert!(contig > scattered, "contig {contig} should beat scattered {scattered}");
+    assert!(
+        contig > scattered,
+        "contig {contig} should beat scattered {scattered}"
+    );
     // word-boundary start beats mid-word
     let boundary = fuzzy_score("the config file", "config").unwrap();
     let midword = fuzzy_score("reconfigure", "config").unwrap();
-    assert!(boundary > midword, "boundary {boundary} should beat midword {midword}");
+    assert!(
+        boundary > midword,
+        "boundary {boundary} should beat midword {midword}"
+    );
 }
 
 #[test]

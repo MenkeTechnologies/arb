@@ -38,13 +38,19 @@ impl From<String> for SpecError {
 
 impl From<&str> for SpecError {
     fn from(msg: &str) -> Self {
-        SpecError { msg: msg.to_string(), span: None }
+        SpecError {
+            msg: msg.to_string(),
+            span: None,
+        }
     }
 }
 
 impl From<&String> for SpecError {
     fn from(msg: &String) -> Self {
-        SpecError { msg: msg.clone(), span: None }
+        SpecError {
+            msg: msg.clone(),
+            span: None,
+        }
     }
 }
 

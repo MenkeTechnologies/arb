@@ -172,8 +172,17 @@ fn numeric_sort_orders_by_leading_token_like_unix_sort_n() {
     // `<num> <text>` rows (ps/df output) sort by the number, not the whole line.
     let ops = pipeline("tail .x\nsource .x { in; sort -n -r }");
     assert_eq!(
-        eval(&ops, &lines(&["2.1 claude", "45.8 mds", "0.0 caffeinate", "13.2 zsh"]), 1.0),
-        QueryResult::Lines(lines(&["45.8 mds", "13.2 zsh", "2.1 claude", "0.0 caffeinate"]))
+        eval(
+            &ops,
+            &lines(&["2.1 claude", "45.8 mds", "0.0 caffeinate", "13.2 zsh"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&[
+            "45.8 mds",
+            "13.2 zsh",
+            "2.1 claude",
+            "0.0 caffeinate"
+        ]))
     );
 }
 
@@ -396,23 +405,68 @@ fn empty_pipeline_passes_lines_through() {
 
 #[test]
 fn v20_filters() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
-    assert_eq!(f("contains err", &["err a", "ok", "c err"]), QueryResult::Lines(lines(&["err a", "c err"])));
-    assert_eq!(f("starts GET", &["GET /a", "POST /b", "GET /c"]), QueryResult::Lines(lines(&["GET /a", "GET /c"])));
-    assert_eq!(f("ends .json", &["a.json", "b.txt"]), QueryResult::Lines(lines(&["a.json"])));
-    assert_eq!(f("nonempty", &["a", "", "  ", "b"]), QueryResult::Lines(lines(&["a", "b"])));
-    assert_eq!(f("numeric", &["1", "foo", "2.5"]), QueryResult::Lines(lines(&["1", "2.5"])));
-    assert_eq!(f("sample 2", &["a", "b", "c", "d"]), QueryResult::Lines(lines(&["b", "d"])));
-    assert_eq!(f("slice 2 3", &["a", "b", "c", "d"]), QueryResult::Lines(lines(&["b", "c"])));
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
+    assert_eq!(
+        f("contains err", &["err a", "ok", "c err"]),
+        QueryResult::Lines(lines(&["err a", "c err"]))
+    );
+    assert_eq!(
+        f("starts GET", &["GET /a", "POST /b", "GET /c"]),
+        QueryResult::Lines(lines(&["GET /a", "GET /c"]))
+    );
+    assert_eq!(
+        f("ends .json", &["a.json", "b.txt"]),
+        QueryResult::Lines(lines(&["a.json"]))
+    );
+    assert_eq!(
+        f("nonempty", &["a", "", "  ", "b"]),
+        QueryResult::Lines(lines(&["a", "b"]))
+    );
+    assert_eq!(
+        f("numeric", &["1", "foo", "2.5"]),
+        QueryResult::Lines(lines(&["1", "2.5"]))
+    );
+    assert_eq!(
+        f("sample 2", &["a", "b", "c", "d"]),
+        QueryResult::Lines(lines(&["b", "d"]))
+    );
+    assert_eq!(
+        f("slice 2 3", &["a", "b", "c", "d"]),
+        QueryResult::Lines(lines(&["b", "c"]))
+    );
 }
 
 #[test]
 fn v20_transforms() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
-    assert_eq!(f("len", &["a", "abc"]), QueryResult::Lines(lines(&["1", "3"])));
-    assert_eq!(f("wc", &["a b c", "one"]), QueryResult::Lines(lines(&["3", "1"])));
-    assert_eq!(f("abs", &["-3", "2", "foo"]), QueryResult::Lines(lines(&["3", "2", "foo"])));
-    assert_eq!(f("round", &["1.4", "2.5"]), QueryResult::Lines(lines(&["1", "3"])));
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("tail .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
+    assert_eq!(
+        f("len", &["a", "abc"]),
+        QueryResult::Lines(lines(&["1", "3"]))
+    );
+    assert_eq!(
+        f("wc", &["a b c", "one"]),
+        QueryResult::Lines(lines(&["3", "1"]))
+    );
+    assert_eq!(
+        f("abs", &["-3", "2", "foo"]),
+        QueryResult::Lines(lines(&["3", "2", "foo"]))
+    );
+    assert_eq!(
+        f("round", &["1.4", "2.5"]),
+        QueryResult::Lines(lines(&["1", "3"]))
+    );
     assert_eq!(f("prepend >>", &["a"]), QueryResult::Lines(lines(&[">>a"])));
     assert_eq!(f("append !", &["a"]), QueryResult::Lines(lines(&["a!"])));
     assert_eq!(f("cut , 2", &["a,b,c"]), QueryResult::Lines(lines(&["b"])));
@@ -420,13 +474,22 @@ fn v20_transforms() {
 
 #[test]
 fn v20_reduces() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     let d = &["1", "2", "3", "4"];
     assert_eq!(f("median", d), QueryResult::Scalar(2.5));
     assert_eq!(f("range", d), QueryResult::Scalar(3.0));
     assert_eq!(f("product", d), QueryResult::Scalar(24.0));
     assert_eq!(f("distinct", &["a", "a", "b"]), QueryResult::Scalar(2.0));
-    assert_eq!(f("p95", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]), QueryResult::Scalar(10.0));
+    assert_eq!(
+        f("p95", &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]),
+        QueryResult::Scalar(10.0)
+    );
     match f("stddev", d) {
         QueryResult::Scalar(v) => assert!((v - 1.118_033_988_749_895).abs() < 1e-9),
         _ => panic!("stddev not scalar"),
@@ -459,9 +522,15 @@ fn tsv_field_by_header() {
 #[test]
 fn streamable_detection() {
     use arb::query::is_line_streamable;
-    assert!(is_line_streamable(&pipeline("tail .x\nsource .x { in; match /a/; field 1; where x > 1 }")));
-    assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; sort; count }")));
-    assert!(!is_line_streamable(&pipeline("tail .x\nsource .x { in; tally }")));
+    assert!(is_line_streamable(&pipeline(
+        "tail .x\nsource .x { in; match /a/; field 1; where x > 1 }"
+    )));
+    assert!(!is_line_streamable(&pipeline(
+        "tail .x\nsource .x { in; sort; count }"
+    )));
+    assert!(!is_line_streamable(&pipeline(
+        "tail .x\nsource .x { in; tally }"
+    )));
 }
 
 #[test]
@@ -473,7 +542,10 @@ fn pick_projects_json_objects() {
     ];
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => {
-            assert_eq!(ls, vec![r#"{"name":"a","age":30}"#, r#"{"name":"b","age":25}"#]);
+            assert_eq!(
+                ls,
+                vec![r#"{"name":"a","age":30}"#, r#"{"name":"b","age":25}"#]
+            );
         }
         other => panic!("expected Lines, got {other:?}"),
     }
@@ -541,10 +613,10 @@ fn sort_by_orders_json_records_numerically_and_stably() {
         arb::query::QueryResult::Lines(ls) => assert_eq!(
             ls,
             vec![
-                r#"{"name":"b","age":5}"#,  // numeric (not lexical: "30" would precede "5")
-                r#"{"name":"c","age":5}"#,  // stable: b before c on equal keys
+                r#"{"name":"b","age":5}"#, // numeric (not lexical: "30" would precede "5")
+                r#"{"name":"c","age":5}"#, // stable: b before c on equal keys
                 r#"{"name":"a","age":30}"#,
-                "not-json",                 // non-object sinks after, input order
+                "not-json", // non-object sinks after, input order
             ]
         ),
         other => panic!("got {other:?}"),
@@ -823,7 +895,9 @@ fn tailn_keeps_last_n_lines() {
         "d".to_string(),
     ];
     match arb::query::eval(&ops, &input, 0.0) {
-        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["c".to_string(), "d".to_string()]),
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["c".to_string(), "d".to_string()])
+        }
         other => panic!("got {other:?}"),
     }
 }
@@ -846,7 +920,14 @@ fn lpad_pads_short_lines_and_leaves_long_ones() {
     let lines = vec!["a".to_string(), "bb".to_string(), "toolong".to_string()];
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => {
-            assert_eq!(ls, vec!["   a".to_string(), "  bb".to_string(), "toolong".to_string()]);
+            assert_eq!(
+                ls,
+                vec![
+                    "   a".to_string(),
+                    "  bb".to_string(),
+                    "toolong".to_string()
+                ]
+            );
         }
         other => panic!("got {other:?}"),
     }
@@ -875,14 +956,13 @@ fn grepf_filters_by_json_field() {
 #[test]
 fn flip_reverses_characters_per_line() {
     let ops = pipeline("tail .x\nsource .x { in; flip }");
-    let lines = vec![
-        "abc".to_string(),
-        "héllo".to_string(),
-        String::new(),
-    ];
+    let lines = vec!["abc".to_string(), "héllo".to_string(), String::new()];
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => {
-            assert_eq!(ls, vec!["cba".to_string(), "olléh".to_string(), String::new()]);
+            assert_eq!(
+                ls,
+                vec!["cba".to_string(), "olléh".to_string(), String::new()]
+            );
         }
         other => panic!("got {other:?}"),
     }
@@ -942,7 +1022,10 @@ fn b64d_decodes_and_passes_invalid_through() {
     ];
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => {
-            assert_eq!(ls, vec!["hello".to_string(), "###".to_string(), "kg==".to_string()]);
+            assert_eq!(
+                ls,
+                vec!["hello".to_string(), "###".to_string(), "kg==".to_string()]
+            );
         }
         other => panic!("got {other:?}"),
     }
@@ -993,7 +1076,10 @@ fn urlenc_escapes_non_alphanumerics() {
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => assert_eq!(
             ls,
-            vec!["hello%20world%21".to_string(), "a%2Fb%3Fc%3D1%26d".to_string()]
+            vec![
+                "hello%20world%21".to_string(),
+                "a%2Fb%3Fc%3D1%26d".to_string()
+            ]
         ),
         other => panic!("got {other:?}"),
     }
@@ -1083,7 +1169,9 @@ fn repeat_concatenates_line_n_times() {
     let ops = pipeline("tail .x\nsource .x { in; repeat 3 }");
     let lines = vec!["ab".to_string(), "".to_string()];
     match arb::query::eval(&ops, &lines, 0.0) {
-        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["ababab".to_string(), "".to_string()]),
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec!["ababab".to_string(), "".to_string()])
+        }
         other => panic!("got {other:?}"),
     }
 }
@@ -1092,16 +1180,19 @@ fn repeat_concatenates_line_n_times() {
 fn set_overwrites_existing_and_adds_key_passing_through_non_json() {
     let ops = pipeline("tail .x\nsource .x { in.json; set name x }");
     let lines = vec![
-        r#"{"age":30}"#.to_string(),          // key added
+        r#"{"age":30}"#.to_string(),             // key added
         r#"{"name":"old","age":1}"#.to_string(), // existing overwritten
-        "hello".to_string(),                   // non-object passes through
+        "hello".to_string(),                     // non-object passes through
     ];
     match arb::query::eval(&ops, &lines, 0.0) {
-        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![
-            r#"{"age":30,"name":"x"}"#.to_string(),
-            r#"{"age":1,"name":"x"}"#.to_string(),
-            "hello".to_string(),
-        ]),
+        arb::query::QueryResult::Lines(ls) => assert_eq!(
+            ls,
+            vec![
+                r#"{"age":30,"name":"x"}"#.to_string(),
+                r#"{"age":1,"name":"x"}"#.to_string(),
+                "hello".to_string(),
+            ]
+        ),
         other => panic!("got {other:?}"),
     }
 }
@@ -1226,10 +1317,10 @@ fn ceil_rounds_up_and_leaves_non_numeric_untouched() {
 fn clamp_bounds_numeric_lines_and_passes_others() {
     let ops = pipeline("tail .x\nsource .x { in; clamp 0 10 }");
     let lines = vec![
-        "-5".to_string(),   // below LO -> 0
-        "3".to_string(),    // in range -> 3
-        "42".to_string(),   // above HI -> 10
-        "abc".to_string(),  // non-numeric -> unchanged
+        "-5".to_string(),  // below LO -> 0
+        "3".to_string(),   // in range -> 3
+        "42".to_string(),  // above HI -> 10
+        "abc".to_string(), // non-numeric -> unchanged
     ];
     match arb::query::eval(&ops, &lines, 0.0) {
         arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec!["0", "3", "10", "abc"]),
@@ -1243,7 +1334,10 @@ fn table_data_splits_cells_and_names_headers() {
     let lines = vec!["alice 100 vim".to_string(), "bob 200 bash".to_string()];
     let (headers, rows) = table_data(&lines, Some("user, pid, cmd"));
     assert_eq!(headers, vec!["user", "pid", "cmd"]);
-    assert_eq!(rows, vec![vec!["alice", "100", "vim"], vec!["bob", "200", "bash"]]);
+    assert_eq!(
+        rows,
+        vec![vec!["alice", "100", "vim"], vec!["bob", "200", "bash"]]
+    );
     assert_eq!(table_ncols(&headers, &rows), 3);
 
     // No cols header: headers empty, ncols from the widest row.
@@ -1257,7 +1351,12 @@ fn table_data_splits_cells_and_names_headers() {
 fn sparkline_and_numeric_series() {
     use arb::query::{numeric_series, sparkline};
     // Non-numeric lines skipped; first token parsed.
-    let lines = vec!["10".to_string(), "20 x".to_string(), "nope".to_string(), "30".to_string()];
+    let lines = vec![
+        "10".to_string(),
+        "20 x".to_string(),
+        "nope".to_string(),
+        "30".to_string(),
+    ];
     assert_eq!(numeric_series(&lines), vec![10.0, 20.0, 30.0]);
     // Evenly spaced 0..7 maps to each of the 8 ticks in order.
     assert_eq!(sparkline(&[0., 1., 2., 3., 4., 5., 6., 7.]), "▁▂▃▄▅▆▇█");
@@ -1268,7 +1367,13 @@ fn sparkline_and_numeric_series() {
 
 #[test]
 fn percentile_nearest_rank_and_sugar() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("gauge .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     let ten = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
     // Nearest-rank: ceil(frac * n), 1-indexed.
     assert_eq!(f("percentile 90", ten), QueryResult::Scalar(9.0));
@@ -1284,22 +1389,44 @@ fn percentile_nearest_rank_and_sugar() {
 
 #[test]
 fn delta_and_cumsum() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("list .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     // Consecutive differences: n values → n-1 deltas.
-    assert_eq!(f("delta", &["10", "15", "15", "40"]), QueryResult::Lines(lines(&["5", "0", "25"])));
+    assert_eq!(
+        f("delta", &["10", "15", "15", "40"]),
+        QueryResult::Lines(lines(&["5", "0", "25"]))
+    );
     // Running total.
-    assert_eq!(f("cumsum", &["1", "2", "3", "4"]), QueryResult::Lines(lines(&["1", "3", "6", "10"])));
+    assert_eq!(
+        f("cumsum", &["1", "2", "3", "4"]),
+        QueryResult::Lines(lines(&["1", "3", "6", "10"]))
+    );
     // Edge cases: single value → empty delta; empty input → empty.
     assert_eq!(f("delta", &["5"]), QueryResult::Lines(lines(&[])));
     assert_eq!(f("cumsum", &[]), QueryResult::Lines(lines(&[])));
     // Composes: delta then sum recovers the net change (40-10=30).
-    let net = eval(&pipeline("gauge .x\nsource .x { in; delta; sum }"), &lines(&["10", "15", "15", "40"]), 1.0);
+    let net = eval(
+        &pipeline("gauge .x\nsource .x { in; delta; sum }"),
+        &lines(&["10", "15", "15", "40"]),
+        1.0,
+    );
     assert_eq!(net, QueryResult::Scalar(30.0));
 }
 
 #[test]
 fn sma_and_ewma_smooth() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("list .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     // SMA is length-preserving; the first points average a shorter window.
     assert_eq!(
         f("sma 3", &["1", "2", "3", "4", "5", "6"]),
@@ -1312,12 +1439,21 @@ fn sma_and_ewma_smooth() {
     );
     // Empty input → empty; window >= len averages everything seen so far.
     assert_eq!(f("sma 10", &[]), QueryResult::Lines(lines(&[])));
-    assert_eq!(f("sma 10", &["2", "4"]), QueryResult::Lines(lines(&["2", "3"])));
+    assert_eq!(
+        f("sma 10", &["2", "4"]),
+        QueryResult::Lines(lines(&["2", "3"]))
+    );
 }
 
 #[test]
 fn bytes_and_duration_humanize() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("list .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     // 1024-based byte sizes, one decimal (trailing .0 trimmed).
     assert_eq!(
         f("bytes", &["500", "1024", "1536", "1048576", "1610612736"]),
@@ -1334,16 +1470,28 @@ fn bytes_and_duration_humanize() {
 
 #[test]
 fn fields_projects_and_reorders_columns() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("list .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     // Project a subset of whitespace columns (1-based), keeping order.
     assert_eq!(
         f("fields 1 4", &["alice 100 33 vim", "bob 200 44 bash"]),
         QueryResult::Lines(lines(&["alice vim", "bob bash"]))
     );
     // Reorder columns.
-    assert_eq!(f("fields 3 1", &["a b c"]), QueryResult::Lines(lines(&["c a"])));
+    assert_eq!(
+        f("fields 3 1", &["a b c"]),
+        QueryResult::Lines(lines(&["c a"]))
+    );
     // Out-of-range columns are empty.
-    assert_eq!(f("fields 1 9", &["only"]), QueryResult::Lines(lines(&["only "])));
+    assert_eq!(
+        f("fields 1 9", &["only"]),
+        QueryResult::Lines(lines(&["only "]))
+    );
 }
 
 #[test]
@@ -1388,9 +1536,18 @@ fn group_by_emits_one_array_per_key() {
 
 #[test]
 fn index_keeps_only_the_nth_line() {
-    let f = |v: &str, d: &[&str]| eval(&pipeline(&format!("list .x\nsource .x {{ in; {v} }}")), &lines(d), 1.0);
+    let f = |v: &str, d: &[&str]| {
+        eval(
+            &pipeline(&format!("list .x\nsource .x {{ in; {v} }}")),
+            &lines(d),
+            1.0,
+        )
+    };
     // 1-based positional access (mirrors `slice A B`).
-    assert_eq!(f("index 2", &["a", "b", "c"]), QueryResult::Lines(lines(&["b"])));
+    assert_eq!(
+        f("index 2", &["a", "b", "c"]),
+        QueryResult::Lines(lines(&["b"]))
+    );
     // Out-of-range yields no lines.
     assert_eq!(f("index 9", &["a", "b"]), QueryResult::Lines(Vec::new()));
 }
@@ -1406,7 +1563,11 @@ fn jq_and_xpath_literals_compile_through_the_body() {
     // xpath literal (path + attr accessor) in a real source body.
     let xp = pipeline("tail .x\nsource .x { in.html; //a/@href }");
     assert_eq!(
-        eval(&xp, &lines(&["<div><a href=\"x\">1</a><a href=\"y\">2</a></div>"]), 1.0),
+        eval(
+            &xp,
+            &lines(&["<div><a href=\"x\">1</a><a href=\"y\">2</a></div>"]),
+            1.0
+        ),
         QueryResult::Lines(lines(&["x", "y"]))
     );
 }

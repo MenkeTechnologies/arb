@@ -7,7 +7,11 @@
 /// Pick a preset name for the peeked lines, or `None` to keep the default tail.
 /// First match wins; rules are keyed to what each preset's pipeline consumes.
 pub fn sniff(first: &[&str]) -> Option<&'static str> {
-    let lines: Vec<&str> = first.iter().map(|l| l.trim_end()).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = first
+        .iter()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .collect();
     let l0 = *lines.first()?;
     let guard = |name: &'static str| crate::spec::STDLIB_NAMES.contains(&name).then_some(name);
 
@@ -66,7 +70,10 @@ mod tests {
     fn json_streams() {
         assert_eq!(sniff(&[r#"{"a":1}"#, r#"{"a":2}"#]), Some("json"));
         assert_eq!(sniff(&[r#"{"level":"info","m":"x"}"#]), Some("logs"));
-        assert_eq!(sniff(&[r#"{"status":200,"request":"GET /"}"#]), Some("nginx"));
+        assert_eq!(
+            sniff(&[r#"{"status":200,"request":"GET /"}"#]),
+            Some("nginx")
+        );
         assert_eq!(sniff(&[r#"{"status":200}"#]), Some("json")); // status alone -> json
     }
 
@@ -79,7 +86,10 @@ mod tests {
 
     #[test]
     fn git_and_columns() {
-        assert_eq!(sniff(&["a1b2c3d fix thing", "e4f5a6b add thing"]), Some("git"));
+        assert_eq!(
+            sniff(&["a1b2c3d fix thing", "e4f5a6b add thing"]),
+            Some("git")
+        );
         assert_eq!(sniff(&["a,b,c", "1,2,3"]), Some("table"));
         assert_eq!(sniff(&["a\tb\tc"]), Some("table"));
     }

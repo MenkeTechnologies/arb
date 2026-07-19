@@ -128,7 +128,13 @@ fn build_body(corpus: &[(&str, &str, &str, &str)], presets: &[(String, String, S
              \x20       <p class=\"tutorial-note\">Prebuilt dashboards shipped with arb; drop one in with <code>import NAME</code> or auto-selected by stream sniffing.</p>\n",
         );
         for (i, (name, desc, example)) in presets.iter().enumerate() {
-            emit_entry(&mut out, &format!("doc-preset-{}", i + 1), name, desc, example);
+            emit_entry(
+                &mut out,
+                &format!("doc-preset-{}", i + 1),
+                name,
+                desc,
+                example,
+            );
         }
         out.push_str("      </section>\n");
     }

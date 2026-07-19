@@ -15,12 +15,14 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::symbols;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem,
     ListState, Paragraph, Row, Table, Tabs,
@@ -192,7 +194,9 @@ pub fn exact_score(line: &str, pat: &str) -> Option<i32> {
     if cased {
         line.find(pat).map(|i| -(i as i32))
     } else {
-        line.to_lowercase().find(&pat.to_lowercase()).map(|i| -(i as i32))
+        line.to_lowercase()
+            .find(&pat.to_lowercase())
+            .map(|i| -(i as i32))
     }
 }
 
@@ -244,8 +248,10 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
             c.alert = Some((msg.clone(), Instant::now() + Duration::from_secs(3)));
         }
         BindAction::Flash { widget, color } => {
-            c.flashes
-                .insert(widget.clone(), (color.clone(), Instant::now() + Duration::from_secs(2)));
+            c.flashes.insert(
+                widget.clone(),
+                (color.clone(), Instant::now() + Duration::from_secs(2)),
+            );
         }
         BindAction::Exec(cmd) => {
             // Fire-and-forget: spawn, never wait — the run loop must not block.
@@ -317,7 +323,10 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                     let b = buf[i];
                     // The focused control's kind (form mode) drives key handling.
                     let fk = if form {
-                        c.control_meta.get(c.focus).map(|m| m.kind).unwrap_or(ControlKind::Text)
+                        c.control_meta
+                            .get(c.focus)
+                            .map(|m| m.kind)
+                            .unwrap_or(ControlKind::Text)
                     } else {
                         ControlKind::Text
                     };
@@ -344,11 +353,13 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                             b'B' if fzf => c.cursor = c.cursor.saturating_add(1),
                             b'A' if fk == ControlKind::Facet => {
                                 let f = c.focus;
-                                c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_sub(1);
+                                c.control_meta[f].cursor =
+                                    c.control_meta[f].cursor.saturating_sub(1);
                             }
                             b'B' if fk == ControlKind::Facet => {
                                 let f = c.focus;
-                                c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_add(1);
+                                c.control_meta[f].cursor =
+                                    c.control_meta[f].cursor.saturating_add(1);
                             }
                             b'C' if fk == ControlKind::Slider => slider_key(&mut c, true),
                             b'D' if fk == ControlKind::Slider => slider_key(&mut c, false),
@@ -434,8 +445,11 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         // (Clone the action first so the immutable `binds` borrow
                         // ends before we mutate `inputs`/`quit`.)
                         _ => {
-                            if let Some(action) =
-                                c.binds.iter().find(|bd| bd.key == b).map(|bd| bd.action.clone())
+                            if let Some(action) = c
+                                .binds
+                                .iter()
+                                .find(|bd| bd.key == b)
+                                .map(|bd| bd.action.clone())
                             {
                                 apply_bind_action(&mut c, &action);
                                 if c.quit {
@@ -616,7 +630,12 @@ pub fn run(
         let err_snap: Option<(Vec<String>, String)> = err.as_ref().map(|(es, label)| {
             let e = es.lock().unwrap();
             let n = e.lines.len();
-            let tail = e.lines.iter().skip(n.saturating_sub(200)).cloned().collect();
+            let tail = e
+                .lines
+                .iter()
+                .skip(n.saturating_sub(200))
+                .cloned()
+                .collect();
             (tail, format!("{label} ({})", e.total))
         });
         let err_ref = err_snap
@@ -657,7 +676,8 @@ pub fn run(
                     // re-filter the existing hit set instead of rescanning the
                     // whole (million-line) buffer. Only a non-prefix change
                     // (backspace, new query) does a full — parallel — rescan.
-                    let extends = !empty && !fzf_filter.is_empty() && filter.starts_with(&fzf_filter);
+                    let extends =
+                        !empty && !fzf_filter.is_empty() && filter.starts_with(&fzf_filter);
                     if empty {
                         fzf_hits.clear();
                         fzf_matched.clear();
@@ -733,7 +753,11 @@ pub fn run(
             if submit {
                 // Emit the marks if any (multi-select), else the cursor original.
                 c.result = if c.marks.is_empty() {
-                    matched.get(sel).map(|(_, o)| o.clone()).into_iter().collect()
+                    matched
+                        .get(sel)
+                        .map(|(_, o)| o.clone())
+                        .into_iter()
+                        .collect()
                 } else {
                     c.marks.clone()
                 };
@@ -746,13 +770,24 @@ pub fn run(
                 let d = ds.lock().unwrap();
                 (d.lines.iter().cloned().collect(), label.clone())
             });
-            let prev_ref = prev_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
+            let prev_ref = prev_snap
+                .as_ref()
+                .map(|(l, lab)| (l.as_slice(), lab.as_str()));
             let mut hitmap: Vec<HitTarget> = Vec::new();
             let mut fzf_start = 0usize;
             let draw = terminal.draw(|f| {
                 fzf_start = render_fzf(
-                    f, matched, &filter, sel, &marks, total, err_ref, prev_ref, &fzf_prompt,
-                    &fzf_header, &mut hitmap,
+                    f,
+                    matched,
+                    &filter,
+                    sel,
+                    &marks,
+                    total,
+                    err_ref,
+                    prev_ref,
+                    &fzf_prompt,
+                    &fzf_header,
+                    &mut hitmap,
                 );
             });
             // Publish the fzf list hit target so a click moves the cursor.
@@ -773,7 +808,12 @@ pub fn run(
         let down_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
             let d = ds.lock().unwrap();
             let n = d.lines.len();
-            let tail = d.lines.iter().skip(n.saturating_sub(1000)).cloned().collect();
+            let tail = d
+                .lines
+                .iter()
+                .skip(n.saturating_sub(1000))
+                .cloned()
+                .collect();
             (tail, label.clone())
         });
         // Snapshot live `input .name` values (form mode) so bound `apply .name`
@@ -792,10 +832,17 @@ pub fn run(
             .map(|((n, _), m)| (n.clone(), m.clone()))
             .collect();
         let now = Instant::now();
-        let alert_msg = c.alert.as_ref().filter(|(_, exp)| *exp > now).map(|(m, _)| m.clone());
+        let alert_msg = c
+            .alert
+            .as_ref()
+            .filter(|(_, exp)| *exp > now)
+            .map(|(m, _)| m.clone());
         c.flashes.retain(|_, (_, exp)| *exp > now);
-        let flash_snap: HashMap<String, String> =
-            c.flashes.iter().map(|(k, (col, _))| (k.clone(), col.clone())).collect();
+        let flash_snap: HashMap<String, String> = c
+            .flashes
+            .iter()
+            .map(|(k, (col, _))| (k.clone(), col.clone()))
+            .collect();
         let tab_sel_snap: HashMap<String, usize> = c.tab_sel.clone();
         let scroll_snap: HashMap<String, usize> = c.scroll.clone();
         let beep = std::mem::take(&mut c.beep_pending);
@@ -806,10 +853,24 @@ pub fn run(
         let st = state.lock().unwrap();
         let mut hitmap: Vec<HitTarget> = Vec::new();
         let draw = terminal.draw(|f| {
-            let down_ref = down_snap.as_ref().map(|(l, lab)| (l.as_slice(), lab.as_str()));
+            let down_ref = down_snap
+                .as_ref()
+                .map(|(l, lab)| (l.as_slice(), lab.as_str()));
             render(
-                f, spec, &st, &filter, down_ref, err_ref, &inputs, focus_name.as_deref(),
-                alert_msg.as_deref(), &flash_snap, &cmeta, &mut hitmap, &control_names, &tab_sel_snap,
+                f,
+                spec,
+                &st,
+                &filter,
+                down_ref,
+                err_ref,
+                &inputs,
+                focus_name.as_deref(),
+                alert_msg.as_deref(),
+                &flash_snap,
+                &cmeta,
+                &mut hitmap,
+                &control_names,
+                &tab_sel_snap,
                 &scroll_snap,
             );
         });
@@ -881,18 +942,25 @@ fn render(
     // With a downstream command, split the main area: stream dashboard on the
     // left, the captured `-- CMD` output pane on the right.
     if let Some((dlines, label)) = down {
-        let cols =
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
+        let cols = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area);
         area = cols[0];
         render_output_pane(f, cols[1], label, dlines);
     }
 
-    let matched = st.lines.iter().filter(|l| filter_matches(l, filter)).count();
+    let matched = st
+        .lines
+        .iter()
+        .filter(|l| filter_matches(l, filter))
+        .count();
     // An active `alert` action takes over the status bar; else the filter hint.
     if let Some(msg) = alert {
         f.render_widget(
-            Paragraph::new(format!("  ⚠ {msg}"))
-                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Paragraph::new(format!("  ⚠ {msg}")).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             bar,
         );
     } else {
@@ -935,12 +1003,23 @@ fn render(
         let tabs = if w.kind == WidgetKind::Tabs {
             w.opts
                 .get("tabs")
-                .map(|s| s.split(',').filter(|t| !t.is_empty()).map(str::to_string).collect())
+                .map(|s| {
+                    s.split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
-        hitmap.push(HitTarget { rect: rects[i], kind: w.kind, control_name: name, meta_index, tabs });
+        hitmap.push(HitTarget {
+            rect: rects[i],
+            kind: w.kind,
+            control_name: name,
+            meta_index,
+            tabs,
+        });
     }
     let elapsed = st.start.elapsed().as_secs_f64();
     for (i, w) in spec.widgets.iter().enumerate() {
@@ -949,7 +1028,10 @@ fn render(
         if w.kind.is_control() {
             let name = w.path.trim_start_matches('.');
             let val = inputs.get(name).map(String::as_str).unwrap_or("");
-            let default_meta = ControlMeta { kind: control_kind(w.kind), ..Default::default() };
+            let default_meta = ControlMeta {
+                kind: control_kind(w.kind),
+                ..Default::default()
+            };
             let meta = cmeta.get(name).unwrap_or(&default_meta);
             render_control(f, rects[i], w, val, meta, &raw, focus == Some(name));
             continue;
@@ -961,9 +1043,17 @@ fn render(
             eval(&pipeline, &raw, elapsed)
         });
         // A live `flash` action tints this widget's border/accent.
-        let flash = flashes.get(w.path.trim_start_matches('.')).map(String::as_str);
-        let tsel = tab_sel.get(w.path.trim_start_matches('.')).copied().unwrap_or(0);
-        let wsc = scroll.get(w.path.trim_start_matches('.')).copied().unwrap_or(0);
+        let flash = flashes
+            .get(w.path.trim_start_matches('.'))
+            .map(String::as_str);
+        let tsel = tab_sel
+            .get(w.path.trim_start_matches('.'))
+            .copied()
+            .unwrap_or(0);
+        let wsc = scroll
+            .get(w.path.trim_start_matches('.'))
+            .copied()
+            .unwrap_or(0);
         render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc);
     }
 }
@@ -1084,7 +1174,11 @@ pub fn parse_sgr_mouse(bytes: &[u8], i: usize) -> Option<(MouseEvent, usize)> {
     p += 1;
     let kind = if b & 0x40 != 0 {
         // Wheel: bit0 picks direction (64 = up, 65 = down).
-        if b & 0x01 == 0 { MouseKind::ScrollUp } else { MouseKind::ScrollDown }
+        if b & 0x01 == 0 {
+            MouseKind::ScrollUp
+        } else {
+            MouseKind::ScrollDown
+        }
     } else if !press {
         MouseKind::Up
     } else if b & 0x20 != 0 {
@@ -1185,7 +1279,14 @@ pub fn tab_index_from_x(labels: &[&str], rect_x: u16, col: u16) -> Option<usize>
 }
 
 /// A slider value from the clicked x, snapped to `step` and clamped to `[min,max]`.
-pub fn slider_value_from_x(rect_x: u16, rect_w: u16, col: u16, min: f64, max: f64, step: f64) -> String {
+pub fn slider_value_from_x(
+    rect_x: u16,
+    rect_w: u16,
+    col: u16,
+    min: f64,
+    max: f64,
+    step: f64,
+) -> String {
     let inner = (rect_w.saturating_sub(2)).max(1) as f64; // border on both sides
     let x = col.saturating_sub(rect_x + 1) as f64;
     let p = (x / inner).clamp(0.0, 1.0);
@@ -1240,14 +1341,20 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
                 c.last_click = Some((now, ev.col, ev.row));
             }
             if let Some(t) = hit(&c.hitmap, ev.col, ev.row).cloned() {
-                let mi = t.meta_index.or_else(|| c.inputs.iter().position(|(n, _)| *n == t.control_name));
+                let mi = t
+                    .meta_index
+                    .or_else(|| c.inputs.iter().position(|(n, _)| *n == t.control_name));
                 if let Some(mi) = mi {
                     c.focus = mi; // focus only ever indexes a real control
                 }
                 if down && button == MouseButton::Right {
                     // Right-click resets the hit control to its empty/default.
                     if let Some(mi) = mi {
-                        let kind = c.control_meta.get(mi).map(|m| m.kind).unwrap_or(ControlKind::Text);
+                        let kind = c
+                            .control_meta
+                            .get(mi)
+                            .map(|m| m.kind)
+                            .unwrap_or(ControlKind::Text);
                         c.inputs[mi].1 = match kind {
                             ControlKind::Slider => crate::query::fmt_scalar(c.control_meta[mi].min),
                             ControlKind::Check => "0".to_string(),
@@ -1265,7 +1372,8 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
                             if let Some(mi) = mi {
                                 let m = &c.control_meta[mi];
                                 let (mn, mx, sp) = (m.min, m.max, m.step);
-                                c.inputs[mi].1 = slider_value_from_x(t.rect.x, t.rect.width, ev.col, mn, mx, sp);
+                                c.inputs[mi].1 =
+                                    slider_value_from_x(t.rect.x, t.rect.width, ev.col, mn, mx, sp);
                             }
                         }
                         WidgetKind::Facet if down => {
@@ -1297,7 +1405,8 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
             }
             // `bind <Click>` reactions fire on any button press (not a drag).
             if down {
-                let actions: Vec<BindAction> = c.mouse_binds.iter().map(|(_, a)| a.clone()).collect();
+                let actions: Vec<BindAction> =
+                    c.mouse_binds.iter().map(|(_, a)| a.clone()).collect();
                 for a in &actions {
                     apply_bind_action(c, a);
                 }
@@ -1370,13 +1479,21 @@ pub fn slider_adjust(cur: &str, min: f64, max: f64, step: f64, up: bool) -> Stri
 
 /// Toggle a boolean control value ("1" <-> "0").
 pub fn toggle_check(cur: &str) -> String {
-    if cur == "1" { "0".to_string() } else { "1".to_string() }
+    if cur == "1" {
+        "0".to_string()
+    } else {
+        "1".to_string()
+    }
 }
 
 /// Toggle `item`'s membership in a comma-separated set; returns the new set.
 pub fn toggle_set_member(set: &str, item: &str) -> String {
-    let mut items: Vec<String> =
-        set.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+    let mut items: Vec<String> = set
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
     if let Some(pos) = items.iter().position(|x| x == item) {
         items.remove(pos);
     } else {
@@ -1389,9 +1506,15 @@ pub fn toggle_set_member(set: &str, item: &str) -> String {
 /// its `-field` across the current stream (bounded).
 pub fn facet_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
     if let Some(opts) = w.opts.get("opts") {
-        return opts.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+        return opts
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
     }
-    let Some(field) = w.opts.get("field") else { return Vec::new() };
+    let Some(field) = w.opts.get("field") else {
+        return Vec::new();
+    };
     let mut seen = Vec::new();
     for line in raw {
         let v = crate::query::field_str_pub(line, field);
@@ -1412,7 +1535,11 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool)
         .or_else(|| w.opts.get("placeholder"))
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
-    let border = if focused { Color::Cyan } else { Color::DarkGray };
+    let border = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -1451,7 +1578,11 @@ fn render_control(
         .or_else(|| w.opts.get("title"))
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
-    let border = if focused { Color::Cyan } else { Color::DarkGray };
+    let border = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -1479,15 +1610,24 @@ fn render_control(
         }
         ControlKind::Facet => {
             let cands = facet_candidates(w, raw);
-            let selected: Vec<&str> =
-                val.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            let selected: Vec<&str> = val
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
             let items: Vec<ListItem> = cands
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let mark = if selected.contains(&c.as_str()) { "[x] " } else { "[ ] " };
+                    let mark = if selected.contains(&c.as_str()) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    };
                     let style = if focused && i == meta.cursor {
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::REVERSED)
                     } else {
                         Style::default()
                     };
@@ -1532,15 +1672,23 @@ pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
 fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'static> {
     let text: String = line.chars().take(width.saturating_sub(2)).collect();
     let gutter = if marked {
-        Span::styled("+ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "+ ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("  ")
     };
     if filter.is_empty() {
         return Line::from(vec![gutter, Span::raw(text)]);
     }
-    let pos: std::collections::HashSet<usize> = match_positions(&text, filter).into_iter().collect();
-    let hl = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let pos: std::collections::HashSet<usize> =
+        match_positions(&text, filter).into_iter().collect();
+    let hl = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let mut spans = vec![gutter];
     let mut cur = String::new();
     let mut cur_hl = false;
@@ -1548,13 +1696,21 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'stati
         let h = pos.contains(&i);
         if h != cur_hl && !cur.is_empty() {
             let s = std::mem::take(&mut cur);
-            spans.push(if cur_hl { Span::styled(s, hl) } else { Span::raw(s) });
+            spans.push(if cur_hl {
+                Span::styled(s, hl)
+            } else {
+                Span::raw(s)
+            });
         }
         cur_hl = h;
         cur.push(ch);
     }
     if !cur.is_empty() {
-        spans.push(if cur_hl { Span::styled(cur, hl) } else { Span::raw(cur) });
+        spans.push(if cur_hl {
+            Span::styled(cur, hl)
+        } else {
+            Span::raw(cur)
+        });
     }
     Line::from(spans)
 }
@@ -1616,7 +1772,8 @@ fn render_fzf(
     let (top, err_area) = match err {
         Some((lines, _)) => {
             let h = ((lines.len() as u16) + 2).clamp(3, 10);
-            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(h)]).split(f.area());
+            let rows =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(h)]).split(f.area());
             (rows[0], Some(rows[1]))
         }
         None => (f.area(), None),
@@ -1687,7 +1844,12 @@ fn render_fzf(
         .iter()
         // Show the projected display; a row is marked when its ORIGINAL is marked.
         .map(|(disp, orig)| {
-            ListItem::new(fzf_line(disp, filter, inner_w, mark_set.contains(orig.as_str())))
+            ListItem::new(fzf_line(
+                disp,
+                filter,
+                inner_w,
+                mark_set.contains(orig.as_str()),
+            ))
         })
         .collect();
     let mut state = ListState::default();
@@ -1697,7 +1859,11 @@ fn render_fzf(
     // Cyan pointer + a subtle highlight bar on the cursor line, fzf-style.
     let list = List::new(items)
         .highlight_symbol("\u{25b6} ")
-        .highlight_style(Style::default().bg(Color::Rgb(38, 38, 46)).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(38, 38, 46))
+                .add_modifier(Modifier::BOLD),
+        );
     f.render_stateful_widget(list, chunks[2], &mut state);
     // Publish the list body so a click maps to a cursor row (see dispatch_mouse
     // Select arm). `start` is the scroll offset of the first visible row.
@@ -1745,11 +1911,25 @@ pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
             (r, c, rs.max(1), cs.max(1))
         })
         .collect();
-    let rows = cells.iter().map(|(r, _, rs, _)| r + rs).max().unwrap_or(1).max(1);
-    let cols = cells.iter().map(|(_, c, _, cs)| c + cs).max().unwrap_or(1).max(1);
-    let row_cons: Vec<Constraint> = (0..rows).map(|_| Constraint::Ratio(1, rows as u32)).collect();
+    let rows = cells
+        .iter()
+        .map(|(r, _, rs, _)| r + rs)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let cols = cells
+        .iter()
+        .map(|(_, c, _, cs)| c + cs)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let row_cons: Vec<Constraint> = (0..rows)
+        .map(|_| Constraint::Ratio(1, rows as u32))
+        .collect();
     let row_chunks = Layout::vertical(row_cons).split(area);
-    let col_cons: Vec<Constraint> = (0..cols).map(|_| Constraint::Ratio(1, cols as u32)).collect();
+    let col_cons: Vec<Constraint> = (0..cols)
+        .map(|_| Constraint::Ratio(1, cols as u32))
+        .collect();
     cells
         .iter()
         .map(|&(r, c, rs, cs)| {
@@ -1758,11 +1938,21 @@ pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
             let bottom = row_chunks[(r + rs - 1).min(rows - 1)];
             let y = top.y;
             let height = bottom.y + bottom.height - top.y;
-            let band = Rect { x: area.x, y, width: area.width, height };
+            let band = Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height,
+            };
             let col_chunks = Layout::horizontal(col_cons.clone()).split(band);
             let left = col_chunks[c.min(cols - 1)];
             let right = col_chunks[(c + cs - 1).min(cols - 1)];
-            Rect { x: left.x, y, width: right.x + right.width - left.x, height }
+            Rect {
+                x: left.x,
+                y,
+                width: right.x + right.width - left.x,
+                height,
+            }
         })
         .collect()
 }
@@ -1846,9 +2036,7 @@ fn render_widget(
             let owned: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),
                 Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
-                Some(QueryResult::Pairs(p)) => {
-                    p.iter().map(|(k, v)| format!("{k}  {v}")).collect()
-                }
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
                 None => lines.to_vec(),
             };
             // `-limit N` (alias `-lines N`) caps the rows shown to the last N,
@@ -1875,7 +2063,11 @@ fn render_widget(
                 .get("max")
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(100.0);
-            let ratio = if max > 0.0 { (val / max).clamp(0.0, 1.0) } else { 0.0 };
+            let ratio = if max > 0.0 {
+                (val / max).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let g = Gauge::default()
                 .block(block)
                 .gauge_style(Style::default().fg(accent))
@@ -1893,8 +2085,11 @@ fn render_widget(
                 .get("top")
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(20);
-            let shown: Vec<(&str, u64)> =
-                pairs.iter().take(top).map(|(k, v)| (k.as_str(), *v)).collect();
+            let shown: Vec<(&str, u64)> = pairs
+                .iter()
+                .take(top)
+                .map(|(k, v)| (k.as_str(), *v))
+                .collect();
             let n = shown.len().max(1);
             let inner_w = area.width.saturating_sub(2) as usize;
             let bw = ((inner_w / n).saturating_sub(1)).clamp(1, 12) as u16;
@@ -1913,8 +2108,11 @@ fn render_widget(
                 Some(QueryResult::Scalar(v)) => vec![*v],
                 None => crate::query::numeric_series(lines),
             };
-            let points: Vec<(f64, f64)> =
-                series.iter().enumerate().map(|(i, v)| (i as f64, *v)).collect();
+            let points: Vec<(f64, f64)> = series
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as f64, *v))
+                .collect();
             let min = series.iter().cloned().fold(f64::INFINITY, f64::min);
             let max = series.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             // Pad a flat/empty range so the line has somewhere to sit.
@@ -1947,23 +2145,24 @@ fn render_widget(
             let start = series.len().saturating_sub(cap);
             let spark = crate::query::sparkline(&series[start..]);
             f.render_widget(
-                Paragraph::new(spark).style(Style::default().fg(accent)).block(block),
+                Paragraph::new(spark)
+                    .style(Style::default().fg(accent))
+                    .block(block),
                 area,
             );
         }
         WidgetKind::Table => {
             let src_lines: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),
-                Some(QueryResult::Pairs(p)) => {
-                    p.iter().map(|(k, v)| format!("{k} {v}")).collect()
-                }
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k} {v}")).collect(),
                 _ => lines.to_vec(),
             };
             let (headers, rows) =
                 crate::query::table_data(&src_lines, w.opts.get("cols").map(String::as_str));
             let ncols = crate::query::table_ncols(&headers, &rows);
-            let widths: Vec<Constraint> =
-                (0..ncols).map(|_| Constraint::Ratio(1, ncols as u32)).collect();
+            let widths: Vec<Constraint> = (0..ncols)
+                .map(|_| Constraint::Ratio(1, ncols as u32))
+                .collect();
             // Keep the newest rows that fit (leave room for borders + header).
             let reserve = if headers.is_empty() { 2 } else { 3 };
             let inner_h = area.height.saturating_sub(reserve) as usize;
@@ -1983,8 +2182,13 @@ fn render_widget(
             let mut table = Table::new(body, widths).block(block);
             if !headers.is_empty() {
                 table = table.header(
-                    Row::new(headers.iter().map(|h| Cell::from(h.clone())).collect::<Vec<_>>())
-                        .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+                    Row::new(
+                        headers
+                            .iter()
+                            .map(|h| Cell::from(h.clone()))
+                            .collect::<Vec<_>>(),
+                    )
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
                 );
             }
             f.render_widget(table, area);
@@ -2007,7 +2211,9 @@ fn render_widget(
                 .block(block)
                 .style(Style::default().fg(accent))
                 .highlight_style(
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                    Style::default()
+                        .fg(accent)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 )
                 .select(sel);
             f.render_widget(tabs, area);
@@ -2018,15 +2224,17 @@ fn render_widget(
             let owned: Vec<String> = match &result {
                 Some(QueryResult::Lines(ls)) => ls.clone(),
                 Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
-                Some(QueryResult::Pairs(p)) => {
-                    p.iter().map(|(k, v)| format!("{k}  {v}")).collect()
-                }
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
                 None => lines.to_vec(),
             };
             let inner_h = area.height.saturating_sub(2) as usize;
             let skip = scroll_skip(owned.len(), inner_h, scroll);
-            let items: Vec<ListItem> =
-                owned.iter().skip(skip).take(inner_h).map(|l| ListItem::new(ansi_line(l))).collect();
+            let items: Vec<ListItem> = owned
+                .iter()
+                .skip(skip)
+                .take(inner_h)
+                .map(|l| ListItem::new(ansi_line(l)))
+                .collect();
             f.render_widget(List::new(items).block(block), area);
         }
     }
@@ -2050,10 +2258,21 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let rects = compute_rects(Rect { x: 0, y: 0, width: 100, height: 100 }, &spec);
+        let rects = compute_rects(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            &spec,
+        );
         assert_eq!(rects.len(), 3);
         // .main: full width, top half.
-        assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height), (0, 0, 100, 50));
+        assert_eq!(
+            (rects[0].x, rects[0].y, rects[0].width, rects[0].height),
+            (0, 0, 100, 50)
+        );
         // .a: bottom-left, .b: bottom-right.
         assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0, 50, 50));
         assert_eq!((rects[2].x, rects[2].y, rects[2].width), (50, 50, 50));
@@ -2066,7 +2285,7 @@ mod tests {
         assert!(exact_score("hello world", "world").is_some());
         assert!(exact_score("abc", "xyz").is_none());
         assert!(exact_score("axbxc", "abc").is_none()); // not contiguous → no exact match
-        // Smart case: lowercase query is case-insensitive; uppercase is exact.
+                                                        // Smart case: lowercase query is case-insensitive; uppercase is exact.
         assert!(exact_score("Hello", "hello").is_some());
         assert!(exact_score("hello", "Hello").is_none());
         // Earlier match ranks above a later one.
@@ -2076,7 +2295,15 @@ mod tests {
     #[test]
     fn no_grid_auto_stacks_vertically() {
         let spec = build(&parse("gauge .a\ngauge .b").unwrap()).unwrap();
-        let rects = compute_rects(Rect { x: 0, y: 0, width: 80, height: 40 }, &spec);
+        let rects = compute_rects(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 40,
+            },
+            &spec,
+        );
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].height, 20);
         assert_eq!(rects[1].y, 20);
@@ -2093,8 +2320,14 @@ mod tests {
         let st = StreamState::new();
         let data = vec!["one".to_string(), "two".to_string()];
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
-        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0, 0)).unwrap();
-        term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0, 0))
+            .unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     #[test]
@@ -2102,24 +2335,54 @@ mod tests {
         use super::{tick_timeouts, Controls};
         use crate::spec::{BindAction, Timeout};
         use std::time::{Duration, Instant};
-        let mut c = Controls { inputs: vec![("x".into(), String::new())], ..Default::default() };
+        let mut c = Controls {
+            inputs: vec![("x".into(), String::new())],
+            ..Default::default()
+        };
         let timeouts = vec![Timeout {
             dur: Duration::from_millis(10),
-            action: BindAction::SetInput { name: "x".into(), value: "hot".into() },
+            action: BindAction::SetInput {
+                name: "x".into(),
+                value: "hot".into(),
+            },
         }];
         let base = Instant::now();
         let (mut last_total, mut last_activity, mut fired) = (0u64, base, vec![false]);
         // Idle 20ms past the 10ms threshold -> fires.
-        tick_timeouts(&timeouts, 0, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(20), &mut c);
+        tick_timeouts(
+            &timeouts,
+            0,
+            &mut last_total,
+            &mut last_activity,
+            &mut fired,
+            base + Duration::from_millis(20),
+            &mut c,
+        );
         assert_eq!(c.inputs[0].1, "hot");
         assert!(fired[0]);
         // Same idle span -> latched, does not re-fire (clear the value, confirm it stays clear).
         c.inputs[0].1.clear();
-        tick_timeouts(&timeouts, 0, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(40), &mut c);
+        tick_timeouts(
+            &timeouts,
+            0,
+            &mut last_total,
+            &mut last_activity,
+            &mut fired,
+            base + Duration::from_millis(40),
+            &mut c,
+        );
         assert_eq!(c.inputs[0].1, "");
         // Stream advances (new line) -> re-arms and resets the idle clock; an
         // immediate tick does not fire.
-        tick_timeouts(&timeouts, 1, &mut last_total, &mut last_activity, &mut fired, base + Duration::from_millis(41), &mut c);
+        tick_timeouts(
+            &timeouts,
+            1,
+            &mut last_total,
+            &mut last_activity,
+            &mut fired,
+            base + Duration::from_millis(41),
+            &mut c,
+        );
         assert!(!fired[0]);
         assert_eq!(c.inputs[0].1, "");
     }
@@ -2129,16 +2392,28 @@ mod tests {
         use super::{parse_sgr_mouse, MouseKind};
         // Left click at 1-based (5,3) -> 0-based (4,2), 'M' press, 9 bytes.
         let (ev, n) = parse_sgr_mouse(b"\x1b[<0;5;3M", 0).unwrap();
-        assert_eq!((ev.kind, ev.col, ev.row, ev.press), (MouseKind::Down, 4, 2, true));
+        assert_eq!(
+            (ev.kind, ev.col, ev.row, ev.press),
+            (MouseKind::Down, 4, 2, true)
+        );
         assert_eq!(n, 9);
         // Release ('m').
         let (ev, _) = parse_sgr_mouse(b"\x1b[<0;5;3m", 0).unwrap();
         assert_eq!((ev.kind, ev.press), (MouseKind::Up, false));
         // Scroll up (button 64) / down (65).
-        assert_eq!(parse_sgr_mouse(b"\x1b[<64;10;20M", 0).unwrap().0.kind, MouseKind::ScrollUp);
-        assert_eq!(parse_sgr_mouse(b"\x1b[<65;1;1M", 0).unwrap().0.kind, MouseKind::ScrollDown);
+        assert_eq!(
+            parse_sgr_mouse(b"\x1b[<64;10;20M", 0).unwrap().0.kind,
+            MouseKind::ScrollUp
+        );
+        assert_eq!(
+            parse_sgr_mouse(b"\x1b[<65;1;1M", 0).unwrap().0.kind,
+            MouseKind::ScrollDown
+        );
         // Drag (bit 32 set, press).
-        assert_eq!(parse_sgr_mouse(b"\x1b[<32;7;8M", 0).unwrap().0.kind, MouseKind::Drag);
+        assert_eq!(
+            parse_sgr_mouse(b"\x1b[<32;7;8M", 0).unwrap().0.kind,
+            MouseKind::Drag
+        );
         // Mid-buffer offset.
         let (ev, n) = parse_sgr_mouse(b"xy\x1b[<0;3;4M", 2).unwrap();
         assert_eq!((ev.col, ev.row), (2, 3));
@@ -2154,14 +2429,36 @@ mod tests {
         use crate::spec::WidgetKind;
         use ratatui::layout::Rect;
         let hm = vec![
-            HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 5 }, kind: WidgetKind::Filter, control_name: "q".into(), meta_index: Some(0), tabs: Vec::new() },
-            HitTarget { rect: Rect { x: 0, y: 2, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "c".into(), meta_index: Some(1), tabs: Vec::new() },
+            HitTarget {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 10,
+                    height: 5,
+                },
+                kind: WidgetKind::Filter,
+                control_name: "q".into(),
+                meta_index: Some(0),
+                tabs: Vec::new(),
+            },
+            HitTarget {
+                rect: Rect {
+                    x: 0,
+                    y: 2,
+                    width: 10,
+                    height: 3,
+                },
+                kind: WidgetKind::Check,
+                control_name: "c".into(),
+                meta_index: Some(1),
+                tabs: Vec::new(),
+            },
         ];
         // Overlap at (3,3): the later (topmost) target wins.
         assert_eq!(hit(&hm, 3, 3).unwrap().control_name, "c");
         assert_eq!(hit(&hm, 3, 1).unwrap().control_name, "q"); // only the first covers y=1
         assert!(hit(&hm, 20, 20).is_none()); // outside
-        // Facet row -> option index (skip the top border).
+                                             // Facet row -> option index (skip the top border).
         assert_eq!(facet_row_to_index(0, 1), Some(0));
         assert_eq!(facet_row_to_index(0, 3), Some(2));
         assert_eq!(facet_row_to_index(5, 5), None);
@@ -2169,7 +2466,7 @@ mod tests {
         assert_eq!(slider_value_from_x(0, 12, 6, 0.0, 10.0, 1.0), "5"); // mid
         assert_eq!(slider_value_from_x(0, 12, 0, 0.0, 10.0, 1.0), "0"); // far left
         assert_eq!(slider_value_from_x(0, 12, 99, 0.0, 10.0, 1.0), "10"); // clamp right
-        // Resize detector.
+                                                                          // Resize detector.
         let mut last = (80, 24);
         assert!(!detect_resize(&mut last, (80, 24)));
         assert!(detect_resize(&mut last, (100, 30)));
@@ -2178,33 +2475,87 @@ mod tests {
 
     #[test]
     fn dispatch_mouse_clicks_and_scrolls() {
-        use super::{dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind};
+        use super::{
+            dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind,
+        };
         use crate::spec::WidgetKind;
         use ratatui::layout::Rect;
         let mut c = Controls {
             inputs: vec![("chk".into(), "0".into()), ("sl".into(), "0".into())],
             control_meta: vec![
-                ControlMeta { kind: ControlKind::Check, ..Default::default() },
-                ControlMeta { kind: ControlKind::Slider, min: 0.0, max: 10.0, step: 1.0, ..Default::default() },
+                ControlMeta {
+                    kind: ControlKind::Check,
+                    ..Default::default()
+                },
+                ControlMeta {
+                    kind: ControlKind::Slider,
+                    min: 0.0,
+                    max: 10.0,
+                    step: 1.0,
+                    ..Default::default()
+                },
             ],
             hitmap: vec![
-                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0), tabs: Vec::new() },
-                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1), tabs: Vec::new() },
+                HitTarget {
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 10,
+                        height: 3,
+                    },
+                    kind: WidgetKind::Check,
+                    control_name: "chk".into(),
+                    meta_index: Some(0),
+                    tabs: Vec::new(),
+                },
+                HitTarget {
+                    rect: Rect {
+                        x: 0,
+                        y: 3,
+                        width: 12,
+                        height: 3,
+                    },
+                    kind: WidgetKind::Slider,
+                    control_name: "sl".into(),
+                    meta_index: Some(1),
+                    tabs: Vec::new(),
+                },
             ],
             ..Default::default()
         };
-        let ev = |kind, col, row| MouseEvent { kind, col, row, button: 0, press: kind == MouseKind::Down };
+        let ev = |kind, col, row| MouseEvent {
+            kind,
+            col,
+            row,
+            button: 0,
+            press: kind == MouseKind::Down,
+        };
         // Click the checkbox -> toggles + focuses it.
-        dispatch_mouse(&mut c, ev(MouseKind::Down, 2, 1), false, std::time::Instant::now());
+        dispatch_mouse(
+            &mut c,
+            ev(MouseKind::Down, 2, 1),
+            false,
+            std::time::Instant::now(),
+        );
         assert_eq!(c.inputs[0].1, "1");
         assert_eq!(c.focus, 0);
         // Click mid the slider (inner width 10, x=6 -> ~mid).
-        dispatch_mouse(&mut c, ev(MouseKind::Down, 6, 4), false, std::time::Instant::now());
+        dispatch_mouse(
+            &mut c,
+            ev(MouseKind::Down, 6, 4),
+            false,
+            std::time::Instant::now(),
+        );
         assert_eq!(c.inputs[1].1, "5");
         assert_eq!(c.focus, 1);
         // Scroll in fzf mode moves the cursor.
         c.cursor = 5;
-        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 0, 0), true, std::time::Instant::now());
+        dispatch_mouse(
+            &mut c,
+            ev(MouseKind::ScrollUp, 0, 0),
+            true,
+            std::time::Instant::now(),
+        );
         assert_eq!(c.cursor, 4);
     }
 
@@ -2216,7 +2567,7 @@ mod tests {
         assert_eq!(fzf_row_to_cursor(2, 10, 4), 12);
         assert_eq!(fzf_row_to_cursor(0, 0, 5), 5);
         assert_eq!(fzf_row_to_cursor(2, 10, 1), 10); // saturates above the body
-        // Tab bar: ` a | bb | ccc ` inside the left border at rect_x.
+                                                     // Tab bar: ` a | bb | ccc ` inside the left border at rect_x.
         let labels = ["a", "bb", "ccc"];
         assert_eq!(tab_index_from_x(&labels, 0, 0), None); // on the border
         assert_eq!(tab_index_from_x(&labels, 0, 1), Some(0)); // ` a `
@@ -2234,7 +2585,12 @@ mod tests {
         let mut c = Controls {
             fzf_list_start: 10,
             hitmap: vec![HitTarget {
-                rect: Rect { x: 0, y: 2, width: 20, height: 10 },
+                rect: Rect {
+                    x: 0,
+                    y: 2,
+                    width: 20,
+                    height: 10,
+                },
                 kind: WidgetKind::Select,
                 control_name: String::new(),
                 meta_index: None,
@@ -2242,12 +2598,28 @@ mod tests {
             }],
             ..Default::default()
         };
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, true, std::time::Instant::now());
+        dispatch_mouse(
+            &mut c,
+            MouseEvent {
+                kind: MouseKind::Down,
+                col: 3,
+                row: 4,
+                button: 0,
+                press: true,
+            },
+            true,
+            std::time::Instant::now(),
+        );
         assert_eq!(c.cursor, 12); // 10 + (4 - 2)
-        // tabs: clicking a label selects it.
+                                  // tabs: clicking a label selects it.
         let mut c = Controls {
             hitmap: vec![HitTarget {
-                rect: Rect { x: 0, y: 0, width: 20, height: 3 },
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 3,
+                },
                 kind: WidgetKind::Tabs,
                 control_name: "t".into(),
                 meta_index: None,
@@ -2255,7 +2627,18 @@ mod tests {
             }],
             ..Default::default()
         };
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 5, row: 0, button: 0, press: true }, false, std::time::Instant::now());
+        dispatch_mouse(
+            &mut c,
+            MouseEvent {
+                kind: MouseKind::Down,
+                col: 5,
+                row: 0,
+                button: 0,
+                press: true,
+            },
+            false,
+            std::time::Instant::now(),
+        );
         assert_eq!(c.tab_sel.get("t"), Some(&1));
     }
 
@@ -2266,7 +2649,7 @@ mod tests {
         assert_eq!(slider_adjust("5", 0.0, 10.0, 2.0, true), "7");
         assert_eq!(slider_adjust("9", 0.0, 10.0, 2.0, true), "10"); // clamp high
         assert_eq!(slider_adjust("1", 0.0, 10.0, 2.0, false), "0"); // clamp low
-        // Check: boolean flip.
+                                                                    // Check: boolean flip.
         assert_eq!(toggle_check("0"), "1");
         assert_eq!(toggle_check("1"), "0");
         // Facet set: add then remove, order preserved.
@@ -2315,29 +2698,90 @@ mod tests {
         let last = Some((t0, 3u16, 4u16));
         assert!(is_double_click(last, t0 + Duration::from_millis(100), 4));
         // Same row but past the window -> single click.
-        assert!(!is_double_click(last, t0 + DOUBLE_CLICK + Duration::from_millis(1), 4));
+        assert!(!is_double_click(
+            last,
+            t0 + DOUBLE_CLICK + Duration::from_millis(1),
+            4
+        ));
         // Different row inside the window -> not a double-click.
         assert!(!is_double_click(last, t0 + Duration::from_millis(100), 5));
     }
 
     #[test]
     fn dispatch_mouse_right_click_resets_and_double_click_submits() {
-        use super::{dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind};
+        use super::{
+            dispatch_mouse, ControlKind, ControlMeta, Controls, HitTarget, MouseEvent, MouseKind,
+        };
         use crate::spec::WidgetKind;
         use ratatui::layout::Rect;
         use std::time::{Duration, Instant};
-        let mk = |button, row| MouseEvent { kind: MouseKind::Down, col: 2, row, button, press: true };
+        let mk = |button, row| MouseEvent {
+            kind: MouseKind::Down,
+            col: 2,
+            row,
+            button,
+            press: true,
+        };
         let mut c = Controls {
-            inputs: vec![("chk".into(), "1".into()), ("sl".into(), "7".into()), ("txt".into(), "hi".into())],
+            inputs: vec![
+                ("chk".into(), "1".into()),
+                ("sl".into(), "7".into()),
+                ("txt".into(), "hi".into()),
+            ],
             control_meta: vec![
-                ControlMeta { kind: ControlKind::Check, ..Default::default() },
-                ControlMeta { kind: ControlKind::Slider, min: 2.0, max: 10.0, step: 1.0, ..Default::default() },
-                ControlMeta { kind: ControlKind::Text, ..Default::default() },
+                ControlMeta {
+                    kind: ControlKind::Check,
+                    ..Default::default()
+                },
+                ControlMeta {
+                    kind: ControlKind::Slider,
+                    min: 2.0,
+                    max: 10.0,
+                    step: 1.0,
+                    ..Default::default()
+                },
+                ControlMeta {
+                    kind: ControlKind::Text,
+                    ..Default::default()
+                },
             ],
             hitmap: vec![
-                HitTarget { rect: Rect { x: 0, y: 0, width: 10, height: 3 }, kind: WidgetKind::Check, control_name: "chk".into(), meta_index: Some(0), tabs: Vec::new() },
-                HitTarget { rect: Rect { x: 0, y: 3, width: 12, height: 3 }, kind: WidgetKind::Slider, control_name: "sl".into(), meta_index: Some(1), tabs: Vec::new() },
-                HitTarget { rect: Rect { x: 0, y: 6, width: 12, height: 3 }, kind: WidgetKind::Filter, control_name: "txt".into(), meta_index: Some(2), tabs: Vec::new() },
+                HitTarget {
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 10,
+                        height: 3,
+                    },
+                    kind: WidgetKind::Check,
+                    control_name: "chk".into(),
+                    meta_index: Some(0),
+                    tabs: Vec::new(),
+                },
+                HitTarget {
+                    rect: Rect {
+                        x: 0,
+                        y: 3,
+                        width: 12,
+                        height: 3,
+                    },
+                    kind: WidgetKind::Slider,
+                    control_name: "sl".into(),
+                    meta_index: Some(1),
+                    tabs: Vec::new(),
+                },
+                HitTarget {
+                    rect: Rect {
+                        x: 0,
+                        y: 6,
+                        width: 12,
+                        height: 3,
+                    },
+                    kind: WidgetKind::Filter,
+                    control_name: "txt".into(),
+                    meta_index: Some(2),
+                    tabs: Vec::new(),
+                },
             ],
             ..Default::default()
         };
@@ -2353,12 +2797,45 @@ mod tests {
         // Double-click a Select row within the window sets submit.
         let mut c = Controls {
             fzf_list_start: 0,
-            hitmap: vec![HitTarget { rect: Rect { x: 0, y: 0, width: 20, height: 10 }, kind: WidgetKind::Select, control_name: String::new(), meta_index: None, tabs: Vec::new() }],
+            hitmap: vec![HitTarget {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 10,
+                },
+                kind: WidgetKind::Select,
+                control_name: String::new(),
+                meta_index: None,
+                tabs: Vec::new(),
+            }],
             ..Default::default()
         };
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, false, now);
+        dispatch_mouse(
+            &mut c,
+            MouseEvent {
+                kind: MouseKind::Down,
+                col: 3,
+                row: 4,
+                button: 0,
+                press: true,
+            },
+            false,
+            now,
+        );
         assert!(!c.submit); // first click only positions the cursor
-        dispatch_mouse(&mut c, MouseEvent { kind: MouseKind::Down, col: 3, row: 4, button: 0, press: true }, false, now + Duration::from_millis(100));
+        dispatch_mouse(
+            &mut c,
+            MouseEvent {
+                kind: MouseKind::Down,
+                col: 3,
+                row: 4,
+                button: 0,
+                press: true,
+            },
+            false,
+            now + Duration::from_millis(100),
+        );
         assert!(c.submit); // second click on the same row within the window submits
     }
 
@@ -2369,10 +2846,27 @@ mod tests {
         use ratatui::layout::Rect;
         use std::time::Instant;
         let mut c = Controls {
-            hitmap: vec![HitTarget { rect: Rect { x: 0, y: 0, width: 20, height: 10 }, kind: WidgetKind::Tail, control_name: "log".into(), meta_index: None, tabs: Vec::new() }],
+            hitmap: vec![HitTarget {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 10,
+                },
+                kind: WidgetKind::Tail,
+                control_name: "log".into(),
+                meta_index: None,
+                tabs: Vec::new(),
+            }],
             ..Default::default()
         };
-        let ev = |kind| MouseEvent { kind, col: 5, row: 5, button: 0, press: false };
+        let ev = |kind| MouseEvent {
+            kind,
+            col: 5,
+            row: 5,
+            button: 0,
+            press: false,
+        };
         let now = Instant::now();
         // Wheel up over a scrollable widget banks older rows.
         dispatch_mouse(&mut c, ev(MouseKind::ScrollUp), false, now);
@@ -2390,10 +2884,14 @@ mod tests {
     fn facet_candidates_from_opts_and_field() {
         use super::facet_candidates;
         // Explicit -opts.
-        let w = &build(&parse("facet .lv -opts {info warn error}").unwrap()).unwrap().widgets[0];
+        let w = &build(&parse("facet .lv -opts {info warn error}").unwrap())
+            .unwrap()
+            .widgets[0];
         assert_eq!(facet_candidates(w, &[]), vec!["info", "warn", "error"]);
         // Distinct -field values from the stream.
-        let w2 = &build(&parse("facet .lv -field level").unwrap()).unwrap().widgets[0];
+        let w2 = &build(&parse("facet .lv -field level").unwrap())
+            .unwrap()
+            .widgets[0];
         let raw = vec![
             r#"{"level":"info"}"#.to_string(),
             r#"{"level":"error"}"#.to_string(),
@@ -2408,10 +2906,21 @@ mod tests {
         use crate::spec::{BindAction, Timeout};
         use std::time::{Duration, Instant};
         let mut c = Controls::default();
-        let timeouts = vec![Timeout { dur: Duration::from_millis(5), action: BindAction::Quit }];
+        let timeouts = vec![Timeout {
+            dur: Duration::from_millis(5),
+            action: BindAction::Quit,
+        }];
         let base = Instant::now();
         let (mut lt, mut la, mut fired) = (0u64, base, vec![false]);
-        tick_timeouts(&timeouts, 0, &mut lt, &mut la, &mut fired, base + Duration::from_millis(10), &mut c);
+        tick_timeouts(
+            &timeouts,
+            0,
+            &mut lt,
+            &mut la,
+            &mut fired,
+            base + Duration::from_millis(10),
+            &mut c,
+        );
         assert!(c.quit);
     }
 
@@ -2419,13 +2928,23 @@ mod tests {
     fn tabs_block_frame_render_without_placeholder() {
         // The old fallback printed "<kind> — not yet rendered"; these kinds now
         // render real widgets, so that string must never appear.
-        for src in ["tabs .t -tabs {alpha beta}", "block .b -title Box", "frame .f"] {
+        for src in [
+            "tabs .t -tabs {alpha beta}",
+            "block .b -title Box",
+            "frame .f",
+        ] {
             let text = render_text(src);
-            assert!(!text.contains("not yet rendered"), "placeholder leaked for `{src}`: {text}");
+            assert!(
+                !text.contains("not yet rendered"),
+                "placeholder leaked for `{src}`: {text}"
+            );
         }
         // Tab labels captured from the `{alpha beta}` block reach the tab bar.
         let tabs = render_text("tabs .t -tabs {alpha beta}");
-        assert!(tabs.contains("alpha") && tabs.contains("beta"), "tab labels missing: {tabs}");
+        assert!(
+            tabs.contains("alpha") && tabs.contains("beta"),
+            "tab labels missing: {tabs}"
+        );
         // A container shows its bound stream content, not an apology string.
         assert!(render_text("block .b").contains("two"));
     }

@@ -61,7 +61,10 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
                     i += 1;
                 }
                 if i >= n {
-                    return Err(SpecError { msg: "unterminated string".into(), span: Some((q, n)) });
+                    return Err(SpecError {
+                        msg: "unterminated string".into(),
+                        span: Some((q, n)),
+                    });
                 }
                 i += 1; // closing quote
                 toks.push((Tok::Str(s), q));
@@ -84,7 +87,10 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
                     i += 1;
                 }
                 if depth != 0 {
-                    return Err(SpecError { msg: "unterminated block".into(), span: Some((open, n)) });
+                    return Err(SpecError {
+                        msg: "unterminated block".into(),
+                        span: Some((open, n)),
+                    });
                 }
                 let inner: String = cs[start..i].iter().collect();
                 i += 1; // closing brace

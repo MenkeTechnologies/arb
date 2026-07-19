@@ -100,7 +100,11 @@ impl WidgetKind {
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            WidgetKind::Input | WidgetKind::Filter | WidgetKind::Facet | WidgetKind::Slider | WidgetKind::Check
+            WidgetKind::Input
+                | WidgetKind::Filter
+                | WidgetKind::Facet
+                | WidgetKind::Slider
+                | WidgetKind::Check
         )
     }
 }
@@ -206,7 +210,11 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         return n.trim().parse::<f64>().ok().map(Duration::from_secs_f64);
     }
     if let Some(n) = s.strip_suffix('m') {
-        return n.trim().parse::<f64>().ok().map(|m| Duration::from_secs_f64(m * 60.0));
+        return n
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|m| Duration::from_secs_f64(m * 60.0));
     }
     None
 }
@@ -362,9 +370,7 @@ pub fn resolve_pipeline(
 ) -> Vec<QueryOp> {
     // Resolve a control name to its live numeric value (empty/non-numeric -> None)
     // or its raw string value (for `match`/`in .set` string predicates).
-    let num = |n: &str| -> Option<f64> {
-        inputs.get(n).and_then(|v| v.trim().parse::<f64>().ok())
-    };
+    let num = |n: &str| -> Option<f64> { inputs.get(n).and_then(|v| v.trim().parse::<f64>().ok()) };
     let strv = |n: &str| -> Option<String> { inputs.get(n).cloned() };
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
@@ -390,14 +396,18 @@ pub fn resolve_pipeline(
                 if nums.is_empty() && strs.is_empty() {
                     out.push(op.clone());
                 } else if nums.iter().all(|n| num(n).is_some()) {
-                    out.push(QueryOp::Where(crate::expr::substitute_controls(e, &num, &strv)));
+                    out.push(QueryOp::Where(crate::expr::substitute_controls(
+                        e, &num, &strv,
+                    )));
                 }
                 // else: a numeric control is unset -> drop this `where`.
             }
             // `map(x * .k)`: substitute resolvable controls; an unresolved one
             // stays a control (-> NaN) rather than dropping the transform.
             QueryOp::Map(e) => {
-                out.push(QueryOp::Map(crate::expr::substitute_controls(e, &num, &strv)));
+                out.push(QueryOp::Map(crate::expr::substitute_controls(
+                    e, &num, &strv,
+                )));
             }
             other => out.push(other.clone()),
         }
@@ -480,25 +490,33 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     dst.resize_binds.extend(src.resize_binds);
     if let Some(out) = src.out {
         if dst.out.is_some() {
-            return Err(format!("import: `{ns}` defines `out`, but one is already set"));
+            return Err(format!(
+                "import: `{ns}` defines `out`, but one is already set"
+            ));
         }
         dst.out = Some(out);
     }
     if let Some(sp) = src.spawn {
         if stream_source_set(dst) {
-            return Err(format!("import: `{ns}` defines a spawn source, but one is already set"));
+            return Err(format!(
+                "import: `{ns}` defines a spawn source, but one is already set"
+            ));
         }
         dst.spawn = Some(sp);
     }
     if let Some(f) = src.source_file {
         if stream_source_set(dst) {
-            return Err(format!("import: `{ns}` defines a `<` file source, but one is already set"));
+            return Err(format!(
+                "import: `{ns}` defines a `<` file source, but one is already set"
+            ));
         }
         dst.source_file = Some(f);
     }
     if let Some(p) = src.poll {
         if stream_source_set(dst) {
-            return Err(format!("import: `{ns}` defines a `!` poll source, but one is already set"));
+            return Err(format!(
+                "import: `{ns}` defines a `!` poll source, but one is already set"
+            ));
         }
         dst.poll = Some(p);
     }
@@ -507,7 +525,11 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
 
 /// Process `cmds` into `spec`. `import NAME` resolves and inlines a module
 /// (stdlib preset or user file); `depth` guards against import cycles.
-fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), crate::err::SpecError> {
+fn build_into(
+    spec: &mut Spec,
+    cmds: &[Command],
+    depth: usize,
+) -> Result<(), crate::err::SpecError> {
     if depth > 16 {
         return Err("import: module nesting too deep (cycle?)".into());
     }
@@ -515,231 +537,250 @@ fn build_into(spec: &mut Spec, cmds: &[Command], depth: usize) -> Result<(), cra
         // Process one command; a returned error with no span yet is anchored to
         // this command's verb (its char offset) so the LSP points at the line.
         let res: Result<(), crate::err::SpecError> = (|| -> Result<(), crate::err::SpecError> {
-        if c.name == "import" {
-            let name = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("import: missing module name")?;
-            // `import X as Y`: build the module into a fresh sub-Spec (so its
-            // intra-module by-path refs resolve), namespace every render-time
-            // name with `Y`, then merge — so `.Y.foo` and its controls resolve.
-            if c.args.get(1).and_then(Arg::as_str) == Some("as") {
-                let alias = c
+            if c.name == "import" {
+                let name = c
                     .args
-                    .get(2)
+                    .first()
                     .and_then(Arg::as_str)
-                    .ok_or("import: `as` requires an alias (import X as Y)")?;
-                if alias.is_empty() || alias.contains(['.', '/', ' ']) {
-                    return Err(format!("import: invalid namespace alias `{alias}`").into());
+                    .ok_or("import: missing module name")?;
+                // `import X as Y`: build the module into a fresh sub-Spec (so its
+                // intra-module by-path refs resolve), namespace every render-time
+                // name with `Y`, then merge — so `.Y.foo` and its controls resolve.
+                if c.args.get(1).and_then(Arg::as_str) == Some("as") {
+                    let alias = c
+                        .args
+                        .get(2)
+                        .and_then(Arg::as_str)
+                        .ok_or("import: `as` requires an alias (import X as Y)")?;
+                    if alias.is_empty() || alias.contains(['.', '/', ' ']) {
+                        return Err(format!("import: invalid namespace alias `{alias}`").into());
+                    }
+                    let src = resolve_module(name)?;
+                    let sub_cmds = crate::parser::parse(&src)?;
+                    let mut sub = Spec::default();
+                    build_into(&mut sub, &sub_cmds, depth + 1)?;
+                    prefix_spec(&mut sub, alias);
+                    merge_spec(spec, sub, alias)?;
+                } else {
+                    let src = resolve_module(name)?;
+                    let sub = crate::parser::parse(&src)?;
+                    build_into(spec, &sub, depth + 1)?;
                 }
-                let src = resolve_module(name)?;
-                let sub_cmds = crate::parser::parse(&src)?;
-                let mut sub = Spec::default();
-                build_into(&mut sub, &sub_cmds, depth + 1)?;
-                prefix_spec(&mut sub, alias);
-                merge_spec(spec, sub, alias)?;
-            } else {
-                let src = resolve_module(name)?;
-                let sub = crate::parser::parse(&src)?;
-                build_into(spec, &sub, depth + 1)?;
-            }
-        } else if let Some(kind) = WidgetKind::from(&c.name) {
-            let path = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or_else(|| format!("{}: missing widget path", c.name))?;
-            if !path.starts_with('.') {
-                return Err(format!(
-                    "{}: widget path must start with '.', got `{path}`",
-                    c.name
-                )
-                .into());
-            }
-            spec.widgets.push(Widget {
-                path: path.to_string(),
-                kind,
-                opts: parse_opts(&c.args[1..]),
-                source: None,
-                search: None,
-                grid: None,
-                span: (1, 1),
-            });
-        } else if c.name == "source" {
-            let path = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("source: missing path")?;
-            let body = match c.args.get(1) {
-                Some(Arg::Block(b)) => b,
-                _ => return Err("source: expected `{ body }`".into()),
-            };
-            let pipeline = pipeline_from_body(body)?;
-            set_source(spec, path, Source { pipeline })?;
-        } else if c.name == "search" {
-            // `search .name { in; … }` — a select widget's fuzzy-match key
-            // pipeline (fzf --nth). The row still shows/emits its `source`.
-            let path = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("search: missing path")?;
-            let body = match c.args.get(1) {
-                Some(Arg::Block(b)) => b,
-                _ => return Err("search: expected `{ body }`".into()),
-            };
-            let pipeline = pipeline_from_body(body)?;
-            set_search(spec, path, pipeline)?;
-        } else if c.name == "bind" {
-            // `bind KEY ACTION` — KEY is a control key (`C-<letter>`, `<Enter>`…),
-            // a mouse event (`<Click>`), or `<Resize>`; ACTION is a single verb or
-            // a `{ … }` block.
-            let keyspec = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("bind: missing key (e.g. C-u, <Click>)")?;
-            let action =
-                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("bind: {e}"))?;
-            match keyspec {
-                "<Click>" | "<Button-1>" => spec.mouse_binds.push((MouseTrigger::Click, action)),
-                "<Resize>" | "<Configure>" => spec.resize_binds.push(action),
-                _ => {
-                    let key = parse_key(keyspec).ok_or_else(|| {
+            } else if let Some(kind) = WidgetKind::from(&c.name) {
+                let path = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or_else(|| format!("{}: missing widget path", c.name))?;
+                if !path.starts_with('.') {
+                    return Err(format!(
+                        "{}: widget path must start with '.', got `{path}`",
+                        c.name
+                    )
+                    .into());
+                }
+                spec.widgets.push(Widget {
+                    path: path.to_string(),
+                    kind,
+                    opts: parse_opts(&c.args[1..]),
+                    source: None,
+                    search: None,
+                    grid: None,
+                    span: (1, 1),
+                });
+            } else if c.name == "source" {
+                let path = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("source: missing path")?;
+                let body = match c.args.get(1) {
+                    Some(Arg::Block(b)) => b,
+                    _ => return Err("source: expected `{ body }`".into()),
+                };
+                let pipeline = pipeline_from_body(body)?;
+                set_source(spec, path, Source { pipeline })?;
+            } else if c.name == "search" {
+                // `search .name { in; … }` — a select widget's fuzzy-match key
+                // pipeline (fzf --nth). The row still shows/emits its `source`.
+                let path = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("search: missing path")?;
+                let body = match c.args.get(1) {
+                    Some(Arg::Block(b)) => b,
+                    _ => return Err("search: expected `{ body }`".into()),
+                };
+                let pipeline = pipeline_from_body(body)?;
+                set_search(spec, path, pipeline)?;
+            } else if c.name == "bind" {
+                // `bind KEY ACTION` — KEY is a control key (`C-<letter>`, `<Enter>`…),
+                // a mouse event (`<Click>`), or `<Resize>`; ACTION is a single verb or
+                // a `{ … }` block.
+                let keyspec = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("bind: missing key (e.g. C-u, <Click>)")?;
+                let action =
+                    parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("bind: {e}"))?;
+                match keyspec {
+                    "<Click>" | "<Button-1>" => {
+                        spec.mouse_binds.push((MouseTrigger::Click, action))
+                    }
+                    "<Resize>" | "<Configure>" => spec.resize_binds.push(action),
+                    _ => {
+                        let key = parse_key(keyspec).ok_or_else(|| {
                         format!("bind: `{keyspec}` is not a bindable key (use C-<letter>, <Enter>/<Esc>/<Tab>/<Key-x>, <Click>, <Resize>)")
                     })?;
-                    spec.binds.push(Bind { key, action });
+                        spec.binds.push(Bind { key, action });
+                    }
                 }
-            }
-        } else if c.name == "expect" {
-            match c.args.first() {
-                // Block form `expect { /re/ ACTION; /re2/ ACTION }` (Tcl Expect's
-                // multi-pattern block): each inner command is one clause — its
-                // NAME is the /regex/, its args are the ACTION. Emit one Expect
-                // per clause; all fire live per line (tui.rs loops every entry).
-                Some(Arg::Block(clauses)) => {
-                    for clause in clauses {
-                        let pattern =
-                            compile_regex(&clause.name).map_err(|e| format!("expect: {e}"))?;
-                        let action = parse_bind_or_expect_action(&clause.args)
+            } else if c.name == "expect" {
+                match c.args.first() {
+                    // Block form `expect { /re/ ACTION; /re2/ ACTION }` (Tcl Expect's
+                    // multi-pattern block): each inner command is one clause — its
+                    // NAME is the /regex/, its args are the ACTION. Emit one Expect
+                    // per clause; all fire live per line (tui.rs loops every entry).
+                    Some(Arg::Block(clauses)) => {
+                        for clause in clauses {
+                            let pattern =
+                                compile_regex(&clause.name).map_err(|e| format!("expect: {e}"))?;
+                            let action = parse_bind_or_expect_action(&clause.args)
+                                .map_err(|e| format!("expect: {e}"))?;
+                            spec.expects.push(Expect { pattern, action });
+                        }
+                    }
+                    // Single-clause form `expect /regex/ ACTION` — ACTION as for `bind`.
+                    _ => {
+                        let pattern = regex_arg(c)?;
+                        let action = parse_bind_or_expect_action(&c.args[1..])
                             .map_err(|e| format!("expect: {e}"))?;
                         spec.expects.push(Expect { pattern, action });
                     }
                 }
-                // Single-clause form `expect /regex/ ACTION` — ACTION as for `bind`.
-                _ => {
-                    let pattern = regex_arg(c)?;
-                    let action = parse_bind_or_expect_action(&c.args[1..])
-                        .map_err(|e| format!("expect: {e}"))?;
-                    spec.expects.push(Expect { pattern, action });
+            } else if c.name == "timeout" {
+                // `timeout Ns ACTION` — fire ACTION when the stream goes idle for Ns.
+                let dspec = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("timeout: missing duration (e.g. 5s, 500ms)")?;
+                let dur = parse_duration(dspec).ok_or_else(|| {
+                    format!("timeout: `{dspec}` is not a duration (use Ns/Nms/Nm)")
+                })?;
+                let action = parse_bind_or_expect_action(&c.args[1..])
+                    .map_err(|e| format!("timeout: {e}"))?;
+                spec.timeouts.push(Timeout { dur, action });
+            } else if c.name == "out" {
+                let body = match c.args.first() {
+                    Some(Arg::Block(b)) => b,
+                    _ => return Err("out: expected `{ body }`".into()),
+                };
+                spec.out = Some(pipeline_from_body(body)?);
+            } else if c.name == "spawn" {
+                // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use its
+                // stdout as the stream (input source, in place of stdin).
+                let cmd = match c.args.first() {
+                    Some(Arg::Block(b)) => block_to_shell(b),
+                    _ => c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                if cmd.trim().is_empty() {
+                    return Err("spawn: missing command".into());
+                }
+                if stream_source_set(spec) {
+                    return Err("spawn: a stream source is already declared".into());
+                }
+                spec.spawn = Some(cmd);
+            } else if c.name == "<" {
+                // `< FILE`: read FILE as the stream (input source, in place of stdin).
+                // An unquoted absolute path (`/var/log/x`) is truncated by the lexer's
+                // `/…/` regex branch — quote it (`< "/var/log/x"`).
+                let file = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .filter(|f| !f.trim().is_empty())
+                    .ok_or("`<`: missing file path")?;
+                if stream_source_set(spec) {
+                    return Err("`<`: a stream source is already declared".into());
+                }
+                spec.source_file = Some(file.to_string());
+            } else if c.name == "!" {
+                // `! CMD every Ns`: re-run CMD every interval. CMD may be bare words
+                // or a `{ … }` block; the interval follows the `every` keyword.
+                let evy = c
+                    .args
+                    .iter()
+                    .position(|a| a.as_str() == Some("every"))
+                    .ok_or("`!` source: expected `CMD every Ns`")?;
+                let dspec = c
+                    .args
+                    .get(evy + 1)
+                    .and_then(Arg::as_str)
+                    .ok_or("`!` source: `every` needs a duration (e.g. 1s, 500ms)")?;
+                let dur = parse_duration(dspec).ok_or_else(|| {
+                    format!("`!` source: `{dspec}` is not a duration (use Ns/Nms/Nm)")
+                })?;
+                let cmd = match c.args.first() {
+                    Some(Arg::Block(b)) => block_to_shell(b),
+                    _ => c.args[..evy]
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                if cmd.trim().is_empty() {
+                    return Err("`!` source: missing command".into());
+                }
+                if stream_source_set(spec) {
+                    return Err("`!`: a stream source is already declared".into());
+                }
+                spec.poll = Some((cmd, dur));
+            } else if c.name == "grid" {
+                let path = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("grid: missing path")?;
+                let o = parse_opts(&c.args[1..]);
+                let opt = |k: &str, d: usize| {
+                    o.get(k)
+                        .and_then(|s: &String| s.parse::<usize>().ok())
+                        .unwrap_or(d)
+                };
+                // `-span` is a colspan shorthand; `-rowspan`/`-colspan` are explicit.
+                let colspan = opt("colspan", opt("span", 1)).max(1);
+                let rowspan = opt("rowspan", 1).max(1);
+                set_grid(
+                    spec,
+                    path,
+                    (opt("row", 0), opt("col", 0)),
+                    (rowspan, colspan),
+                )?;
+            } else if c.name.starts_with('.') {
+                if c.args.first().and_then(Arg::as_str) == Some("<-")
+                    && c.args.get(1).and_then(Arg::as_str) == Some("in")
+                {
+                    // `.path <- in` bind shorthand (empty pipeline).
+                    let path = c.name.clone();
+                    set_source(spec, &path, Source { pipeline: vec![] })?;
+                } else if c.args.first().and_then(Arg::as_str) == Some("configure") {
+                    // `.path configure -max 200`: merge new opts into the target
+                    // widget (build-time; later keys win). Runtime reconfigure via a
+                    // bind/expect mutating live opts is a separate, larger feature.
+                    let opts = parse_opts(&c.args[1..]);
+                    configure_widget(spec, &c.name, opts)?;
                 }
             }
-        } else if c.name == "timeout" {
-            // `timeout Ns ACTION` — fire ACTION when the stream goes idle for Ns.
-            let dspec = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("timeout: missing duration (e.g. 5s, 500ms)")?;
-            let dur = parse_duration(dspec)
-                .ok_or_else(|| format!("timeout: `{dspec}` is not a duration (use Ns/Nms/Nm)"))?;
-            let action =
-                parse_bind_or_expect_action(&c.args[1..]).map_err(|e| format!("timeout: {e}"))?;
-            spec.timeouts.push(Timeout { dur, action });
-        } else if c.name == "out" {
-            let body = match c.args.first() {
-                Some(Arg::Block(b)) => b,
-                _ => return Err("out: expected `{ body }`".into()),
-            };
-            spec.out = Some(pipeline_from_body(body)?);
-        } else if c.name == "spawn" {
-            // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use its
-            // stdout as the stream (input source, in place of stdin).
-            let cmd = match c.args.first() {
-                Some(Arg::Block(b)) => block_to_shell(b),
-                _ => c.args.iter().filter_map(Arg::as_str).collect::<Vec<_>>().join(" "),
-            };
-            if cmd.trim().is_empty() {
-                return Err("spawn: missing command".into());
-            }
-            if stream_source_set(spec) {
-                return Err("spawn: a stream source is already declared".into());
-            }
-            spec.spawn = Some(cmd);
-        } else if c.name == "<" {
-            // `< FILE`: read FILE as the stream (input source, in place of stdin).
-            // An unquoted absolute path (`/var/log/x`) is truncated by the lexer's
-            // `/…/` regex branch — quote it (`< "/var/log/x"`).
-            let file = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .filter(|f| !f.trim().is_empty())
-                .ok_or("`<`: missing file path")?;
-            if stream_source_set(spec) {
-                return Err("`<`: a stream source is already declared".into());
-            }
-            spec.source_file = Some(file.to_string());
-        } else if c.name == "!" {
-            // `! CMD every Ns`: re-run CMD every interval. CMD may be bare words
-            // or a `{ … }` block; the interval follows the `every` keyword.
-            let evy = c
-                .args
-                .iter()
-                .position(|a| a.as_str() == Some("every"))
-                .ok_or("`!` source: expected `CMD every Ns`")?;
-            let dspec = c
-                .args
-                .get(evy + 1)
-                .and_then(Arg::as_str)
-                .ok_or("`!` source: `every` needs a duration (e.g. 1s, 500ms)")?;
-            let dur = parse_duration(dspec).ok_or_else(|| {
-                format!("`!` source: `{dspec}` is not a duration (use Ns/Nms/Nm)")
-            })?;
-            let cmd = match c.args.first() {
-                Some(Arg::Block(b)) => block_to_shell(b),
-                _ => c.args[..evy].iter().filter_map(Arg::as_str).collect::<Vec<_>>().join(" "),
-            };
-            if cmd.trim().is_empty() {
-                return Err("`!` source: missing command".into());
-            }
-            if stream_source_set(spec) {
-                return Err("`!`: a stream source is already declared".into());
-            }
-            spec.poll = Some((cmd, dur));
-        } else if c.name == "grid" {
-            let path = c
-                .args
-                .first()
-                .and_then(Arg::as_str)
-                .ok_or("grid: missing path")?;
-            let o = parse_opts(&c.args[1..]);
-            let opt = |k: &str, d: usize| {
-                o.get(k).and_then(|s: &String| s.parse::<usize>().ok()).unwrap_or(d)
-            };
-            // `-span` is a colspan shorthand; `-rowspan`/`-colspan` are explicit.
-            let colspan = opt("colspan", opt("span", 1)).max(1);
-            let rowspan = opt("rowspan", 1).max(1);
-            set_grid(spec, path, (opt("row", 0), opt("col", 0)), (rowspan, colspan))?;
-        } else if c.name.starts_with('.') {
-            if c.args.first().and_then(Arg::as_str) == Some("<-")
-                && c.args.get(1).and_then(Arg::as_str) == Some("in")
-            {
-                // `.path <- in` bind shorthand (empty pipeline).
-                let path = c.name.clone();
-                set_source(spec, &path, Source { pipeline: vec![] })?;
-            } else if c.args.first().and_then(Arg::as_str) == Some("configure") {
-                // `.path configure -max 200`: merge new opts into the target
-                // widget (build-time; later keys win). Runtime reconfigure via a
-                // bind/expect mutating live opts is a separate, larger feature.
-                let opts = parse_opts(&c.args[1..]);
-                configure_widget(spec, &c.name, opts)?;
-            }
-        }
-        // Unknown verbs are ignored.
-        Ok(())
+            // Unknown verbs are ignored.
+            Ok(())
         })();
         res.map_err(|e| e.or_span(c.pos, c.name.chars().count()))?;
     }
@@ -778,12 +819,58 @@ fn resolve_module(name: &str) -> Result<String, String> {
 
 /// Names of the bundled stdlib presets.
 pub const STDLIB_NAMES: &[&str] = &[
-    "nums", "logs", "http", "json", "table", "top", "docker", "k8s", "nginx", "git", "systemd",
-    "redis", "postgres", "mysql", "mongodb", "kafka", "prometheus", "elasticsearch", "rabbitmq",
-    "apache", "haproxy", "journalctl", "dmesg", "ps", "htop", "iostat", "vmstat", "ss", "dig",
-    "curl", "gh", "terraform", "aws", "gcloud", "azure", "ansible", "consul", "vault", "etcd",
-    "nomad", "envoy", "memcached", "varnish", "pgbouncer", "celery", "sidekiq", "gunicorn",
-    "supervisor", "fail2ban", "iptables", "conntrack", "sar",
+    "nums",
+    "logs",
+    "http",
+    "json",
+    "table",
+    "top",
+    "docker",
+    "k8s",
+    "nginx",
+    "git",
+    "systemd",
+    "redis",
+    "postgres",
+    "mysql",
+    "mongodb",
+    "kafka",
+    "prometheus",
+    "elasticsearch",
+    "rabbitmq",
+    "apache",
+    "haproxy",
+    "journalctl",
+    "dmesg",
+    "ps",
+    "htop",
+    "iostat",
+    "vmstat",
+    "ss",
+    "dig",
+    "curl",
+    "gh",
+    "terraform",
+    "aws",
+    "gcloud",
+    "azure",
+    "ansible",
+    "consul",
+    "vault",
+    "etcd",
+    "nomad",
+    "envoy",
+    "memcached",
+    "varnish",
+    "pgbouncer",
+    "celery",
+    "sidekiq",
+    "gunicorn",
+    "supervisor",
+    "fail2ban",
+    "iptables",
+    "conntrack",
+    "sar",
     "nats",
     "tomcat",
     "puma",
@@ -1117,7 +1204,11 @@ pub fn lib_dir() -> Option<std::path::PathBuf> {
 /// Install a spec `src` into `dir` as `NAME.arb` — the shareable-package unit.
 /// The spec is validated (parse + build) first; an invalid package is rejected
 /// so the library only ever holds runnable dashboards. Returns the written path.
-pub fn install_preset(dir: &std::path::Path, name: &str, src: &str) -> Result<std::path::PathBuf, String> {
+pub fn install_preset(
+    dir: &std::path::Path,
+    name: &str,
+    src: &str,
+) -> Result<std::path::PathBuf, String> {
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return Err(format!("install: invalid preset name `{name}`"));
     }
@@ -1198,474 +1289,501 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::Spec
         // source position, not the outer `source`/`out` command (the IIFE lets the
         // arms' `return Err` unwind to the per-command span attach below).
         let step = (|| -> Result<(), crate::err::SpecError> {
-        // jq front-end: a body command whose first token is a jq literal (starts
-        // with `.`, or a `select(…)`/`map(…)` stage) is translated to arb ops.
-        // Inside a `source` body a leading `.` is unambiguous — widget-path decls
-        // never appear here. The whole command text (verb + args) is reconstructed
-        // so the jq `|` pipe, which is not an arb separator, can be split by `jq`.
-        if c.name.starts_with('.')
-            || c.name.starts_with("select(")
-            || c.name.starts_with("map(")
-        {
-            let mut parts = vec![c.name.clone()];
-            parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
-            let jq_ops = crate::jq::translate(&parts.join(" "))?;
-            ops.extend(jq_ops);
-            return Ok(());
-        }
-        // xpath front-end: a body command whose first token is an xpath literal
-        // (`/…`, `//…`, or `@…`) translates to arb's Find/Attr/Text ops. Disjoint
-        // from the jq test above (`.`/`select(`/`map(`) and from native verbs
-        // (alnum), so the three coexist in one body unambiguously.
-        if c.name.starts_with('/') || c.name.starts_with('@') {
-            let mut parts = vec![c.name.clone()];
-            parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
-            let xp_ops = crate::xpath::translate(&parts.join(" "))?;
-            ops.extend(xp_ops);
-            return Ok(());
-        }
-        match c.name.as_str() {
-            "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
-            "in.csv" => {
-                saw_in = true;
-                ops.push(QueryOp::Csv);
+            // jq front-end: a body command whose first token is a jq literal (starts
+            // with `.`, or a `select(…)`/`map(…)` stage) is translated to arb ops.
+            // Inside a `source` body a leading `.` is unambiguous — widget-path decls
+            // never appear here. The whole command text (verb + args) is reconstructed
+            // so the jq `|` pipe, which is not an arb separator, can be split by `jq`.
+            if c.name.starts_with('.')
+                || c.name.starts_with("select(")
+                || c.name.starts_with("map(")
+            {
+                let mut parts = vec![c.name.clone()];
+                parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
+                let jq_ops = crate::jq::translate(&parts.join(" "))?;
+                ops.extend(jq_ops);
+                return Ok(());
             }
-            "in.tsv" => {
-                saw_in = true;
-                ops.push(QueryOp::Tsv);
+            // xpath front-end: a body command whose first token is an xpath literal
+            // (`/…`, `//…`, or `@…`) translates to arb's Find/Attr/Text ops. Disjoint
+            // from the jq test above (`.`/`select(`/`map(`) and from native verbs
+            // (alnum), so the three coexist in one body unambiguously.
+            if c.name.starts_with('/') || c.name.starts_with('@') {
+                let mut parts = vec![c.name.clone()];
+                parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
+                let xp_ops = crate::xpath::translate(&parts.join(" "))?;
+                ops.extend(xp_ops);
+                return Ok(());
             }
-            "in.yaml" | "in.yml" => {
-                saw_in = true;
-                ops.push(QueryOp::Yaml);
-            }
-            "in.toml" => {
-                saw_in = true;
-                ops.push(QueryOp::Toml);
-            }
-            "sel" => {
-                let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
-                let mut css_parts = Vec::new();
-                let mut attr = None;
-                let mut i = 0;
-                while i < words.len() {
-                    if words[i] == "-attr" {
-                        attr = words.get(i + 1).map(|s| s.to_string());
-                        i += 2;
-                    } else {
-                        css_parts.push(words[i]);
-                        i += 1;
+            match c.name.as_str() {
+                "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
+                "in.csv" => {
+                    saw_in = true;
+                    ops.push(QueryOp::Csv);
+                }
+                "in.tsv" => {
+                    saw_in = true;
+                    ops.push(QueryOp::Tsv);
+                }
+                "in.yaml" | "in.yml" => {
+                    saw_in = true;
+                    ops.push(QueryOp::Yaml);
+                }
+                "in.toml" => {
+                    saw_in = true;
+                    ops.push(QueryOp::Toml);
+                }
+                "sel" => {
+                    let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
+                    let mut css_parts = Vec::new();
+                    let mut attr = None;
+                    let mut i = 0;
+                    while i < words.len() {
+                        if words[i] == "-attr" {
+                            attr = words.get(i + 1).map(|s| s.to_string());
+                            i += 2;
+                        } else {
+                            css_parts.push(words[i]);
+                            i += 1;
+                        }
+                    }
+                    let css = css_parts.join(" ");
+                    if css.trim().is_empty() {
+                        return Err("sel: expected a CSS selector".into());
+                    }
+                    ops.push(QueryOp::Sel { css, attr });
+                }
+                "find" => {
+                    let css = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if css.trim().is_empty() {
+                        return Err("find: expected a tag/selector".into());
+                    }
+                    ops.push(QueryOp::Find(css));
+                }
+                "attr" => {
+                    let name = str_arg(c);
+                    if name.is_empty() {
+                        return Err("attr: expected an attribute name".into());
+                    }
+                    ops.push(QueryOp::Attr(name));
+                }
+                "text" => ops.push(QueryOp::Text),
+                "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
+                "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
+                "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
+                "fields" => {
+                    let cols: Vec<usize> = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .filter_map(|s| s.parse::<usize>().ok())
+                        .collect();
+                    if cols.is_empty() {
+                        return Err("fields: expected column numbers (e.g. fields 1 3)".into());
+                    }
+                    ops.push(QueryOp::Fields(cols));
+                }
+                "each" => ops.push(QueryOp::Each),
+                "count" => ops.push(QueryOp::Count),
+                "rate" => ops.push(QueryOp::Rate),
+                "tally" => ops.push(QueryOp::Tally),
+                "sum" => ops.push(QueryOp::Sum),
+                "min" => ops.push(QueryOp::Min),
+                "max" => ops.push(QueryOp::Max),
+                "avg" => ops.push(QueryOp::Avg),
+                "keys" => ops.push(QueryOp::Keys),
+                "vals" => ops.push(QueryOp::Vals),
+                "pick" => {
+                    let keys: Vec<String> = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    if keys.is_empty() {
+                        return Err("pick: expected one or more key names".into());
+                    }
+                    ops.push(QueryOp::Pick(keys));
+                }
+                "sort" => {
+                    let flags: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
+                    ops.push(QueryOp::Sort {
+                        numeric: flags.contains(&"-n"),
+                        reverse: flags.contains(&"-r"),
+                    });
+                }
+                "uniq" => ops.push(QueryOp::Uniq),
+                "rev" => ops.push(QueryOp::Rev),
+                "first" => ops.push(QueryOp::First),
+                "last" => ops.push(QueryOp::Last),
+                "upper" => ops.push(QueryOp::Upper),
+                "lower" => ops.push(QueryOp::Lower),
+                "trim" => ops.push(QueryOp::Trim),
+                "replace" => {
+                    let re = regex_arg(c)?;
+                    let to = c
+                        .args
+                        .get(1)
+                        .and_then(Arg::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    ops.push(QueryOp::Replace(re, to));
+                }
+                "join" => {
+                    let sep = c
+                        .args
+                        .first()
+                        .and_then(Arg::as_str)
+                        .unwrap_or(" ")
+                        .to_string();
+                    ops.push(QueryOp::Join(sep));
+                }
+                "nth" => ops.push(QueryOp::Nth(count_arg(c, "nth")?)),
+                "take" => ops.push(QueryOp::Take(count_arg(c, "take")?)),
+                "drop" => ops.push(QueryOp::Drop(count_arg(c, "drop")?)),
+                "calc" => {
+                    let src = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    ops.push(QueryOp::Calc(crate::expr::parse(&src)?));
+                }
+                "where" => {
+                    let src = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    ops.push(QueryOp::Where(crate::expr::parse(&src)?));
+                }
+                "map" => {
+                    let src = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    ops.push(QueryOp::Map(crate::expr::parse(&src)?));
+                }
+                "sort_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("sort_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::SortBy(field));
+                }
+                "unique_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("unique_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::UniqueBy(field));
+                }
+                "count_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("count_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::CountBy(field));
+                }
+                "group_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("group_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::GroupBy(field));
+                }
+                "min_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("min_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::MinBy(field));
+                }
+                "max_by" => {
+                    let field = str_arg(c);
+                    if field.is_empty() {
+                        return Err("max_by: expected a field name".into());
+                    }
+                    ops.push(QueryOp::MaxBy(field));
+                }
+                "has" => {
+                    let key = str_arg(c);
+                    if key.is_empty() {
+                        return Err("has: expected a key name".into());
+                    }
+                    ops.push(QueryOp::Has(key));
+                }
+                "entries" => {
+                    if !c.args.is_empty() {
+                        return Err("entries: takes no arguments".into());
+                    }
+                    ops.push(QueryOp::Entries);
+                }
+                "flatten" => ops.push(QueryOp::Flatten),
+                "add" => ops.push(QueryOp::Add),
+                "over" => {
+                    let n = c
+                        .args
+                        .first()
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .ok_or_else(|| "over: expected a numeric threshold".to_string())?;
+                    ops.push(QueryOp::Over(n));
+                }
+                "under" => {
+                    let n: f64 = str_arg(c)
+                        .parse()
+                        .map_err(|_| "under: expected a number".to_string())?;
+                    ops.push(QueryOp::Under(n));
+                }
+                "between" => {
+                    let lo = c
+                        .args
+                        .first()
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .ok_or_else(|| "between: expected two numbers A B".to_string())?;
+                    let hi = c
+                        .args
+                        .get(1)
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .ok_or_else(|| "between: expected two numbers A B".to_string())?;
+                    ops.push(QueryOp::Between(lo, hi));
+                }
+                "enumerate" => {
+                    ops.push(QueryOp::Enumerate);
+                }
+                "words" => {
+                    if !c.args.is_empty() {
+                        return Err("words: takes no arguments".into());
+                    }
+                    ops.push(QueryOp::Words);
+                }
+                "dedup" => ops.push(QueryOp::Dedup),
+                "tailn" => ops.push(QueryOp::Tailn(count_arg(c, "tailn")?)),
+                "pad" => {
+                    let n = count_arg(c, "pad")?;
+                    ops.push(QueryOp::Pad(n));
+                }
+                "lpad" => ops.push(QueryOp::Lpad(count_arg(c, "lpad")?)),
+                "grepf" => {
+                    let field = c
+                        .args
+                        .first()
+                        .and_then(Arg::as_str)
+                        .ok_or_else(|| "grepf: expected FIELD and /re/".to_string())?
+                        .to_string();
+                    let raw = c
+                        .args
+                        .get(1)
+                        .and_then(Arg::as_str)
+                        .ok_or_else(|| "grepf: expected a pattern".to_string())?;
+                    let pat = raw
+                        .strip_prefix('/')
+                        .and_then(|s| s.strip_suffix('/'))
+                        .unwrap_or(raw);
+                    let re =
+                        regex::Regex::new(pat).map_err(|e| format!("grepf: bad regex: {e}"))?;
+                    ops.push(QueryOp::Grepf(field, re));
+                }
+                "apply" => {
+                    let name = str_arg(c);
+                    let name = name.strip_prefix('.').unwrap_or(&name).to_string();
+                    ops.push(QueryOp::Apply(name));
+                }
+                "basename" => ops.push(QueryOp::Basename),
+                "dirname" => ops.push(QueryOp::Dirname),
+                "commafy" => ops.push(QueryOp::Commafy),
+                "bytes" => ops.push(QueryOp::Bytes),
+                "duration" => ops.push(QueryOp::Duration),
+                "flip" => {
+                    ops.push(QueryOp::Flip);
+                }
+                "b64" => {
+                    ops.push(QueryOp::B64);
+                }
+                "b64d" => {
+                    ops.push(QueryOp::B64d);
+                }
+                "hex" => ops.push(QueryOp::Hex),
+                "unhex" => {
+                    ops.push(QueryOp::Unhex);
+                }
+                "urlenc" => {
+                    ops.push(QueryOp::Urlenc);
+                }
+                "urldec" => {
+                    ops.push(QueryOp::Urldec);
+                }
+                "extract" => {
+                    ops.push(QueryOp::Extract(regex_arg(c)?));
+                }
+                "split" => {
+                    let delim = str_arg(c);
+                    if delim.is_empty() {
+                        return Err("split: expected a non-empty delimiter".into());
+                    }
+                    ops.push(QueryOp::Split(delim));
+                }
+                "substr" => {
+                    let args: Vec<usize> = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .filter_map(|s| s.parse::<usize>().ok())
+                        .collect();
+                    if args.len() != 2 {
+                        return Err("substr: expected two non-negative integer args A B".into());
+                    }
+                    ops.push(QueryOp::Substr(args[0], args[1]));
+                }
+                "chars" => ops.push(QueryOp::Chars),
+                "title" => {
+                    ops.push(QueryOp::Title);
+                }
+                "repeat" => {
+                    let n = count_arg(c, "repeat")?;
+                    ops.push(QueryOp::Repeat(n));
+                }
+                "set" => {
+                    let key = str_arg(c);
+                    if key.is_empty() {
+                        return Err("set: expected key and value".into());
+                    }
+                    let val = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_string();
+                    ops.push(QueryOp::Set(key, val));
+                }
+                "del" => {
+                    let key = str_arg(c);
+                    if key.is_empty() {
+                        return Err("del: expected a key name".into());
+                    }
+                    ops.push(QueryOp::Del(key));
+                }
+                "rename" => {
+                    let args: Vec<String> = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    if args.len() != 2 || args[0].is_empty() || args[1].is_empty() {
+                        return Err("rename: expected OLD NEW key names".into());
+                    }
+                    ops.push(QueryOp::Rename(args[0].clone(), args[1].clone()));
+                }
+                "default" => {
+                    let args: Vec<String> = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    if args.len() != 2 {
+                        return Err("default: expected exactly two args: key value".into());
+                    }
+                    ops.push(QueryOp::Default(args[0].clone(), args[1].clone()));
+                }
+                "merge" => {
+                    ops.push(QueryOp::Merge);
+                }
+                "floor" => {
+                    ops.push(QueryOp::Floor);
+                }
+                "ceil" => {
+                    ops.push(QueryOp::Ceil);
+                }
+                "clamp" => {
+                    let mut it = c.args.iter().filter_map(Arg::as_str);
+                    let lo = it.next().and_then(|s| s.parse::<f64>().ok());
+                    let hi = it.next().and_then(|s| s.parse::<f64>().ok());
+                    match (lo, hi) {
+                        (Some(lo), Some(hi)) => ops.push(QueryOp::Clamp(lo, hi)),
+                        _ => return Err("clamp: expected LO HI numeric args".into()),
                     }
                 }
-                let css = css_parts.join(" ");
-                if css.trim().is_empty() {
-                    return Err("sel: expected a CSS selector".into());
+                "contains" => ops.push(QueryOp::Contains(str_arg(c))),
+                "starts" => ops.push(QueryOp::Starts(str_arg(c))),
+                "ends" => ops.push(QueryOp::Ends(str_arg(c))),
+                "nonempty" => ops.push(QueryOp::Nonempty),
+                "numeric" => ops.push(QueryOp::Numeric),
+                "len" => ops.push(QueryOp::Len),
+                "wc" => ops.push(QueryOp::Wc),
+                "abs" => ops.push(QueryOp::Abs),
+                "round" => ops.push(QueryOp::Round),
+                "delta" => ops.push(QueryOp::Delta),
+                "cumsum" => ops.push(QueryOp::Cumsum),
+                "sma" => ops.push(QueryOp::Sma(count_arg(c, "sma")?)),
+                "ewma" => {
+                    let a = str_arg(c).parse::<f64>().map_err(|_| {
+                        "ewma: expected a smoothing factor 0–1 (e.g. 0.3)".to_string()
+                    })?;
+                    ops.push(QueryOp::Ewma(a));
                 }
-                ops.push(QueryOp::Sel { css, attr });
-            }
-            "find" => {
-                let css = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if css.trim().is_empty() {
-                    return Err("find: expected a tag/selector".into());
+                "prepend" => ops.push(QueryOp::Prepend(str_arg(c))),
+                "append" => ops.push(QueryOp::Append(str_arg(c))),
+                "cut" => {
+                    let delim = str_arg(c);
+                    let n = c
+                        .args
+                        .get(1)
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    ops.push(QueryOp::Cut(delim, n));
                 }
-                ops.push(QueryOp::Find(css));
-            }
-            "attr" => {
-                let name = str_arg(c);
-                if name.is_empty() {
-                    return Err("attr: expected an attribute name".into());
+                "median" => ops.push(QueryOp::Median),
+                "percentile" => {
+                    let p = str_arg(c)
+                        .parse::<f64>()
+                        .map_err(|_| "percentile: expected a number 0–100 (e.g. 99)".to_string())?;
+                    ops.push(QueryOp::Percentile(p));
                 }
-                ops.push(QueryOp::Attr(name));
-            }
-            "text" => ops.push(QueryOp::Text),
-            "match" | "grep" => ops.push(QueryOp::Match(regex_arg(c)?)),
-            "reject" | "grepv" => ops.push(QueryOp::Reject(regex_arg(c)?)),
-            "field" => ops.push(QueryOp::Field(field_sel(&c.args)?)),
-            "fields" => {
-                let cols: Vec<usize> = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .filter_map(|s| s.parse::<usize>().ok())
-                    .collect();
-                if cols.is_empty() {
-                    return Err("fields: expected column numbers (e.g. fields 1 3)".into());
+                "p50" => ops.push(QueryOp::Percentile(50.0)),
+                "p90" => ops.push(QueryOp::Percentile(90.0)),
+                "p95" => ops.push(QueryOp::Percentile(95.0)),
+                "p99" => ops.push(QueryOp::Percentile(99.0)),
+                "stddev" => ops.push(QueryOp::Stddev),
+                "range" => ops.push(QueryOp::Range),
+                "product" => ops.push(QueryOp::Product),
+                "distinct" => ops.push(QueryOp::Distinct),
+                "sample" => ops.push(QueryOp::Sample(count_arg(c, "sample")?)),
+                "bins" => ops.push(QueryOp::Bins(count_arg(c, "bins")?)),
+                "index" => ops.push(QueryOp::Index(count_arg(c, "index")?)),
+                "slice" => {
+                    let a = c
+                        .args
+                        .first()
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let b = c
+                        .args
+                        .get(1)
+                        .and_then(Arg::as_str)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(usize::MAX);
+                    ops.push(QueryOp::Slice(a, b));
                 }
-                ops.push(QueryOp::Fields(cols));
+                other => return Err(format!("source: unknown verb `{other}`").into()),
             }
-            "each" => ops.push(QueryOp::Each),
-            "count" => ops.push(QueryOp::Count),
-            "rate" => ops.push(QueryOp::Rate),
-            "tally" => ops.push(QueryOp::Tally),
-            "sum" => ops.push(QueryOp::Sum),
-            "min" => ops.push(QueryOp::Min),
-            "max" => ops.push(QueryOp::Max),
-            "avg" => ops.push(QueryOp::Avg),
-            "keys" => ops.push(QueryOp::Keys),
-            "vals" => ops.push(QueryOp::Vals),
-            "pick" => {
-                let keys: Vec<String> = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .map(str::to_string)
-                    .collect();
-                if keys.is_empty() {
-                    return Err("pick: expected one or more key names".into());
-                }
-                ops.push(QueryOp::Pick(keys));
-            }
-            "sort" => {
-                let flags: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
-                ops.push(QueryOp::Sort {
-                    numeric: flags.contains(&"-n"),
-                    reverse: flags.contains(&"-r"),
-                });
-            }
-            "uniq" => ops.push(QueryOp::Uniq),
-            "rev" => ops.push(QueryOp::Rev),
-            "first" => ops.push(QueryOp::First),
-            "last" => ops.push(QueryOp::Last),
-            "upper" => ops.push(QueryOp::Upper),
-            "lower" => ops.push(QueryOp::Lower),
-            "trim" => ops.push(QueryOp::Trim),
-            "replace" => {
-                let re = regex_arg(c)?;
-                let to = c
-                    .args
-                    .get(1)
-                    .and_then(Arg::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                ops.push(QueryOp::Replace(re, to));
-            }
-            "join" => {
-                let sep = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .unwrap_or(" ")
-                    .to_string();
-                ops.push(QueryOp::Join(sep));
-            }
-            "nth" => ops.push(QueryOp::Nth(count_arg(c, "nth")?)),
-            "take" => ops.push(QueryOp::Take(count_arg(c, "take")?)),
-            "drop" => ops.push(QueryOp::Drop(count_arg(c, "drop")?)),
-            "calc" => {
-                let src = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                ops.push(QueryOp::Calc(crate::expr::parse(&src)?));
-            }
-            "where" => {
-                let src = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                ops.push(QueryOp::Where(crate::expr::parse(&src)?));
-            }
-            "map" => {
-                let src = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                ops.push(QueryOp::Map(crate::expr::parse(&src)?));
-            }
-            "sort_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("sort_by: expected a field name".into());
-                }
-                ops.push(QueryOp::SortBy(field));
-            }
-            "unique_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("unique_by: expected a field name".into());
-                }
-                ops.push(QueryOp::UniqueBy(field));
-            }
-            "count_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("count_by: expected a field name".into());
-                }
-                ops.push(QueryOp::CountBy(field));
-            }
-            "group_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("group_by: expected a field name".into());
-                }
-                ops.push(QueryOp::GroupBy(field));
-            }
-            "min_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("min_by: expected a field name".into());
-                }
-                ops.push(QueryOp::MinBy(field));
-            }
-            "max_by" => {
-                let field = str_arg(c);
-                if field.is_empty() {
-                    return Err("max_by: expected a field name".into());
-                }
-                ops.push(QueryOp::MaxBy(field));
-            }
-            "has" => {
-                let key = str_arg(c);
-                if key.is_empty() {
-                    return Err("has: expected a key name".into());
-                }
-                ops.push(QueryOp::Has(key));
-            }
-            "entries" => {
-                if !c.args.is_empty() { return Err("entries: takes no arguments".into()); }
-                ops.push(QueryOp::Entries);
-            }
-            "flatten" => ops.push(QueryOp::Flatten),
-            "add" => ops.push(QueryOp::Add),
-            "over" => {
-                let n = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .ok_or_else(|| "over: expected a numeric threshold".to_string())?;
-                ops.push(QueryOp::Over(n));
-            }
-            "under" => {
-                let n: f64 = str_arg(c)
-                    .parse()
-                    .map_err(|_| "under: expected a number".to_string())?;
-                ops.push(QueryOp::Under(n));
-            }
-            "between" => {
-                let lo = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .ok_or_else(|| "between: expected two numbers A B".to_string())?;
-                let hi = c
-                    .args
-                    .get(1)
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .ok_or_else(|| "between: expected two numbers A B".to_string())?;
-                ops.push(QueryOp::Between(lo, hi));
-            }
-            "enumerate" => {
-                ops.push(QueryOp::Enumerate);
-            }
-            "words" => {
-                if !c.args.is_empty() { return Err("words: takes no arguments".into()); }
-                ops.push(QueryOp::Words);
-            }
-            "dedup" => ops.push(QueryOp::Dedup),
-            "tailn" => ops.push(QueryOp::Tailn(count_arg(c, "tailn")?)),
-            "pad" => {
-                let n = count_arg(c, "pad")?;
-                ops.push(QueryOp::Pad(n));
-            }
-            "lpad" => ops.push(QueryOp::Lpad(count_arg(c, "lpad")?)),
-            "grepf" => {
-                let field = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .ok_or_else(|| "grepf: expected FIELD and /re/".to_string())?
-                    .to_string();
-                let raw = c
-                    .args
-                    .get(1)
-                    .and_then(Arg::as_str)
-                    .ok_or_else(|| "grepf: expected a pattern".to_string())?;
-                let pat = raw
-                    .strip_prefix('/')
-                    .and_then(|s| s.strip_suffix('/'))
-                    .unwrap_or(raw);
-                let re = regex::Regex::new(pat).map_err(|e| format!("grepf: bad regex: {e}"))?;
-                ops.push(QueryOp::Grepf(field, re));
-            }
-            "apply" => {
-                let name = str_arg(c);
-                let name = name.strip_prefix('.').unwrap_or(&name).to_string();
-                ops.push(QueryOp::Apply(name));
-            }
-            "basename" => ops.push(QueryOp::Basename),
-            "dirname" => ops.push(QueryOp::Dirname),
-            "commafy" => ops.push(QueryOp::Commafy),
-            "bytes" => ops.push(QueryOp::Bytes),
-            "duration" => ops.push(QueryOp::Duration),
-            "flip" => {
-                ops.push(QueryOp::Flip);
-            }
-            "b64" => {
-                ops.push(QueryOp::B64);
-            }
-            "b64d" => {
-                ops.push(QueryOp::B64d);
-            }
-            "hex" => ops.push(QueryOp::Hex),
-            "unhex" => {
-                ops.push(QueryOp::Unhex);
-            }
-            "urlenc" => {
-                ops.push(QueryOp::Urlenc);
-            }
-            "urldec" => {
-                ops.push(QueryOp::Urldec);
-            }
-            "extract" => {
-                ops.push(QueryOp::Extract(regex_arg(c)?));
-            }
-            "split" => {
-                let delim = str_arg(c);
-                if delim.is_empty() { return Err("split: expected a non-empty delimiter".into()); }
-                ops.push(QueryOp::Split(delim));
-            }
-            "substr" => {
-                let args: Vec<usize> = c
-                    .args
-                    .iter()
-                    .filter_map(Arg::as_str)
-                    .filter_map(|s| s.parse::<usize>().ok())
-                    .collect();
-                if args.len() != 2 {
-                    return Err("substr: expected two non-negative integer args A B".into());
-                }
-                ops.push(QueryOp::Substr(args[0], args[1]));
-            }
-            "chars" => ops.push(QueryOp::Chars),
-            "title" => {
-                ops.push(QueryOp::Title);
-            }
-            "repeat" => {
-                let n = count_arg(c, "repeat")?;
-                ops.push(QueryOp::Repeat(n));
-            }
-            "set" => {
-                let key = str_arg(c);
-                if key.is_empty() { return Err("set: expected key and value".into()); }
-                let val = c.args.iter().filter_map(Arg::as_str).nth(1).unwrap_or("").to_string();
-                ops.push(QueryOp::Set(key, val));
-            }
-            "del" => {
-                let key = str_arg(c);
-                if key.is_empty() { return Err("del: expected a key name".into()); }
-                ops.push(QueryOp::Del(key));
-            }
-            "rename" => {
-                let args: Vec<String> = c.args.iter().filter_map(Arg::as_str).map(str::to_string).collect();
-                if args.len() != 2 || args[0].is_empty() || args[1].is_empty() {
-                    return Err("rename: expected OLD NEW key names".into());
-                }
-                ops.push(QueryOp::Rename(args[0].clone(), args[1].clone()));
-            }
-            "default" => {
-                let args: Vec<String> = c.args.iter().filter_map(Arg::as_str).map(str::to_string).collect();
-                if args.len() != 2 {
-                    return Err("default: expected exactly two args: key value".into());
-                }
-                ops.push(QueryOp::Default(args[0].clone(), args[1].clone()));
-            }
-            "merge" => {
-                ops.push(QueryOp::Merge);
-            }
-            "floor" => {
-                ops.push(QueryOp::Floor);
-            }
-            "ceil" => {
-                ops.push(QueryOp::Ceil);
-            }
-            "clamp" => {
-                let mut it = c.args.iter().filter_map(Arg::as_str);
-                let lo = it.next().and_then(|s| s.parse::<f64>().ok());
-                let hi = it.next().and_then(|s| s.parse::<f64>().ok());
-                match (lo, hi) {
-                    (Some(lo), Some(hi)) => ops.push(QueryOp::Clamp(lo, hi)),
-                    _ => return Err("clamp: expected LO HI numeric args".into()),
-                }
-            }
-            "contains" => ops.push(QueryOp::Contains(str_arg(c))),
-            "starts" => ops.push(QueryOp::Starts(str_arg(c))),
-            "ends" => ops.push(QueryOp::Ends(str_arg(c))),
-            "nonempty" => ops.push(QueryOp::Nonempty),
-            "numeric" => ops.push(QueryOp::Numeric),
-            "len" => ops.push(QueryOp::Len),
-            "wc" => ops.push(QueryOp::Wc),
-            "abs" => ops.push(QueryOp::Abs),
-            "round" => ops.push(QueryOp::Round),
-            "delta" => ops.push(QueryOp::Delta),
-            "cumsum" => ops.push(QueryOp::Cumsum),
-            "sma" => ops.push(QueryOp::Sma(count_arg(c, "sma")?)),
-            "ewma" => {
-                let a = str_arg(c)
-                    .parse::<f64>()
-                    .map_err(|_| "ewma: expected a smoothing factor 0–1 (e.g. 0.3)".to_string())?;
-                ops.push(QueryOp::Ewma(a));
-            }
-            "prepend" => ops.push(QueryOp::Prepend(str_arg(c))),
-            "append" => ops.push(QueryOp::Append(str_arg(c))),
-            "cut" => {
-                let delim = str_arg(c);
-                let n = c
-                    .args
-                    .get(1)
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(0);
-                ops.push(QueryOp::Cut(delim, n));
-            }
-            "median" => ops.push(QueryOp::Median),
-            "percentile" => {
-                let p = str_arg(c)
-                    .parse::<f64>()
-                    .map_err(|_| "percentile: expected a number 0–100 (e.g. 99)".to_string())?;
-                ops.push(QueryOp::Percentile(p));
-            }
-            "p50" => ops.push(QueryOp::Percentile(50.0)),
-            "p90" => ops.push(QueryOp::Percentile(90.0)),
-            "p95" => ops.push(QueryOp::Percentile(95.0)),
-            "p99" => ops.push(QueryOp::Percentile(99.0)),
-            "stddev" => ops.push(QueryOp::Stddev),
-            "range" => ops.push(QueryOp::Range),
-            "product" => ops.push(QueryOp::Product),
-            "distinct" => ops.push(QueryOp::Distinct),
-            "sample" => ops.push(QueryOp::Sample(count_arg(c, "sample")?)),
-            "bins" => ops.push(QueryOp::Bins(count_arg(c, "bins")?)),
-            "index" => ops.push(QueryOp::Index(count_arg(c, "index")?)),
-            "slice" => {
-                let a = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(1);
-                let b = c
-                    .args
-                    .get(1)
-                    .and_then(Arg::as_str)
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(usize::MAX);
-                ops.push(QueryOp::Slice(a, b));
-            }
-            other => return Err(format!("source: unknown verb `{other}`").into()),
-        }
-        Ok(())
+            Ok(())
         })();
         step.map_err(|e| e.or_span(c.pos, c.name.chars().count()))?;
     }
@@ -1705,7 +1823,8 @@ fn block_to_shell(cmds: &[Command]) -> String {
 /// this command's source span so a bad regex anchors to the offending verb (e.g.
 /// `match` inside a `source { … }` body), not the enclosing directive.
 fn regex_arg(c: &Command) -> Result<Regex, crate::err::SpecError> {
-    let span = |msg: String| crate::err::SpecError::from(msg).or_span(c.pos, c.name.chars().count());
+    let span =
+        |msg: String| crate::err::SpecError::from(msg).or_span(c.pos, c.name.chars().count());
     let raw = c
         .args
         .first()

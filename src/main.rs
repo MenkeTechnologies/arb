@@ -79,100 +79,156 @@ struct Cli {
     #[arg(help = "\x1b[32m//\x1b[0m Dashboard spec file (.arb)")]
     spec: Option<String>,
     /// Inline spec, e.g. `-e 'gauge .g -max 100; source .g { in; count }'`.
-    #[arg(short = 'e', long = "eval",
-        help = "\x1b[32m//\x1b[0m Inline spec, e.g. -e 'gauge .g -max 100; source .g { in; count }'")]
+    #[arg(
+        short = 'e',
+        long = "eval",
+        help = "\x1b[32m//\x1b[0m Inline spec, e.g. -e 'gauge .g -max 100; source .g { in; count }'"
+    )]
     eval: Option<String>,
     /// Run a preset / stdlib module by name, e.g. `-p logs` (== `import logs`).
-    #[arg(short = 'p', long = "preset",
-        help = "\x1b[32m//\x1b[0m Run a preset / stdlib module by name (== import NAME)")]
+    #[arg(
+        short = 'p',
+        long = "preset",
+        help = "\x1b[32m//\x1b[0m Run a preset / stdlib module by name (== import NAME)"
+    )]
     preset: Option<String>,
     /// List available presets (bundled stdlib + `~/.arb/lib`) and exit.
-    #[arg(short = 'l', long = "list",
-        help = "\x1b[32m//\x1b[0m List available presets (stdlib + ~/.arb/lib) and exit")]
+    #[arg(
+        short = 'l',
+        long = "list",
+        help = "\x1b[32m//\x1b[0m List available presets (stdlib + ~/.arb/lib) and exit"
+    )]
     list: bool,
     /// Save a spec as a named user preset in `~/.arb/lib`, then exit.
     /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
-    #[arg(long = "save", value_name = "NAME",
-        help = "\x1b[32m//\x1b[0m Save a spec (FILE or -e SRC) as a named user preset, then exit")]
+    #[arg(
+        long = "save",
+        value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Save a spec (FILE or -e SRC) as a named user preset, then exit"
+    )]
     save: Option<String>,
     /// Install a shared `.arb` spec into the preset library, then exit.
     /// `arb --install dash.arb` (name = file stem, or override with `--as NAME`).
-    #[arg(long = "install", value_name = "FILE",
-        help = "\x1b[32m//\x1b[0m Install a .arb spec into the preset library, then exit")]
+    #[arg(
+        long = "install",
+        value_name = "FILE",
+        help = "\x1b[32m//\x1b[0m Install a .arb spec into the preset library, then exit"
+    )]
     install: Option<String>,
     /// Name to install under (defaults to the file stem).
-    #[arg(long = "as", value_name = "NAME",
-        help = "\x1b[32m//\x1b[0m Name to install the spec under (default: file stem)")]
+    #[arg(
+        long = "as",
+        value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Name to install the spec under (default: file stem)"
+    )]
     install_as: Option<String>,
     /// Uninstall a named preset from the library, then exit.
-    #[arg(long = "uninstall", value_name = "NAME",
-        help = "\x1b[32m//\x1b[0m Remove a named preset from the library, then exit")]
+    #[arg(
+        long = "uninstall",
+        value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Remove a named preset from the library, then exit"
+    )]
     uninstall: Option<String>,
     /// List only installed (user library) presets, then exit.
-    #[arg(long = "installed",
-        help = "\x1b[32m//\x1b[0m List installed user-library presets, then exit")]
+    #[arg(
+        long = "installed",
+        help = "\x1b[32m//\x1b[0m List installed user-library presets, then exit"
+    )]
     installed: bool,
     /// Interactive REPL — author + test specs against a sample buffer.
-    #[arg(short = 'r', long = "repl",
-        help = "\x1b[32m//\x1b[0m Interactive REPL — author + test specs against a sample buffer")]
+    #[arg(
+        short = 'r',
+        long = "repl",
+        help = "\x1b[32m//\x1b[0m Interactive REPL — author + test specs against a sample buffer"
+    )]
     repl: bool,
     /// Generate a static HTML dashboard from the spec to stdout, then exit
     /// (`arb -p logs --html > dash.html`).
-    #[arg(long = "html",
-        help = "\x1b[32m//\x1b[0m Emit a static HTML dashboard from the spec to stdout, then exit")]
+    #[arg(
+        long = "html",
+        help = "\x1b[32m//\x1b[0m Emit a static HTML dashboard from the spec to stdout, then exit"
+    )]
     html: bool,
     /// Validate the spec (parse + build) and exit 0/1 without reading stdin.
-    #[arg(long = "check",
-        help = "\x1b[32m//\x1b[0m Validate the spec (parse + build) and exit 0/1, no stdin")]
+    #[arg(
+        long = "check",
+        help = "\x1b[32m//\x1b[0m Validate the spec (parse + build) and exit 0/1, no stdin"
+    )]
     check: bool,
     /// Serve the spec as a live browser dashboard (polls the stream over HTTP).
-    #[arg(long = "serve",
-        help = "\x1b[32m//\x1b[0m Serve the spec as a live browser dashboard on 127.0.0.1")]
+    #[arg(
+        long = "serve",
+        help = "\x1b[32m//\x1b[0m Serve the spec as a live browser dashboard on 127.0.0.1"
+    )]
     serve: bool,
     /// Port for `--serve` (0 = OS-assigned, printed on start).
-    #[arg(long = "port", value_name = "N", default_value_t = 8787,
-        help = "\x1b[32m//\x1b[0m Port for --serve (0 = pick a free port)")]
+    #[arg(
+        long = "port",
+        value_name = "N",
+        default_value_t = 8787,
+        help = "\x1b[32m//\x1b[0m Port for --serve (0 = pick a free port)"
+    )]
     port: u16,
     /// Run as a Language Server over stdio (JSON-RPC) for `.arb` specs.
-    #[arg(long = "lsp",
-        help = "\x1b[32m//\x1b[0m Run the LSP over stdio (diagnostics/completion/hover/…)")]
+    #[arg(
+        long = "lsp",
+        help = "\x1b[32m//\x1b[0m Run the LSP over stdio (diagnostics/completion/hover/…)"
+    )]
     lsp: bool,
     /// Run as a Debug Adapter over stdio: step the stream, regex breakpoints,
     /// inspect the paused line / stats / controls (launch with program+input).
-    #[arg(long = "dap",
-        help = "\x1b[32m//\x1b[0m Run the DAP over stdio (step the stream, regex breakpoints)")]
+    #[arg(
+        long = "dap",
+        help = "\x1b[32m//\x1b[0m Run the DAP over stdio (step the stream, regex breakpoints)"
+    )]
     dap: bool,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.
-    #[arg(long = "json",
-        help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines")]
+    #[arg(
+        long = "json",
+        help = "\x1b[32m//\x1b[0m With an out { } pipeline, emit JSON instead of plain lines"
+    )]
     json: bool,
     /// fzf select mode: interactively filter the stream and pick one line;
     /// the chosen line is printed to stdout on Enter (`vim $(ls | arb --fzf)`).
-    #[arg(long = "fzf",
-        help = "\x1b[32m//\x1b[0m fzf mode: filter + select one line, printed to stdout on Enter")]
+    #[arg(
+        long = "fzf",
+        help = "\x1b[32m//\x1b[0m fzf mode: filter + select one line, printed to stdout on Enter"
+    )]
     fzf: bool,
     /// Run a pipeline with arb as the interactive stage, e.g.
     /// `arb --fzf --run 'sudo find / | _ | grep foo'`. arb spawns the
     /// surrounding commands (each via `sh -c`, so globs/quotes work) and controls
     /// their fds: the producer's stdout feeds arb's stream, its stderr goes to a
     /// pane instead of corrupting the TUI.
-    #[arg(long = "run", value_name = "PIPELINE",
-        help = "\x1b[32m//\x1b[0m Run 'PROD | _ | CONS': arb spawns them, stderr -> pane")]
+    #[arg(
+        long = "run",
+        value_name = "PIPELINE",
+        help = "\x1b[32m//\x1b[0m Run 'PROD | _ | CONS': arb spawns them, stderr -> pane"
+    )]
     run: Option<String>,
     /// fzf preview: run this command for the line under the cursor (`{}` is the
     /// current line, shell-escaped) and show its output in a right pane, updated
     /// as you move. E.g. `arb --fzf --preview 'bat --color=always {}'`.
-    #[arg(long = "preview", value_name = "CMD",
-        help = "\x1b[32m//\x1b[0m fzf preview: run CMD on the cursor line ({}), output in a pane")]
+    #[arg(
+        long = "preview",
+        value_name = "CMD",
+        help = "\x1b[32m//\x1b[0m fzf preview: run CMD on the cursor line ({}), output in a pane"
+    )]
     preview: Option<String>,
     /// fzf prompt string (default `> `).
-    #[arg(long = "prompt", value_name = "STR",
-        help = "\x1b[32m//\x1b[0m fzf prompt string (default '> ')")]
+    #[arg(
+        long = "prompt",
+        value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf prompt string (default '> ')"
+    )]
     prompt: Option<String>,
     /// fzf header line shown above the list.
-    #[arg(long = "header", value_name = "STR",
-        help = "\x1b[32m//\x1b[0m fzf header line shown above the list")]
+    #[arg(
+        long = "header",
+        value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf header line shown above the list"
+    )]
     header: Option<String>,
 
     // ── fzf-compatibility flags (honored) ───────────────────────────────────
@@ -181,28 +237,47 @@ struct Cli {
     // from the args by `fzf_compat_args` before parsing; these are the ones arb acts on.
     /// fzf compat: exact substring match instead of fuzzy. (`-e` under `--fzf`
     /// is rewritten to this; arb's own `-e` is `--eval`.)
-    #[arg(long = "exact", help = "\x1b[32m//\x1b[0m fzf: exact substring match (not fuzzy)")]
+    #[arg(
+        long = "exact",
+        help = "\x1b[32m//\x1b[0m fzf: exact substring match (not fuzzy)"
+    )]
     exact: bool,
     /// fzf compat: don't sort by score — keep input order.
-    #[arg(long = "no-sort", help = "\x1b[32m//\x1b[0m fzf: keep input order (no score sort)")]
+    #[arg(
+        long = "no-sort",
+        help = "\x1b[32m//\x1b[0m fzf: keep input order (no score sort)"
+    )]
     no_sort: bool,
     /// fzf compat: start with this query in the filter.
-    #[arg(long = "query", value_name = "STR", help = "\x1b[32m//\x1b[0m fzf: initial query")]
+    #[arg(
+        long = "query",
+        value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf: initial query"
+    )]
     query: Option<String>,
     /// fzf compat: enable multi-select (arb always allows Tab-marking).
-    #[arg(short = 'm', long = "multi", help = "\x1b[32m//\x1b[0m fzf: multi-select (Tab marks)")]
+    #[arg(
+        short = 'm',
+        long = "multi",
+        help = "\x1b[32m//\x1b[0m fzf: multi-select (Tab marks)"
+    )]
     multi: bool,
     /// fzf height: render inline in N rows (or `N%` of the terminal) at the
     /// bottom instead of full-screen, keeping the scrollback. E.g. `--height 40%`.
-    #[arg(long = "height", value_name = "N|N%",
-        help = "\x1b[32m//\x1b[0m fzf height: inline in N rows or N% (not full-screen)")]
+    #[arg(
+        long = "height",
+        value_name = "N|N%",
+        help = "\x1b[32m//\x1b[0m fzf height: inline in N rows or N% (not full-screen)"
+    )]
     height: Option<String>,
     /// Preview command after `--`: re-run over arb's current post-filter output
     /// whenever the filter changes; its stdout+stderr show in a pane, always in
     /// sync with the filter and never touching the terminal.
     /// E.g. `find / | arb -- grep error`.
-    #[arg(last = true,
-        help = "\x1b[32m//\x1b[0m Preview `-- CMD …`: re-run over the filtered output, shown in a pane")]
+    #[arg(
+        last = true,
+        help = "\x1b[32m//\x1b[0m Preview `-- CMD …`: re-run over the filtered output, shown in a pane"
+    )]
     down: Vec<String>,
 }
 
@@ -216,12 +291,35 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
     // Cosmetic fzf flags with no arb effect: bool (dropped) and value-taking
     // (drop the flag AND its value, whether `--flag val` or `--flag=val`).
     const DROP_BOOL: &[&str] = &[
-        "--ansi", "--border", "--reverse", "--print-query", "--cycle", "--select-1", "-1",
-        "--exit-0", "-0", "--sort", "--extended", "--no-mouse", "--filepath-word", "--keep-right",
+        "--ansi",
+        "--border",
+        "--reverse",
+        "--print-query",
+        "--cycle",
+        "--select-1",
+        "-1",
+        "--exit-0",
+        "-0",
+        "--sort",
+        "--extended",
+        "--no-mouse",
+        "--filepath-word",
+        "--keep-right",
     ];
     const DROP_VALUE: &[&str] = &[
-        "--min-height", "--tiebreak", "--layout", "--info", "--preview-window", "--header-lines",
-        "--with-nth", "--nth", "--bind", "--color", "--pointer", "--marker", "--border-label",
+        "--min-height",
+        "--tiebreak",
+        "--layout",
+        "--info",
+        "--preview-window",
+        "--header-lines",
+        "--with-nth",
+        "--nth",
+        "--bind",
+        "--color",
+        "--pointer",
+        "--marker",
+        "--border-label",
         "--tabstop",
     ];
     let argv: Vec<String> = args.collect();
@@ -364,8 +462,7 @@ fn main() -> io::Result<()> {
     // Zero-config sniffing: with no spec and a piped stream (not fzf), peek the
     // first lines and auto-pick the matching stdlib preset. The peeked lines are
     // replayed into the stream so nothing is lost.
-    let sniff_ok =
-        no_spec_args && run_pipeline.is_none() && !cli.fzf && !io::stdin().is_terminal();
+    let sniff_ok = no_spec_args && run_pipeline.is_none() && !cli.fzf && !io::stdin().is_terminal();
     let mut prelude: Vec<String> = Vec::new();
     let sniffed: Option<&'static str> = if sniff_ok {
         prelude = peek_lines(SNIFF_LINES, SNIFF_DEADLINE_MS);
@@ -384,7 +481,9 @@ fn main() -> io::Result<()> {
         // the preset fails to build for any reason (never break zero-config).
         parser::parse(&format!("import {name}"))
             .and_then(|c| spec::build(&c))
-            .unwrap_or_else(|_| spec::build(&parser::parse(default_spec_src(false)).unwrap()).unwrap())
+            .unwrap_or_else(|_| {
+                spec::build(&parser::parse(default_spec_src(false)).unwrap()).unwrap()
+            })
     } else {
         match load_spec(&cli) {
             Ok(s) => s,
@@ -399,7 +498,11 @@ fn main() -> io::Result<()> {
     // `select` spec, and a hand-written `select .name` widget turns it on too — so
     // fzf mode is literally a one-widget DSL spec. The select widget's `-prompt`/
     // `-header` opts feed the prompt line and header when the flags weren't passed.
-    let fzf_mode = cli.fzf || spec.widgets.iter().any(|w| w.kind == spec::WidgetKind::Select);
+    let fzf_mode = cli.fzf
+        || spec
+            .widgets
+            .iter()
+            .any(|w| w.kind == spec::WidgetKind::Select);
     let (sel_prompt, sel_header) = spec
         .widgets
         .iter()
@@ -437,15 +540,21 @@ fn main() -> io::Result<()> {
     // A spec-level `spawn CMD` or `< FILE` (§7) is an input source like `--run`'s
     // producer; CLI `--run` wins, then `spawn`, then `< FILE` (as `cat -- FILE`).
     // Either way the producer's stdout feeds the stream in place of stdin.
-    let producer = run_producer
-        .or_else(|| spec.spawn.clone())
-        .or_else(|| spec.source_file.as_deref().map(|f| format!("cat -- {}", shell_quote(f))));
+    let producer = run_producer.or_else(|| spec.spawn.clone()).or_else(|| {
+        spec.source_file
+            .as_deref()
+            .map(|f| format!("cat -- {}", shell_quote(f)))
+    });
 
     // A `! CMD every Ns` poll source (§7) feeds the stream on a timer. `--run`
     // and spec `spawn`/`< file` all populate `producer` and are mutually
     // exclusive with `poll` at the spec level, so `poll` only matters when no
     // producer took over (lets CLI `--run` win, mirroring `spawn`).
-    let poll = if producer.is_some() { None } else { spec.poll.clone() };
+    let poll = if producer.is_some() {
+        None
+    } else {
+        spec.poll.clone()
+    };
 
     let needs_stdin =
         fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
@@ -489,13 +598,15 @@ fn main() -> io::Result<()> {
     // INTERACTIVE out — `input` widgets feeding `out { … apply .x }` — keeps the
     // TUI up so typing reshapes the piped stream live (the megafilter/map). With
     // no controlling tty (CI) it falls through, instead of crashing on the reader.
-    let interactive_out = spec.widgets.iter().any(|w| w.kind == spec::WidgetKind::Input)
+    let interactive_out = spec
+        .widgets
+        .iter()
+        .any(|w| w.kind == spec::WidgetKind::Input)
         && spec
             .out
             .as_ref()
             .is_some_and(|ops| ops.iter().any(|op| matches!(op, QueryOp::Apply(_))));
-    let downstream_reshape =
-        spec.out.is_some() && !io::stdout().is_terminal() && !interactive_out;
+    let downstream_reshape = spec.out.is_some() && !io::stdout().is_terminal() && !interactive_out;
     if tui::events_available() && !downstream_reshape {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
@@ -510,7 +621,10 @@ fn main() -> io::Result<()> {
                 }
             }
         } else if let Some((cmd, dur)) = &poll {
-            Some((poll_producer(cmd, *dur, state.clone()), "stderr".to_string()))
+            Some((
+                poll_producer(cmd, *dur, state.clone()),
+                "stderr".to_string(),
+            ))
         } else {
             if needs_stdin {
                 // Tee the live filtered stream to stdout (only when piped onward,
@@ -520,7 +634,13 @@ fn main() -> io::Result<()> {
                 // resolving `apply .name` against live `input` values — so typing
                 // in a control reshapes the downstream pipe in real time.
                 let tee = !fzf_mode && !io::stdout().is_terminal();
-                spawn_reader(state.clone(), tee, controls.clone(), spec.out.clone(), prelude.clone());
+                spawn_reader(
+                    state.clone(),
+                    tee,
+                    controls.clone(),
+                    spec.out.clone(),
+                    prelude.clone(),
+                );
             }
             None
         };
@@ -542,24 +662,36 @@ fn main() -> io::Result<()> {
             None
         } else {
             let dstate = Arc::new(Mutex::new(StreamState::new()));
-            spawn_preview(down_cmd.clone(), state.clone(), controls.clone(), dstate.clone());
+            spawn_preview(
+                down_cmd.clone(),
+                state.clone(),
+                controls.clone(),
+                dstate.clone(),
+            );
             let label = consumer.clone().unwrap_or_else(|| cli.down.join(" "));
             Some((dstate, label))
         };
         {
             let mut c = controls.lock().unwrap();
             // Flags win; else fall back to the `select` widget's -prompt/-header.
-            c.prompt = cli.prompt.clone().or(sel_prompt.clone()).unwrap_or_default();
-            c.header = cli.header.clone().or(sel_header.clone()).unwrap_or_default();
+            c.prompt = cli
+                .prompt
+                .clone()
+                .or(sel_prompt.clone())
+                .unwrap_or_default();
+            c.header = cli
+                .header
+                .clone()
+                .or(sel_header.clone())
+                .unwrap_or_default();
             // Form mode: register every control widget (input/filter/facet/
             // slider/check) so keys edit them and `apply`/`where … .name` resolve
             // against their live values. `control_meta` carries slider/facet
             // bounds + the facet cursor, parallel to `inputs`.
             for w in spec.widgets.iter().filter(|w| w.kind.is_control()) {
                 let name = w.path.trim_start_matches('.').to_string();
-                let opt_f = |k: &str, d: f64| {
-                    w.opts.get(k).map(|s| spec::parse_scalar(s)).unwrap_or(d)
-                };
+                let opt_f =
+                    |k: &str, d: f64| w.opts.get(k).map(|s| spec::parse_scalar(s)).unwrap_or(d);
                 let kind = tui::control_kind(w.kind);
                 let (min, max, step) = (opt_f("min", 0.0), opt_f("max", 100.0), opt_f("step", 1.0));
                 // Initial value: slider = min, check = "0", others = "".
@@ -571,10 +703,22 @@ fn main() -> io::Result<()> {
                 let opts: Vec<String> = w
                     .opts
                     .get("opts")
-                    .map(|s| s.split(',').filter(|x| !x.is_empty()).map(String::from).collect())
+                    .map(|s| {
+                        s.split(',')
+                            .filter(|x| !x.is_empty())
+                            .map(String::from)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 c.inputs.push((name, init));
-                c.control_meta.push(tui::ControlMeta { kind, min, max, step, opts, cursor: 0 });
+                c.control_meta.push(tui::ControlMeta {
+                    kind,
+                    min,
+                    max,
+                    step,
+                    opts,
+                    cursor: 0,
+                });
             }
             // Key bindings (`bind C-<letter> …`) drive the same input values.
             c.binds = spec.binds.clone();
@@ -589,7 +733,15 @@ fn main() -> io::Result<()> {
             // `-m`/`--multi` is accepted for compat; arb always allows Tab-marking.
             let _ = cli.multi;
         }
-        let outcome = tui::run(&spec, state, controls.clone(), down_pane, err_pane, fzf_mode, cli.height.clone());
+        let outcome = tui::run(
+            &spec,
+            state,
+            controls.clone(),
+            down_pane,
+            err_pane,
+            fzf_mode,
+            cli.height.clone(),
+        );
         if fzf_mode {
             // On Enter (submit) emit the selection (marked lines, or the cursor
             // line). With a `| CONS` consumer, pipe the selection through it first
@@ -598,9 +750,7 @@ fn main() -> io::Result<()> {
             let c = controls.lock().unwrap();
             if c.submit {
                 let out = match &consumer {
-                    Some(cons) => {
-                        run_capture(&["sh".into(), "-c".into(), cons.clone()], &c.result)
-                    }
+                    Some(cons) => run_capture(&["sh".into(), "-c".into(), cons.clone()], &c.result),
                     None => c.result.clone(),
                 };
                 for line in out {
@@ -712,7 +862,11 @@ fn passthrough(prelude: &[String]) -> io::Result<()> {
     let stdin = io::stdin();
     let mut out = io::stdout().lock();
     // Replay any sniff-peeked lines first, then the rest of stdin.
-    let feed = prelude.iter().cloned().map(Ok::<_, io::Error>).chain(stdin.lock().lines());
+    let feed = prelude
+        .iter()
+        .cloned()
+        .map(Ok::<_, io::Error>)
+        .chain(stdin.lock().lines());
     for line in feed {
         let l = match line {
             Ok(l) => l,
@@ -816,8 +970,12 @@ fn save_preset(name: &str, cli: &Cli) -> io::Result<()> {
         eprintln!("arb: --save: invalid spec: {e}");
         std::process::exit(1);
     }
-    let dir = spec::lib_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no preset library (set HOME or ARB_LIB)"))?;
+    let dir = spec::lib_dir().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "no preset library (set HOME or ARB_LIB)",
+        )
+    })?;
     match spec::install_preset(&dir, name, &src) {
         Ok(path) => {
             eprintln!("arb: saved preset `{name}` -> {}", path.display());
@@ -837,7 +995,12 @@ fn install_cmd(file: &str, as_name: Option<&str>) -> io::Result<()> {
         .map_err(|e| io::Error::new(e.kind(), format!("{file}: {e}")))?;
     let name = as_name
         .map(str::to_string)
-        .or_else(|| std::path::Path::new(file).file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .or_else(|| {
+            std::path::Path::new(file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     let Some(dir) = spec::lib_dir() else {
         eprintln!("arb: no preset library (set HOME or ARB_LIB)");
@@ -881,7 +1044,11 @@ const SNIFF_DEADLINE_MS: i32 = 150;
 /// True if stdin (fd 0) has data ready to read within `timeout_ms` — so peeking
 /// never blocks on an idle producer (e.g. `tail -f empty.log | arb`).
 fn stdin_ready(timeout_ms: i32) -> bool {
-    let mut pfd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+    let mut pfd = libc::pollfd {
+        fd: 0,
+        events: libc::POLLIN,
+        revents: 0,
+    };
     // SAFETY: single valid pollfd, count 1.
     unsafe { libc::poll(&mut pfd, 1, timeout_ms) > 0 && (pfd.revents & libc::POLLIN) != 0 }
 }
@@ -977,8 +1144,14 @@ fn spawn_producer(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let out = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
-    let err = child.stderr.take().ok_or_else(|| io::Error::other("no stderr"))?;
+    let out = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("no stdout"))?;
+    let err = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("no stderr"))?;
     drop(child);
     spawn_source_reader(out, state);
     let err_state = Arc::new(Mutex::new(StreamState::new()));
@@ -1058,7 +1231,10 @@ fn spawn_reader(
         let mut resolved: Vec<QueryOp> = Vec::new();
         let mut resolved_ok = false;
         // Replay any sniff-peeked lines first, then the rest of stdin.
-        let feed = prelude.into_iter().map(Ok::<_, io::Error>).chain(io::stdin().lock().lines());
+        let feed = prelude
+            .into_iter()
+            .map(Ok::<_, io::Error>)
+            .chain(io::stdin().lock().lines());
         for line in feed {
             let l = match line {
                 Ok(l) => l,
@@ -1286,15 +1462,30 @@ mod tests {
     #[test]
     fn strips_cosmetic_fzf_flags_keeps_honored() {
         let out = run(&[
-            "arb", "--fzf", "--ansi", "--border", "--reverse", "--preview-window", "down:3",
-            "--min-height", "15", "--no-sort", "--query", "foo",
+            "arb",
+            "--fzf",
+            "--ansi",
+            "--border",
+            "--reverse",
+            "--preview-window",
+            "down:3",
+            "--min-height",
+            "15",
+            "--no-sort",
+            "--query",
+            "foo",
         ]);
         // Cosmetic bool + value flags gone; honored ones remain.
-        assert!(!out.iter().any(|a| a == "--ansi" || a == "--border" || a == "--reverse"));
+        assert!(!out
+            .iter()
+            .any(|a| a == "--ansi" || a == "--border" || a == "--reverse"));
         assert!(!out.iter().any(|a| a == "--preview-window" || a == "down:3"));
         assert!(!out.iter().any(|a| a == "--min-height" || a == "15"));
         assert!(out.iter().any(|a| a == "--no-sort"));
-        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"foo".to_string()));
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"foo".to_string())
+        );
         assert!(out.iter().any(|a| a == "--fzf"));
     }
 
@@ -1315,9 +1506,14 @@ mod tests {
     fn drops_fzf_short_value_flags() {
         // `-n2..,..` (attached) and `-n 2..` (separate) and `-d:` are dropped.
         let out = run(&["arb", "--fzf", "-n2..,..", "-d", ":", "--query", "q"]);
-        assert!(!out.iter().any(|a| a.starts_with("-n") || a.starts_with("-d")));
+        assert!(!out
+            .iter()
+            .any(|a| a.starts_with("-n") || a.starts_with("-d")));
         assert!(!out.iter().any(|a| a == "2.." || a == ":"));
-        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"q".to_string()));
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"q".to_string())
+        );
     }
 
     #[test]
@@ -1325,6 +1521,9 @@ mod tests {
         // `--flag=val` carries its value, so nothing after it should be consumed.
         let out = run(&["arb", "--fzf", "--preview-window=right:50%", "--query", "q"]);
         assert!(!out.iter().any(|a| a.starts_with("--preview-window")));
-        assert_eq!(out.iter().position(|a| a == "--query").map(|i| &out[i + 1]), Some(&"q".to_string()));
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"q".to_string())
+        );
     }
 }

@@ -20,7 +20,10 @@ fn install_list_and_uninstall_preset() {
     assert!(path.exists());
 
     let listed = list_user_presets(&dir);
-    assert_eq!(listed, vec![("mydash".to_string(), "my dashboard".to_string())]);
+    assert_eq!(
+        listed,
+        vec![("mydash".to_string(), "my dashboard".to_string())]
+    );
 
     assert!(uninstall_preset(&dir, "mydash").unwrap());
     assert!(!uninstall_preset(&dir, "mydash").unwrap()); // already gone
@@ -47,8 +50,14 @@ fn parses_widgets_with_opts() {
     assert_eq!(s.widgets.len(), 2);
     assert_eq!(s.widgets[0].path, ".a");
     assert_eq!(s.widgets[0].kind, WidgetKind::Text);
-    assert_eq!(s.widgets[0].opts.get("label").map(String::as_str), Some("hi"));
-    assert_eq!(s.widgets[0].opts.get("max").map(String::as_str), Some("100"));
+    assert_eq!(
+        s.widgets[0].opts.get("label").map(String::as_str),
+        Some("hi")
+    );
+    assert_eq!(
+        s.widgets[0].opts.get("max").map(String::as_str),
+        Some("100")
+    );
     assert_eq!(s.widgets[1].kind, WidgetKind::Tail);
 }
 
@@ -141,7 +150,10 @@ fn all_stdlib_presets_build() {
 
 #[test]
 fn list_presets_includes_stdlib() {
-    let names: Vec<String> = arb::spec::list_presets().into_iter().map(|(n, _)| n).collect();
+    let names: Vec<String> = arb::spec::list_presets()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
     for want in ["nums", "logs", "http", "json", "table", "top"] {
         assert!(names.contains(&want.to_string()), "missing preset {want}");
     }
@@ -235,9 +247,17 @@ fn import_as_nested_namespaces_compose() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("b.arb"), "gauge .x -max 1").unwrap();
     let a = dir.join("a.arb");
-    std::fs::write(&a, format!("import \"{}\" as b", dir.join("b.arb").display())).unwrap();
+    std::fs::write(
+        &a,
+        format!("import \"{}\" as b", dir.join("b.arb").display()),
+    )
+    .unwrap();
     let s = build(&parse(&format!("import \"{}\" as a", a.display())).unwrap()).unwrap();
-    assert!(s.widgets.iter().any(|w| w.path == ".a.b.x"), "paths: {:?}", s.widgets.iter().map(|w| &w.path).collect::<Vec<_>>());
+    assert!(
+        s.widgets.iter().any(|w| w.path == ".a.b.x"),
+        "paths: {:?}",
+        s.widgets.iter().map(|w| &w.path).collect::<Vec<_>>()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -352,7 +372,11 @@ fn where_match_control_filters_by_substring() {
     // `where match(.q)` keeps lines containing the filter control's text.
     let s = build(&parse("filter .q\nout { in; where match(.q) }").unwrap()).unwrap();
     let ops = s.out.as_ref().unwrap();
-    let data = vec!["apple".to_string(), "banana".to_string(), "grape".to_string()];
+    let data = vec![
+        "apple".to_string(),
+        "banana".to_string(),
+        "grape".to_string(),
+    ];
     let mut inputs = HashMap::new();
     inputs.insert("q".to_string(), "ap".to_string());
     match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
@@ -371,7 +395,8 @@ fn where_match_control_filters_by_substring() {
 fn where_field_in_set_filters_by_facet_selection() {
     use std::collections::HashMap;
     // `where level in .lv` keeps records whose `level` is in the selected set.
-    let s = build(&parse("facet .lv -field level\nout { in; where level in .lv }").unwrap()).unwrap();
+    let s =
+        build(&parse("facet .lv -field level\nout { in; where level in .lv }").unwrap()).unwrap();
     let ops = s.out.as_ref().unwrap();
     let data = vec![
         r#"{"level":"info","m":"a"}"#.to_string(),
@@ -382,7 +407,13 @@ fn where_field_in_set_filters_by_facet_selection() {
     inputs.insert("lv".to_string(), "error,warn".to_string());
     match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
         arb::query::QueryResult::Lines(ls) => {
-            assert_eq!(ls, vec![r#"{"level":"error","m":"b"}"#, r#"{"level":"warn","m":"c"}"#]);
+            assert_eq!(
+                ls,
+                vec![
+                    r#"{"level":"error","m":"b"}"#,
+                    r#"{"level":"warn","m":"c"}"#
+                ]
+            );
         }
         other => panic!("got {other:?}"),
     }
@@ -398,7 +429,8 @@ fn where_field_in_set_filters_by_facet_selection() {
 fn where_combines_string_and_set_predicates() {
     use std::collections::HashMap;
     let s = build(
-        &parse("filter .q\nfacet .lv -field level\nout { in; where match(.q) and level in .lv }").unwrap(),
+        &parse("filter .q\nfacet .lv -field level\nout { in; where match(.q) and level in .lv }")
+            .unwrap(),
     )
     .unwrap();
     let ops = s.out.as_ref().unwrap();
@@ -411,7 +443,9 @@ fn where_combines_string_and_set_predicates() {
     inputs.insert("q".to_string(), "disk".to_string());
     inputs.insert("lv".to_string(), "error".to_string());
     match arb::query::eval(&arb::spec::resolve_pipeline(ops, &inputs), &data, 0.0) {
-        arb::query::QueryResult::Lines(ls) => assert_eq!(ls, vec![r#"{"level":"error","m":"disk"}"#]),
+        arb::query::QueryResult::Lines(ls) => {
+            assert_eq!(ls, vec![r#"{"level":"error","m":"disk"}"#])
+        }
         other => panic!("got {other:?}"),
     }
 }
@@ -430,7 +464,10 @@ fn parse_scalar_numbers_durations_sizes() {
 #[test]
 fn control_widgets_recognized() {
     let s = build(
-        &parse("filter .q\nfacet .lv -opts {a b c}\nslider .th -min 0 -max 5\ncheck .on -label live").unwrap(),
+        &parse(
+            "filter .q\nfacet .lv -opts {a b c}\nslider .th -min 0 -max 5\ncheck .on -label live",
+        )
+        .unwrap(),
     )
     .unwrap();
     use arb::spec::WidgetKind;
@@ -439,7 +476,10 @@ fn control_widgets_recognized() {
     assert_eq!(s.widgets[2].kind, WidgetKind::Slider);
     assert_eq!(s.widgets[3].kind, WidgetKind::Check);
     // facet -opts {a b c} lands as a comma-joined option list.
-    assert_eq!(s.widgets[1].opts.get("opts").map(String::as_str), Some("a,b,c"));
+    assert_eq!(
+        s.widgets[1].opts.get("opts").map(String::as_str),
+        Some("a,b,c")
+    );
 }
 
 #[test]
@@ -462,7 +502,10 @@ fn select_projection_maps_display_while_keeping_original() {
     let g = build(&parse("select .f\nsource .f { in; grep /err/ }").unwrap()).unwrap();
     let gp = &g.widgets[0].source.as_ref().unwrap().pipeline;
     assert!(arb::tui::project_line(gp, "all ok").is_empty());
-    assert_eq!(arb::tui::project_line(gp, "an err here"), vec!["an err here"]);
+    assert_eq!(
+        arb::tui::project_line(gp, "an err here"),
+        vec!["an err here"]
+    );
 
     // Empty pipeline = identity.
     assert_eq!(arb::tui::project_line(&[], "raw line"), vec!["raw line"]);
@@ -494,10 +537,16 @@ fn parses_beep_alert_exec_flash_actions() {
     .unwrap();
     assert_eq!(s.binds[0].action, BindAction::Beep);
     assert_eq!(s.binds[1].action, BindAction::Alert("disk full".into()));
-    assert_eq!(s.expects[0].action, BindAction::Exec("notify-send arb".into()));
+    assert_eq!(
+        s.expects[0].action,
+        BindAction::Exec("notify-send arb".into())
+    );
     assert_eq!(
         s.expects[1].action,
-        BindAction::Flash { widget: "log".into(), color: "red".into() }
+        BindAction::Flash {
+            widget: "log".into(),
+            color: "red".into()
+        }
     );
     // exec with no command, and an unknown action, are rejected.
     assert!(build(&parse("bind C-x exec").unwrap()).is_err());
@@ -508,7 +557,10 @@ fn parses_beep_alert_exec_flash_actions() {
 fn bind_routes_mouse_and_resize_events() {
     use arb::spec::{BindAction, MouseTrigger};
     let s = build(
-        &parse("bind <Click> quit\nbind <Resize> beep\nbind C-q quit\nbind <Click> { alert x; beep }").unwrap(),
+        &parse(
+            "bind <Click> quit\nbind <Resize> beep\nbind C-q quit\nbind <Click> { alert x; beep }",
+        )
+        .unwrap(),
     )
     .unwrap();
     // <Click> -> mouse_binds, <Resize> -> resize_binds, C-q -> binds (routing
@@ -585,7 +637,10 @@ fn bind_parses_set_and_quit() {
     assert_eq!(s.binds[0].key, 0x15);
     assert_eq!(
         s.binds[0].action,
-        BindAction::SetInput { name: "x".into(), value: "upper".into() }
+        BindAction::SetInput {
+            name: "x".into(),
+            value: "upper".into()
+        }
     );
     assert_eq!(s.binds[1].key, 0x11); // Ctrl-Q
     assert_eq!(s.binds[1].action, BindAction::Quit);
@@ -597,7 +652,10 @@ fn bind_set_joins_multi_token_value() {
     let s = build(&parse("input .x\nbind C-f set .x field 2").unwrap()).unwrap();
     assert_eq!(
         s.binds[0].action,
-        BindAction::SetInput { name: "x".into(), value: "field 2".into() }
+        BindAction::SetInput {
+            name: "x".into(),
+            value: "field 2".into()
+        }
     );
 }
 
@@ -610,17 +668,18 @@ fn bind_rejects_non_control_key_and_unknown_action() {
 #[test]
 fn expect_parses_pattern_and_action() {
     use arb::spec::BindAction;
-    let s = build(
-        &parse("input .x\nexpect /ERROR/ set .x upper\nexpect /shutdown/ quit").unwrap(),
-    )
-    .unwrap();
+    let s = build(&parse("input .x\nexpect /ERROR/ set .x upper\nexpect /shutdown/ quit").unwrap())
+        .unwrap();
     assert_eq!(s.expects.len(), 2);
     // The pattern is a real regex fired against stream lines.
     assert!(s.expects[0].pattern.is_match("2026 ERROR disk full"));
     assert!(!s.expects[0].pattern.is_match("all good"));
     assert_eq!(
         s.expects[0].action,
-        BindAction::SetInput { name: "x".into(), value: "upper".into() }
+        BindAction::SetInput {
+            name: "x".into(),
+            value: "upper".into()
+        }
     );
     assert!(s.expects[1].pattern.is_match("graceful shutdown"));
     assert_eq!(s.expects[1].action, BindAction::Quit);
@@ -636,17 +695,18 @@ fn expect_block_two_clauses_two_expects() {
     use arb::spec::BindAction;
     // Tcl Expect's multi-pattern block: one `expect { }`, several /re/ ACTION
     // clauses, each becoming a live Expect.
-    let s = build(
-        &parse("tail .log\nexpect { /panic/ quit\n/5\\d\\d/ flash .log red }").unwrap(),
-    )
-    .unwrap();
+    let s = build(&parse("tail .log\nexpect { /panic/ quit\n/5\\d\\d/ flash .log red }").unwrap())
+        .unwrap();
     assert_eq!(s.expects.len(), 2);
     assert!(s.expects[0].pattern.is_match("kernel panic"));
     assert_eq!(s.expects[0].action, BindAction::Quit);
     assert!(s.expects[1].pattern.is_match("503 unavailable"));
     assert_eq!(
         s.expects[1].action,
-        BindAction::Flash { widget: "log".into(), color: "red".into() }
+        BindAction::Flash {
+            widget: "log".into(),
+            color: "red".into()
+        }
     );
 }
 
@@ -712,8 +772,8 @@ fn search_binding_sets_widget_search_key() {
     // fzf `--nth`: `search .f { in; field 1 }` derives the fuzzy key while the row
     // shows/emits the full display. The search pipeline is stored on the widget
     // and applies per line via project_line.
-    let s = build(&parse("select .f\nsource .f { in }\nsearch .f { in; field 1 }").unwrap())
-        .unwrap();
+    let s =
+        build(&parse("select .f\nsource .f { in }\nsearch .f { in; field 1 }").unwrap()).unwrap();
     let w = &s.widgets[0];
     assert!(w.source.is_some());
     let key = w.search.as_ref().expect("search pipeline stored");
@@ -733,12 +793,20 @@ fn search_binding_unknown_widget_errors() {
 #[test]
 fn select_widget_parses_with_opts() {
     // fzf-as-a-spec: a `select` widget with prompt/header opts.
-    let s = build(&parse("select .files -prompt \"pick> \" -header files\nsource .files { in }").unwrap())
-        .unwrap();
+    let s = build(
+        &parse("select .files -prompt \"pick> \" -header files\nsource .files { in }").unwrap(),
+    )
+    .unwrap();
     assert_eq!(s.widgets.len(), 1);
     assert_eq!(s.widgets[0].kind, WidgetKind::Select);
-    assert_eq!(s.widgets[0].opts.get("prompt").map(String::as_str), Some("pick> "));
-    assert_eq!(s.widgets[0].opts.get("header").map(String::as_str), Some("files"));
+    assert_eq!(
+        s.widgets[0].opts.get("prompt").map(String::as_str),
+        Some("pick> ")
+    );
+    assert_eq!(
+        s.widgets[0].opts.get("header").map(String::as_str),
+        Some("files")
+    );
     assert!(s.widgets[0].source.is_some());
 }
 
@@ -788,7 +856,10 @@ fn spawn_coexists_with_source_pipeline() {
     // A `spawn` source and a widget `source { … }` pipeline are independent.
     let s = build(&parse("tail .t\nspawn seq 1 3\nsource .t { in; count }").unwrap()).unwrap();
     assert_eq!(s.spawn.as_deref(), Some("seq 1 3"));
-    assert!(s.widgets.iter().any(|w| w.path == ".t" && w.source.is_some()));
+    assert!(s
+        .widgets
+        .iter()
+        .any(|w| w.path == ".t" && w.source.is_some()));
 }
 
 #[test]
@@ -858,14 +929,20 @@ fn file_from_import_merges() {
 fn poll_sets_source() {
     use std::time::Duration;
     let s = build(&parse("tail .t\n! vmstat 1 every 1s").unwrap()).unwrap();
-    assert_eq!(s.poll.as_ref().unwrap(), &("vmstat 1".to_string(), Duration::from_secs(1)));
+    assert_eq!(
+        s.poll.as_ref().unwrap(),
+        &("vmstat 1".to_string(), Duration::from_secs(1))
+    );
 }
 
 #[test]
 fn poll_block_form() {
     use std::time::Duration;
     let s = build(&parse("tail .t\n! { ps aux } every 2s").unwrap()).unwrap();
-    assert_eq!(s.poll.as_ref().unwrap(), &("ps aux".to_string(), Duration::from_secs(2)));
+    assert_eq!(
+        s.poll.as_ref().unwrap(),
+        &("ps aux".to_string(), Duration::from_secs(2))
+    );
 }
 
 #[test]

@@ -56,13 +56,25 @@ pub type Index = BTreeMap<String, IndexEntry>;
 pub fn parse_index(s: &str) -> Result<Index, String> {
     let v: serde_json::Value =
         serde_json::from_str(s).map_err(|e| format!("registry index: {e}"))?;
-    let obj = v.as_object().ok_or("registry index: expected a JSON object")?;
+    let obj = v
+        .as_object()
+        .ok_or("registry index: expected a JSON object")?;
     let mut idx = Index::new();
     for (name, entry) in obj {
-        let get = |k: &str| entry.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let get = |k: &str| {
+            entry
+                .get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         idx.insert(
             name.clone(),
-            IndexEntry { repo: get("repo"), version: get("version"), desc: get("desc") },
+            IndexEntry {
+                repo: get("repo"),
+                version: get("version"),
+                desc: get("desc"),
+            },
         );
     }
     Ok(idx)
@@ -72,9 +84,7 @@ pub fn parse_index(s: &str) -> Result<Index, String> {
 pub fn search_index<'a>(idx: &'a Index, q: &str) -> Vec<(&'a String, &'a IndexEntry)> {
     let q = q.to_lowercase();
     idx.iter()
-        .filter(|(name, e)| {
-            name.to_lowercase().contains(&q) || e.desc.to_lowercase().contains(&q)
-        })
+        .filter(|(name, e)| name.to_lowercase().contains(&q) || e.desc.to_lowercase().contains(&q))
         .collect()
 }
 
@@ -95,11 +105,16 @@ pub struct Manifest {
 pub fn parse_manifest(s: &str) -> Result<Manifest, String> {
     let v: toml::Value = s.parse().map_err(|e| format!("arb.toml: {e}"))?;
     let pkg = v.get("package").ok_or("arb.toml: missing [package]")?;
-    let str_of = |t: &toml::Value, k: &str| t.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let str_of =
+        |t: &toml::Value, k: &str| t.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let list_of = |t: Option<&toml::Value>, k: &str| -> Vec<String> {
         t.and_then(|x| x.get(k))
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let mut deps = BTreeMap::new();
@@ -149,7 +164,9 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    let out = cmd.output().map_err(|e| format!("git: {e} (is git installed?)"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("git: {e} (is git installed?)"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -170,8 +187,9 @@ fn validate_package(dir: &Path, name: &str) -> Result<Manifest, String> {
             "package `{name}` declares native exports ([exports.native]) — not yet supported (script packages only)"
         ));
     }
-    let entry = read_pkg_module(dir.parent().unwrap_or(dir), name)
-        .ok_or_else(|| format!("package `{name}`: no entry module (NAME.arb / main.arb / [exports])"))?;
+    let entry = read_pkg_module(dir.parent().unwrap_or(dir), name).ok_or_else(|| {
+        format!("package `{name}`: no entry module (NAME.arb / main.arb / [exports])")
+    })?;
     let cmds = crate::parser::parse(&entry)?;
     crate::spec::build(&cmds)?;
     Ok(manifest)
@@ -181,10 +199,15 @@ fn validate_package(dir: &Path, name: &str) -> Result<Manifest, String> {
 pub fn install_from(repo: &str, name: &str, pkg_dir: &Path) -> Result<PathBuf, String> {
     let dest = pkg_dir.join(name);
     if dest.exists() {
-        return Err(format!("`{name}` is already installed (uninstall it first)"));
+        return Err(format!(
+            "`{name}` is already installed (uninstall it first)"
+        ));
     }
     std::fs::create_dir_all(pkg_dir).map_err(|e| format!("pkg dir: {e}"))?;
-    run_git(&["clone", "--depth", "1", repo, &dest.to_string_lossy()], None)?;
+    run_git(
+        &["clone", "--depth", "1", repo, &dest.to_string_lossy()],
+        None,
+    )?;
     match validate_package(&dest, name) {
         Ok(_) => Ok(dest),
         Err(e) => {
@@ -212,7 +235,9 @@ fn install_rec(
     if pkg_dir.join(name).exists() {
         return Ok(()); // skip an already-installed dep
     }
-    let entry = idx.get(name).ok_or_else(|| format!("package `{name}` not in the registry"))?;
+    let entry = idx
+        .get(name)
+        .ok_or_else(|| format!("package `{name}` not in the registry"))?;
     install_from(&entry.repo, name, pkg_dir)?; // clone + validate + rollback-if-broken
     installed.push(name.to_string());
     // Re-read the freshly-installed manifest to discover its deps.
@@ -229,14 +254,25 @@ fn install_rec(
 /// Verify the index version of `dep` satisfies `requirer`'s `[deps]` constraint.
 /// An unknown dep is left to `install_rec` (which errors on the missing entry);
 /// an unparseable index version we don't own is a warning, not a hard failure.
-fn check_constraint(requirer: &str, dep: &str, constraint: &str, idx: &Index) -> Result<(), String> {
-    let Some(entry) = idx.get(dep) else { return Ok(()) };
-    let req = semver::VersionReq::parse(constraint)
-        .map_err(|e| format!("package `{requirer}`: bad version constraint `{constraint}` for `{dep}`: {e}"))?;
+fn check_constraint(
+    requirer: &str,
+    dep: &str,
+    constraint: &str,
+    idx: &Index,
+) -> Result<(), String> {
+    let Some(entry) = idx.get(dep) else {
+        return Ok(());
+    };
+    let req = semver::VersionReq::parse(constraint).map_err(|e| {
+        format!("package `{requirer}`: bad version constraint `{constraint}` for `{dep}`: {e}")
+    })?;
     let ver = match semver::Version::parse(&entry.version) {
         Ok(v) => v,
         Err(_) => {
-            eprintln!("arb: registry version `{}` for `{dep}` is not semver — skipping check", entry.version);
+            eprintln!(
+                "arb: registry version `{}` for `{dep}` is not semver — skipping check",
+                entry.version
+            );
             return Ok(());
         }
     };
@@ -253,7 +289,9 @@ fn check_constraint(requirer: &str, dep: &str, constraint: &str, idx: &Index) ->
 /// (a failed dep never leaves a partial tree; `arb install` never half-succeeds).
 pub fn install_with_index(name: &str, idx: &Index, pkg_dir: &Path) -> Result<PathBuf, String> {
     if pkg_dir.join(name).exists() {
-        return Err(format!("`{name}` is already installed (uninstall it first)"));
+        return Err(format!(
+            "`{name}` is already installed (uninstall it first)"
+        ));
     }
     let mut visited = BTreeSet::new();
     let mut installed: Vec<String> = Vec::new();
@@ -285,7 +323,16 @@ pub fn update_registry() -> Result<(), String> {
     if reg.join(".git").is_dir() {
         run_git(&["pull", "--ff-only"], Some(&reg))?;
     } else {
-        run_git(&["clone", "--depth", "1", &registry_url(), &reg.to_string_lossy()], None)?;
+        run_git(
+            &[
+                "clone",
+                "--depth",
+                "1",
+                &registry_url(),
+                &reg.to_string_lossy(),
+            ],
+            None,
+        )?;
     }
     Ok(())
 }
@@ -303,8 +350,12 @@ pub fn uninstall(name: &str) -> Result<bool, String> {
 
 /// Installed packages as (name, description).
 pub fn list_installed() -> Vec<(String, String)> {
-    let Some(dir) = pkg_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Some(dir) = pkg_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for e in entries.flatten() {
         if !e.path().is_dir() {
@@ -406,12 +457,21 @@ pub fn publish_with(
     };
     idx.insert(
         m.name.clone(),
-        IndexEntry { repo: repo.to_string(), version: m.version.clone(), desc: m.desc.clone() },
+        IndexEntry {
+            repo: repo.to_string(),
+            version: m.version.clone(),
+            desc: m.desc.clone(),
+        },
     );
-    std::fs::write(&idx_path, serialize_index(&idx)).map_err(|e| format!("publish: write index: {e}"))?;
+    std::fs::write(&idx_path, serialize_index(&idx))
+        .map_err(|e| format!("publish: write index: {e}"))?;
     run_git(&["add", "index.json"], Some(reg_dir))?;
     run_git(
-        &["commit", "-m", &format!("publish {} v{}", m.name, m.version)],
+        &[
+            "commit",
+            "-m",
+            &format!("publish {} v{}", m.name, m.version),
+        ],
         Some(reg_dir),
     )?;
     if push {
@@ -539,13 +599,15 @@ pub fn dispatch(args: &[String]) -> Option<i32> {
                 1
             }
         }),
-        "publish" => Some(match publish(Path::new("."), args.get(1).map(String::as_str)) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("arb: {e}");
-                1
-            }
-        }),
+        "publish" => Some(
+            match publish(Path::new("."), args.get(1).map(String::as_str)) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("arb: {e}");
+                    1
+                }
+            },
+        ),
         _ => None,
     }
 }

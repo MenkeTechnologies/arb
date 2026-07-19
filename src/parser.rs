@@ -22,7 +22,10 @@ fn parse_at(src: &str, base: usize) -> Result<Vec<Command>, SpecError> {
         match t {
             Tok::Sep => {
                 if !cur.is_empty() {
-                    cmds.push(finish(std::mem::take(&mut cur), cur_pos.take().unwrap_or(base))?);
+                    cmds.push(finish(
+                        std::mem::take(&mut cur),
+                        cur_pos.take().unwrap_or(base),
+                    )?);
                 }
             }
             Tok::Word(w) => {
@@ -50,9 +53,17 @@ fn finish(mut args: Vec<Arg>, pos: usize) -> Result<Command, SpecError> {
     let name = match args.first() {
         Some(Arg::Word(s)) | Some(Arg::Str(s)) => s.clone(),
         Some(Arg::Block(_)) => {
-            return Err(SpecError { msg: "command cannot start with a block".into(), span: Some((pos, pos + 1)) })
+            return Err(SpecError {
+                msg: "command cannot start with a block".into(),
+                span: Some((pos, pos + 1)),
+            })
         }
-        None => return Err(SpecError { msg: "empty command".into(), span: Some((pos, pos + 1)) }),
+        None => {
+            return Err(SpecError {
+                msg: "empty command".into(),
+                span: Some((pos, pos + 1)),
+            })
+        }
     };
     args.remove(0);
     Ok(Command { name, args, pos })

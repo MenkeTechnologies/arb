@@ -57,7 +57,11 @@ fn bundle_js(webui: &Path) -> String {
         .collect();
     names.sort();
     // Stable order: FIRST (in listed order, if present) then the remaining files.
-    let mut order: Vec<String> = FIRST.iter().map(|s| s.to_string()).filter(|n| names.contains(n)).collect();
+    let mut order: Vec<String> = FIRST
+        .iter()
+        .map(|s| s.to_string())
+        .filter(|n| names.contains(n))
+        .collect();
     for n in &names {
         if !order.contains(n) {
             order.push(n.clone());

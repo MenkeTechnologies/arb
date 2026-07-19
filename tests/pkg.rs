@@ -22,13 +22,23 @@ fn make_pkg_repo(dir: &Path, name: &str, arb_toml: &str, entry_arb: &str) -> Str
         &["add", "-A"],
         &["commit", "-qm", "init"],
     ] {
-        assert!(Command::new("git").args(args).current_dir(dir).output().unwrap().status.success());
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+            .status
+            .success());
     }
     format!("file://{}", dir.display())
 }
 
 fn entry(repo: &str) -> IndexEntry {
-    IndexEntry { repo: repo.into(), version: "0.1.0".into(), desc: String::new() }
+    IndexEntry {
+        repo: repo.into(),
+        version: "0.1.0".into(),
+        desc: String::new(),
+    }
 }
 
 fn tmp(label: &str) -> PathBuf {
@@ -39,7 +49,11 @@ fn tmp(label: &str) -> PathBuf {
 }
 
 fn have_git() -> bool {
-    Command::new("git").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 #[test]
@@ -118,7 +132,10 @@ fn read_pkg_module_resolves_entry_forms() {
     // NAME/sub.arb
     std::fs::create_dir_all(root.join("gamma")).unwrap();
     std::fs::write(root.join("gamma/sub.arb"), "list .g").unwrap();
-    assert_eq!(read_pkg_module(&root, "gamma/sub").as_deref(), Some("list .g"));
+    assert_eq!(
+        read_pkg_module(&root, "gamma/sub").as_deref(),
+        Some("list .g")
+    );
     // unknown
     assert_eq!(read_pkg_module(&root, "nope"), None);
     let _ = std::fs::remove_dir_all(&root);
@@ -132,10 +149,20 @@ fn install_from_clones_validates_and_rolls_back() {
     }
     // Build a local git repo that is a valid arb package.
     let src_repo = tmp("srcrepo");
-    std::fs::write(src_repo.join("arb.toml"), "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        src_repo.join("arb.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     std::fs::write(src_repo.join("foo.arb"), "gauge .g -max 100").unwrap();
     let git = |args: &[&str]| {
-        assert!(Command::new("git").args(args).current_dir(&src_repo).output().unwrap().status.success());
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&src_repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
     };
     git(&["init", "-q"]);
     git(&["config", "user.email", "t@e"]);
@@ -148,14 +175,27 @@ fn install_from_clones_validates_and_rolls_back() {
     let pkgdir = tmp("pkgs");
     let dest = install_from(&repo_url, "foo", &pkgdir).expect("install ok");
     assert!(dest.join("foo.arb").exists());
-    assert_eq!(read_pkg_module(&pkgdir, "foo").as_deref(), Some("gauge .g -max 100"));
+    assert_eq!(
+        read_pkg_module(&pkgdir, "foo").as_deref(),
+        Some("gauge .g -max 100")
+    );
 
     // A package whose entry spec fails to build is rolled back (dir removed).
     let bad_repo = tmp("badrepo");
-    std::fs::write(bad_repo.join("arb.toml"), "[package]\nname = \"bad\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        bad_repo.join("arb.toml"),
+        "[package]\nname = \"bad\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     std::fs::write(bad_repo.join("bad.arb"), "gauge foo").unwrap(); // invalid: path must start with '.'
     let bgit = |args: &[&str]| {
-        assert!(Command::new("git").args(args).current_dir(&bad_repo).output().unwrap().status.success());
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&bad_repo)
+            .output()
+            .unwrap()
+            .status
+            .success());
     };
     bgit(&["init", "-q"]);
     bgit(&["config", "user.email", "t@e"]);
@@ -164,7 +204,10 @@ fn install_from_clones_validates_and_rolls_back() {
     bgit(&["commit", "-qm", "init"]);
     let bad_url = format!("file://{}", bad_repo.display());
     assert!(install_from(&bad_url, "bad", &pkgdir).is_err());
-    assert!(!pkgdir.join("bad").exists(), "broken package must be rolled back");
+    assert!(
+        !pkgdir.join("bad").exists(),
+        "broken package must be rolled back"
+    );
 
     for d in [&src_repo, &pkgdir, &bad_repo] {
         let _ = std::fs::remove_dir_all(d);
@@ -184,7 +227,12 @@ fn install_with_index_resolves_transitive_deps() {
         "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"0.1\"\n",
         "gauge .g -max 100",
     );
-    let url_b = make_pkg_repo(&base.join("b"), "arb-b", "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n", "tail .b");
+    let url_b = make_pkg_repo(
+        &base.join("b"),
+        "arb-b",
+        "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n",
+        "tail .b",
+    );
     let mut idx = Index::new();
     idx.insert("arb-a".into(), entry(&url_a));
     idx.insert("arb-b".into(), entry(&url_b));
@@ -193,7 +241,10 @@ fn install_with_index_resolves_transitive_deps() {
     // Both the package and its dep land, and the dep resolves as a module tier.
     assert!(pkgdir.join("arb-a/arb-a.arb").exists());
     assert!(pkgdir.join("arb-b/arb-b.arb").exists());
-    assert_eq!(read_pkg_module(&pkgdir, "arb-b").as_deref(), Some("tail .b"));
+    assert_eq!(
+        read_pkg_module(&pkgdir, "arb-b").as_deref(),
+        Some("tail .b")
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -210,14 +261,25 @@ fn install_with_index_rejects_incompatible_dep_version() {
         "[package]\nname = \"arb-a\"\nversion = \"0.1.0\"\n\n[deps]\narb-b = \"2\"\n",
         "gauge .g",
     );
-    let url_b = make_pkg_repo(&base.join("b"), "arb-b", "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n", "tail .b");
+    let url_b = make_pkg_repo(
+        &base.join("b"),
+        "arb-b",
+        "[package]\nname = \"arb-b\"\nversion = \"0.1.0\"\n",
+        "tail .b",
+    );
     let mut idx = Index::new();
     idx.insert("arb-a".into(), entry(&url_a));
     idx.insert("arb-b".into(), entry(&url_b)); // version 0.1.0
     let pkgdir = base.join("pkgs");
     let e = install_with_index("arb-a", &idx, &pkgdir).unwrap_err();
-    assert!(e.contains("requires") && e.contains("arb-b") && e.contains("0.1.0"), "err: {e}");
-    assert!(!pkgdir.join("arb-a").exists(), "rejected install must roll back");
+    assert!(
+        e.contains("requires") && e.contains("arb-b") && e.contains("0.1.0"),
+        "err: {e}"
+    );
+    assert!(
+        !pkgdir.join("arb-a").exists(),
+        "rejected install must roll back"
+    );
     // A compatible constraint (^0.1) installs fine.
     let url_a2 = make_pkg_repo(
         &base.join("a2"),
@@ -246,7 +308,10 @@ fn install_with_index_missing_dep_errors_and_rolls_back() {
     idx.insert("arb-c".into(), entry(&url_c)); // "ghost" deliberately absent
     let pkgdir = base.join("pkgs");
     let e = install_with_index("arb-c", &idx, &pkgdir).unwrap_err();
-    assert!(e.contains("ghost") && e.contains("not in the registry"), "err: {e}");
+    assert!(
+        e.contains("ghost") && e.contains("not in the registry"),
+        "err: {e}"
+    );
     // Failed-dep run is rolled back — no partial tree.
     assert!(!pkgdir.join("arb-c").exists());
     let _ = std::fs::remove_dir_all(&base);
@@ -268,7 +333,10 @@ fn install_rejects_native_exports() {
     idx.insert("arb-native".into(), entry(&url));
     let pkgdir = base.join("pkgs");
     let e = install_with_index("arb-native", &idx, &pkgdir).unwrap_err();
-    assert!(e.contains("native exports") && e.contains("not yet supported"), "err: {e}");
+    assert!(
+        e.contains("native exports") && e.contains("not yet supported"),
+        "err: {e}"
+    );
     assert!(!pkgdir.join("arb-native").exists()); // rolled back
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -304,7 +372,13 @@ fn install_with_index_cycle_terminates() {
 /// Run `git args` in `cwd`, asserting success (test helper).
 fn git_ok(cwd: &Path, args: &[&str]) {
     assert!(
-        Command::new("git").args(args).current_dir(cwd).output().unwrap().status.success(),
+        Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+            .status
+            .success(),
         "git {args:?} failed in {}",
         cwd.display()
     );
@@ -315,10 +389,21 @@ fn git_ok(cwd: &Path, args: &[&str]) {
 fn make_bare_registry(root: &Path, seed_index: &str) -> String {
     let bare = root.join("registry.git");
     std::fs::create_dir_all(&bare).unwrap();
-    git_ok(&bare, &["-c", "init.defaultBranch=main", "init", "-q", "--bare"]);
+    git_ok(
+        &bare,
+        &["-c", "init.defaultBranch=main", "init", "-q", "--bare"],
+    );
     // Seed via a throwaway clone.
     let seed = root.join("seed");
-    git_ok(root, &["clone", "-q", &bare.to_string_lossy(), &seed.to_string_lossy()]);
+    git_ok(
+        root,
+        &[
+            "clone",
+            "-q",
+            &bare.to_string_lossy(),
+            &seed.to_string_lossy(),
+        ],
+    );
     std::fs::write(seed.join("index.json"), seed_index).unwrap();
     for a in [
         &["config", "user.email", "t@e"][..],

@@ -12,7 +12,11 @@ fn diagnose_maps_parse_and_build_errors() {
     // Build error: widget path must start with '.'.
     let d = diagnose("gauge foo");
     assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("must start with"), "got: {}", d[0].message);
+    assert!(
+        d[0].message.contains("must start with"),
+        "got: {}",
+        d[0].message
+    );
     assert_eq!(d[0].line, 0);
     // Build error: missing widget path.
     assert!(!diagnose("text").is_empty());
@@ -33,7 +37,7 @@ fn diagnostics_anchor_to_the_real_line_and_column() {
     let d2 = diagnose("tail .t\nlist .l\ntext .x {");
     assert_eq!(d2[0].line, 2);
     assert_eq!(d2[0].start_col, 8); // the `{` char index within the line
-    // Single-line error still reports line 0 (fallback + offset math agree).
+                                    // Single-line error still reports line 0 (fallback + offset math agree).
     assert_eq!(diagnose("gauge foo")[0].line, 0);
 }
 
@@ -47,7 +51,7 @@ fn diagnostics_anchor_to_the_nested_verb_not_the_outer_directive() {
     assert!(d[0].message.contains("bad regex"), "got: {}", d[0].message);
     assert_eq!(d[0].line, 3); // the `match` line, not `source` (line 1)
     assert_eq!(d[0].start_col, 2); // the `match` verb column
-    // An unknown nested verb also anchors to the nested verb's line.
+                                   // An unknown nested verb also anchors to the nested verb's line.
     let d2 = diagnose("tail .x\nsource .x {\n  in\n  bogusverb\n}");
     assert_eq!(d2[0].line, 3);
 }
@@ -68,7 +72,10 @@ fn framing_round_trips() {
 #[test]
 fn initialize_advertises_capabilities() {
     let mut s = Server::default();
-    let reply = handle(&mut s, &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }));
+    let reply = handle(
+        &mut s,
+        &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+    );
     assert_eq!(reply.len(), 1);
     let caps = &reply[0]["result"]["capabilities"];
     assert_eq!(caps["documentSymbolProvider"], true);
@@ -90,7 +97,10 @@ fn didopen_bad_spec_publishes_diagnostics() {
     assert_eq!(out[0]["method"], "textDocument/publishDiagnostics");
     let diags = out[0]["params"]["diagnostics"].as_array().unwrap();
     assert_eq!(diags.len(), 1);
-    assert!(diags[0]["message"].as_str().unwrap().contains("must start with"));
+    assert!(diags[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("must start with"));
 }
 
 #[test]
@@ -144,7 +154,10 @@ fn didchange_updates_stored_document() {
 #[test]
 fn unknown_request_is_method_not_found() {
     let mut s = Server::default();
-    let reply = handle(&mut s, &json!({ "jsonrpc": "2.0", "id": 9, "method": "textDocument/frobnicate" }));
+    let reply = handle(
+        &mut s,
+        &json!({ "jsonrpc": "2.0", "id": 9, "method": "textDocument/frobnicate" }),
+    );
     assert_eq!(reply[0]["error"]["code"], -32601);
     // Unknown notification (no id) is silently ignored.
     assert!(handle(&mut s, &json!({ "jsonrpc": "2.0", "method": "$/whatever" })).is_empty());
@@ -155,14 +168,20 @@ fn dap_initialize_advertises_stepping() {
     let mut seq = 0i64;
     // initialize -> a success response (with real stepping capabilities) + the
     // `initialized` event.
-    let out = arb::dap::handle(&json!({ "seq": 1, "type": "request", "command": "initialize" }), &mut seq);
+    let out = arb::dap::handle(
+        &json!({ "seq": 1, "type": "request", "command": "initialize" }),
+        &mut seq,
+    );
     assert_eq!(out[0]["type"], "response");
     assert_eq!(out[0]["success"], true);
     assert_eq!(out[0]["body"]["supportsConditionalBreakpoints"], true);
     assert_eq!(out[0]["body"]["supportsConfigurationDoneRequest"], true);
     assert_eq!(out[1]["event"], "initialized");
     // scopes are the three arb state sources (Stream/Controls/Pipeline).
-    let sc = arb::dap::handle(&json!({ "seq": 2, "type": "request", "command": "scopes" }), &mut seq);
+    let sc = arb::dap::handle(
+        &json!({ "seq": 2, "type": "request", "command": "scopes" }),
+        &mut seq,
+    );
     let names: Vec<&str> = sc[0]["body"]["scopes"]
         .as_array()
         .unwrap()
@@ -171,6 +190,9 @@ fn dap_initialize_advertises_stepping() {
         .collect();
     assert_eq!(names, ["Stream", "Controls", "Pipeline"]);
     // A stepping request is now a real, supported response.
-    let step = arb::dap::handle(&json!({ "seq": 3, "type": "request", "command": "stepIn" }), &mut seq);
+    let step = arb::dap::handle(
+        &json!({ "seq": 3, "type": "request", "command": "stepIn" }),
+        &mut seq,
+    );
     assert_eq!(step[0]["success"], true);
 }

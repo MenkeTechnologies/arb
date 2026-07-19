@@ -218,7 +218,9 @@ fn parse_bracket(
             key.push(n);
             Ok(())
         }
-        _ => Err(format!("jq: unsupported subscript in `{s}` (slices/negative indices are not supported)")),
+        _ => Err(format!(
+            "jq: unsupported subscript in `{s}` (slices/negative indices are not supported)"
+        )),
     }
 }
 
@@ -315,7 +317,11 @@ mod tests {
 
     fn run(jq: &str, lines: &[&str]) -> Vec<String> {
         let ops = translate(jq).unwrap();
-        match eval(&ops, &lines.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 1.0) {
+        match eval(
+            &ops,
+            &lines.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            1.0,
+        ) {
             QueryResult::Lines(v) => v,
             other => panic!("expected lines, got {other:?}"),
         }
@@ -368,10 +374,7 @@ mod tests {
 
     #[test]
     fn iterate_then_select() {
-        let out = run(
-            ".[] | select(.n >= 2)",
-            &[r#"[{"n":1},{"n":2},{"n":3}]"#],
-        );
+        let out = run(".[] | select(.n >= 2)", &[r#"[{"n":1},{"n":2},{"n":3}]"#]);
         assert_eq!(out, vec![r#"{"n":2}"#, r#"{"n":3}"#]);
     }
 

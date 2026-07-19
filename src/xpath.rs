@@ -27,7 +27,9 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
         return Ok(vec![QueryOp::Attr(validate_name(rest, s)?)]);
     }
     if !s.starts_with('/') {
-        return Err(format!("xpath: expression must start with `/`, `//`, or `@`: `{src}`"));
+        return Err(format!(
+            "xpath: expression must start with `/`, `//`, or `@`: `{src}`"
+        ));
     }
     if s.contains('|') {
         return Err(format!("xpath: union `|` is not supported: `{src}`"));
@@ -36,7 +38,10 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     let (path, trailer) = if let Some(p) = s.strip_suffix("/text()") {
         (p, Some(Trailer::Text))
     } else if let Some(idx) = s.rfind("/@") {
-        (&s[..idx], Some(Trailer::Attr(validate_name(&s[idx + 2..], s)?)))
+        (
+            &s[..idx],
+            Some(Trailer::Attr(validate_name(&s[idx + 2..], s)?)),
+        )
     } else {
         (s, None)
     };
@@ -121,7 +126,9 @@ fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
     } else if is_ident(tag) {
         tag.to_string()
     } else if tag.contains("::") || tag == ".." || tag == "." {
-        return Err(format!("xpath: axis `{tag}` is not supported (subset: `//`, `/`, `@`)"));
+        return Err(format!(
+            "xpath: axis `{tag}` is not supported (subset: `//`, `/`, `@`)"
+        ));
     } else if tag.contains('(') {
         return Err(format!("xpath: function `{tag}` is not supported"));
     } else {
@@ -137,7 +144,9 @@ fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
         format!("xpath: only the `[@attr]` existence predicate is supported, not `[{pred}]`")
     })?;
     if !is_ident(attr) {
-        return Err(format!("xpath: unsupported predicate `[{pred}]` (only `[@attr]`)"));
+        return Err(format!(
+            "xpath: unsupported predicate `[{pred}]` (only `[@attr]`)"
+        ));
     }
     Ok(format!("{tag_css}[{attr}]"))
 }
@@ -145,7 +154,9 @@ fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
 /// An attribute/tag name: a non-empty run of `[A-Za-z0-9_-]`, no namespace colon,
 /// no wildcard, no quotes.
 fn is_ident(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Validate a trailing `@attr` name, erroring on `@*` / namespaced / empty.
@@ -153,7 +164,9 @@ fn validate_name(name: &str, whole: &str) -> Result<String, String> {
     if is_ident(name) {
         Ok(name.to_string())
     } else {
-        Err(format!("xpath: unsupported attribute name in `{whole}` (use `@name`)"))
+        Err(format!(
+            "xpath: unsupported attribute name in `{whole}` (use `@name`)"
+        ))
     }
 }
 
@@ -179,14 +192,20 @@ mod tests {
         assert!(matches!(ops("//a").as_slice(), [QueryOp::Find(s)] if s == "a"));
         assert!(matches!(ops("//div//span").as_slice(), [QueryOp::Find(s)] if s == "div span"));
         assert!(matches!(ops("//div/span").as_slice(), [QueryOp::Find(s)] if s == "div > span"));
-        assert!(matches!(ops("/html/body/p").as_slice(), [QueryOp::Find(s)] if s == "html > body > p"));
+        assert!(
+            matches!(ops("/html/body/p").as_slice(), [QueryOp::Find(s)] if s == "html > body > p")
+        );
     }
 
     #[test]
     fn attr_predicate_and_accessors() {
         assert!(matches!(ops("//a[@href]").as_slice(), [QueryOp::Find(s)] if s == "a[href]"));
-        assert!(matches!(ops("//a/@href").as_slice(), [QueryOp::Find(s), QueryOp::Attr(a)] if s == "a" && a == "href"));
-        assert!(matches!(ops("//a/text()").as_slice(), [QueryOp::Find(s), QueryOp::Text] if s == "a"));
+        assert!(
+            matches!(ops("//a/@href").as_slice(), [QueryOp::Find(s), QueryOp::Attr(a)] if s == "a" && a == "href")
+        );
+        assert!(
+            matches!(ops("//a/text()").as_slice(), [QueryOp::Find(s), QueryOp::Text] if s == "a")
+        );
         assert!(matches!(ops("@href").as_slice(), [QueryOp::Attr(a)] if a == "href"));
         assert!(matches!(ops("//*").as_slice(), [QueryOp::Find(s)] if s == "*"));
     }
@@ -207,18 +226,18 @@ mod tests {
     #[test]
     fn unsupported_constructs_error_not_mishandle() {
         for bad in [
-            "//a[1]",              // positional predicate
-            "//a[@href='x']",      // value predicate
-            "//a[last()]",         // function predicate
+            "//a[1]",                 // positional predicate
+            "//a[@href='x']",         // value predicate
+            "//a[last()]",            // function predicate
             "//following-sibling::b", // axis
-            "//..",               // parent axis
-            ".",                   // relative/context (jq territory, not xpath here)
-            "//a|//b",             // union
-            "count(//a)",          // function
-            "//ns:a",              // namespace
-            "@*",                  // wildcard attribute
-            "//a[text()='x']",     // text predicate
-            "foo",                 // not an xpath literal at all
+            "//..",                   // parent axis
+            ".",                      // relative/context (jq territory, not xpath here)
+            "//a|//b",                // union
+            "count(//a)",             // function
+            "//ns:a",                 // namespace
+            "@*",                     // wildcard attribute
+            "//a[text()='x']",        // text predicate
+            "foo",                    // not an xpath literal at all
         ] {
             assert!(translate(bad).is_err(), "expected `{bad}` to error");
         }

@@ -44,11 +44,7 @@ fn render_panel(out: &mut String, w: &Widget) {
         escape(&w.path),
         escape(w.kind.label()),
     );
-    let _ = writeln!(
-        out,
-        "<div class=\"pbody\">{}</div>",
-        escape(&body_text(w)),
-    );
+    let _ = writeln!(out, "<div class=\"pbody\">{}</div>", escape(&body_text(w)),);
     let badge = if w.source.is_some() {
         "<footer class=\"psrc live\">\u{25cf} bound to source</footer>\n"
     } else {
@@ -88,7 +84,11 @@ fn body_text(w: &Widget) -> String {
             None => "table".to_string(),
         },
         WidgetKind::Slider => {
-            format!("slider ({}..{})", opt("min").unwrap_or("0"), opt("max").unwrap_or(""))
+            format!(
+                "slider ({}..{})",
+                opt("min").unwrap_or("0"),
+                opt("max").unwrap_or("")
+            )
         }
         WidgetKind::Facet => match opt("opts").or_else(|| opt("field")) {
             Some(o) => format!("facet ({o})"),
@@ -101,7 +101,11 @@ fn body_text(w: &Widget) -> String {
         | WidgetKind::Filter
         | WidgetKind::Check
         | WidgetKind::Select => {
-            match opt("title").or_else(|| opt("placeholder")).or_else(|| opt("prompt")).or_else(|| opt("label")) {
+            match opt("title")
+                .or_else(|| opt("placeholder"))
+                .or_else(|| opt("prompt"))
+                .or_else(|| opt("label"))
+            {
                 Some(t) => format!("{} ({})", w.kind.label(), t),
                 None => w.kind.label().to_string(),
             }

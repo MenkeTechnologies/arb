@@ -106,7 +106,9 @@ fn handle(
     let header = |name: &str| -> Option<String> {
         headers.iter().find_map(|h| {
             let (k, v) = h.split_once(':')?;
-            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
         })
     };
     // `GET /ws` with a WebSocket key: upgrade and push updates (no more polling).
@@ -222,7 +224,13 @@ fn ws_text_frame(payload: &str) -> Vec<u8> {
 /// SHA-1 (FIPS 180-1), hand-rolled so the WebSocket handshake needs no crypto
 /// dependency. Used only for the RFC 6455 accept token, never for security.
 fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
     let ml = (data.len() as u64) * 8;
     let mut msg = data.to_vec();
     msg.push(0x80);
@@ -233,7 +241,12 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     for chunk in msg.chunks(64) {
         let mut w = [0u32; 80];
         for (i, word) in w.iter_mut().take(16).enumerate() {
-            *word = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
+            *word = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -275,13 +288,23 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 /// JSON array in spec order (the page maps by index). Each item is shaped by kind
 /// so the client can render a real widget: `gauge` → `{scalar,max}`, `bars`/
 /// `histo`/`spark` → `{pairs,top}`, everything else → `{text}`.
-fn data_json(spec: &Spec, state: &Arc<Mutex<StreamState>>, inputs: &HashMap<String, String>) -> String {
+fn data_json(
+    spec: &Spec,
+    state: &Arc<Mutex<StreamState>>,
+    inputs: &HashMap<String, String>,
+) -> String {
     let (raw, elapsed): (Vec<String>, f64) = {
         let st = state.lock().unwrap();
-        (st.lines.iter().cloned().collect(), st.start.elapsed().as_secs_f64())
+        (
+            st.lines.iter().cloned().collect(),
+            st.start.elapsed().as_secs_f64(),
+        )
     };
-    let items: Vec<serde_json::Value> =
-        spec.widgets.iter().map(|w| widget_json(w, &raw, elapsed, inputs)).collect();
+    let items: Vec<serde_json::Value> = spec
+        .widgets
+        .iter()
+        .map(|w| widget_json(w, &raw, elapsed, inputs))
+        .collect();
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
 }
 
@@ -305,7 +328,12 @@ fn widget_json(
         }
         m
     };
-    let opt_f64 = |k: &str, d: f64| w.opts.get(k).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
+    let opt_f64 = |k: &str, d: f64| {
+        w.opts
+            .get(k)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(d)
+    };
     // Resolve control placeholders against live input values (mirrors tui.rs).
     let result = w
         .source
@@ -324,7 +352,11 @@ fn widget_json(
                 Some(QueryResult::Pairs(p)) => p.clone(),
                 _ => Vec::new(),
             };
-            let top = w.opts.get("top").and_then(|s| s.parse::<usize>().ok()).unwrap_or(20);
+            let top = w
+                .opts
+                .get("top")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
             base(json!({ "pairs": pairs, "top": top }))
         }
         WidgetKind::Spark => {
@@ -381,10 +413,22 @@ fn widget_json(
         WidgetKind::Slider => {
             // Range: parse_scalar so durations/sizes (5s, 4mb) resolve like the TUI.
             let name = w.path.trim_start_matches('.');
-            let min = crate::spec::parse_scalar(w.opts.get("min").map(String::as_str).unwrap_or("0"));
-            let max = w.opts.get("max").map(|s| crate::spec::parse_scalar(s)).unwrap_or(100.0);
-            let step = w.opts.get("step").map(|s| crate::spec::parse_scalar(s)).unwrap_or(1.0);
-            let value = inputs.get(name).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(min);
+            let min =
+                crate::spec::parse_scalar(w.opts.get("min").map(String::as_str).unwrap_or("0"));
+            let max = w
+                .opts
+                .get("max")
+                .map(|s| crate::spec::parse_scalar(s))
+                .unwrap_or(100.0);
+            let step = w
+                .opts
+                .get("step")
+                .map(|s| crate::spec::parse_scalar(s))
+                .unwrap_or(1.0);
+            let value = inputs
+                .get(name)
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .unwrap_or(min);
             base(json!({
                 "name": name, "value": value, "min": min, "max": max,
                 "step": if step > 0.0 { step } else { 1.0 },
@@ -398,8 +442,11 @@ fn widget_json(
             let name = w.path.trim_start_matches('.');
             let cands = crate::tui::facet_candidates(w, raw);
             let sel = inputs.get(name).map(String::as_str).unwrap_or("");
-            let selected: Vec<&str> =
-                sel.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            let selected: Vec<&str> = sel
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
             base(json!({
                 "name": name, "opts": cands, "selected": selected,
                 "label": w.opts.get("label").or_else(|| w.opts.get("title")).map(String::as_str).unwrap_or(name),
@@ -720,11 +767,13 @@ mod tests {
     #[test]
     fn data_json_reflects_widget_eval() {
         let spec = build(
-            &parse("gauge .g -max 100\nsource .g { in; count }\nlist .l\nsource .l { in }").unwrap(),
+            &parse("gauge .g -max 100\nsource .g { in; count }\nlist .l\nsource .l { in }")
+                .unwrap(),
         )
         .unwrap();
         let st = state_with(&["a", "b", "c"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         // Gauge carries the count scalar + its max for the client bar.
@@ -738,10 +787,10 @@ mod tests {
 
     #[test]
     fn data_json_bars_carry_pairs() {
-        let spec =
-            build(&parse("histo .h\nsource .h { in; tally }").unwrap()).unwrap();
+        let spec = build(&parse("histo .h\nsource .h { in; tally }").unwrap()).unwrap();
         let st = state_with(&["x", "y", "x", "x", "y"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         let pairs = json[0]["pairs"].as_array().unwrap();
         // tally counts occurrences → x:3, y:2 (order is count-desc).
         assert_eq!(pairs[0][0], "x");
@@ -754,7 +803,8 @@ mod tests {
     fn data_json_spark_carries_series() {
         let spec = build(&parse("spark .s\nsource .s { in }").unwrap()).unwrap();
         let st = state_with(&["1", "2", "3", "4"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "spark");
         // Raw numeric series — the client renders it with ZGui.sparkline.
         assert_eq!(json[0]["series"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
@@ -764,17 +814,21 @@ mod tests {
     fn data_json_chart_carries_series() {
         let spec = build(&parse("chart .c\nsource .c { in }").unwrap()).unwrap();
         let st = state_with(&["3", "1", "4", "1", "5"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "chart");
-        assert_eq!(json[0]["series"], serde_json::json!([3.0, 1.0, 4.0, 1.0, 5.0]));
+        assert_eq!(
+            json[0]["series"],
+            serde_json::json!([3.0, 1.0, 4.0, 1.0, 5.0])
+        );
     }
 
     #[test]
     fn data_json_table_carries_headers_and_rows() {
-        let spec =
-            build(&parse("table .t -cols \"a,b\"\nsource .t { in }").unwrap()).unwrap();
+        let spec = build(&parse("table .t -cols \"a,b\"\nsource .t { in }").unwrap()).unwrap();
         let st = state_with(&["1 2", "3 4"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         assert_eq!(json[0]["kind"], "table");
         assert_eq!(json[0]["headers"], serde_json::json!(["a", "b"]));
         assert_eq!(json[0]["rows"], serde_json::json!([["1", "2"], ["3", "4"]]));
@@ -784,7 +838,8 @@ mod tests {
     fn list_limit_caps_rows() {
         let spec = build(&parse("list .l -limit 3\nsource .l { in }").unwrap()).unwrap();
         let st = state_with(&["1", "2", "3", "4", "5"]);
-        let json: serde_json::Value = serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&data_json(&spec, &st, &HashMap::new())).unwrap();
         // Only the last 3 lines are shown.
         assert_eq!(json[0]["text"], "3\n4\n5");
     }
@@ -821,9 +876,14 @@ mod tests {
     fn sha1_matches_known_vectors() {
         // FIPS 180-1 / RFC 3174 test vectors.
         assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(
-            hex(&sha1(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            hex(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hex(&sha1(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
             "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
     }
@@ -831,7 +891,10 @@ mod tests {
     #[test]
     fn ws_accept_matches_rfc6455_example() {
         // RFC 6455 §1.3: key → accept token.
-        assert_eq!(ws_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert_eq!(
+            ws_accept("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 
     #[test]
@@ -857,14 +920,22 @@ mod tests {
     #[test]
     fn widget_without_source_tails_latest_line() {
         let spec = build(&parse("text .t").unwrap()).unwrap();
-        let val = widget_json(&spec.widgets[0], &["x".into(), "y".into()], 0.0, &HashMap::new());
+        let val = widget_json(
+            &spec.widgets[0],
+            &["x".into(), "y".into()],
+            0.0,
+            &HashMap::new(),
+        );
         assert_eq!(val["text"], "y");
     }
 
     #[test]
     fn parse_set_query_percent_decodes() {
         // %20 -> space, %26 -> & survive the &/= split of the query string.
-        assert_eq!(parse_set_query("name=q&value=a%20b%26c"), ("q".into(), "a b&c".into()));
+        assert_eq!(
+            parse_set_query("name=q&value=a%20b%26c"),
+            ("q".into(), "a b&c".into())
+        );
         assert_eq!(parse_set_query("value=v&name=n"), ("n".into(), "v".into()));
     }
 
@@ -969,7 +1040,11 @@ mod tests {
         assert_eq!(j[0]["text"], "1\n2");
         // Facet -> `where field in .set`.
         let s = build(&parse("list .l\nsource .l { in; where level in .sel }").unwrap()).unwrap();
-        let st = state_with(&[r#"{"level":"INFO"}"#, r#"{"level":"WARN"}"#, r#"{"level":"INFO"}"#]);
+        let st = state_with(&[
+            r#"{"level":"INFO"}"#,
+            r#"{"level":"WARN"}"#,
+            r#"{"level":"INFO"}"#,
+        ]);
         // Empty selection -> all pass.
         let j0: serde_json::Value =
             serde_json::from_str(&data_json(&s, &st, &HashMap::new())).unwrap();
@@ -983,9 +1058,10 @@ mod tests {
 
     #[test]
     fn served_page_wires_all_controls() {
-        let spec =
-            build(&parse("filter .q\nslider .s -min 0 -max 9\ncheck .c\nfacet .f -opts {a b}").unwrap())
-                .unwrap();
+        let spec = build(
+            &parse("filter .q\nslider .s -min 0 -max 9\ncheck .c\nfacet .f -opts {a b}").unwrap(),
+        )
+        .unwrap();
         let page = render_page(&spec);
         assert!(page.contains("postSet"));
         assert!(page.contains("'range'"));

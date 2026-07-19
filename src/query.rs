@@ -7,10 +7,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use regex::Regex;
-use scraper::{ElementRef, Html, Selector};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
+use regex::Regex;
+use scraper::{ElementRef, Html, Selector};
 
 use serde_json::Value;
 
@@ -307,7 +307,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::Fields(cols) => {
                 for l in cur.iter_mut() {
-                    *l = cols.iter().map(|&n| nth_col(l, n)).collect::<Vec<_>>().join(" ");
+                    *l = cols
+                        .iter()
+                        .map(|&n| nth_col(l, n))
+                        .collect::<Vec<_>>()
+                        .join(" ");
                 }
             }
             QueryOp::Each => {
@@ -409,7 +413,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         let parts: Vec<String> = keys
                             .iter()
                             .filter_map(|k| {
-                                m.get(k).map(|v| format!("{}:{}", Value::String(k.clone()), v))
+                                m.get(k)
+                                    .map(|v| format!("{}:{}", Value::String(k.clone()), v))
                             })
                             .collect();
                         *l = format!("{{{}}}", parts.join(","));
@@ -433,7 +438,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                             .unwrap_or(f64::NAN)
                     };
                     cur.sort_by(|a, b| {
-                        key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
+                        key(a)
+                            .partial_cmp(&key(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     });
                 } else {
                     cur.sort();
@@ -571,7 +578,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let mut counts: BTreeMap<String, u64> = BTreeMap::new();
                 for l in &cur {
                     let key = match serde_json::from_str::<Value>(l) {
-                        Ok(Value::Object(m)) => m.get(field).map(json_to_string).unwrap_or_default(),
+                        Ok(Value::Object(m)) => {
+                            m.get(field).map(json_to_string).unwrap_or_default()
+                        }
                         _ => l.clone(),
                     };
                     *counts.entry(key).or_insert(0) += 1;
@@ -586,10 +595,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in &cur {
                     let (key, val) = match serde_json::from_str::<Value>(l) {
                         Ok(v @ Value::Object(_)) => {
-                            let k = v
-                                .get(field)
-                                .map(json_to_string)
-                                .unwrap_or_default();
+                            let k = v.get(field).map(json_to_string).unwrap_or_default();
                             (k, v)
                         }
                         Ok(v) => (l.clone(), v),
@@ -797,7 +803,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::B64d => {
                 for l in cur.iter_mut() {
-                    if let Some(s) = STANDARD.decode(l.as_bytes()).ok().and_then(|b| String::from_utf8(b).ok()) {
+                    if let Some(s) = STANDARD
+                        .decode(l.as_bytes())
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                    {
                         *l = s;
                     }
                 }
@@ -889,7 +899,10 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         .map(|w| {
                             let mut cs = w.chars();
                             match cs.next() {
-                                Some(f) => f.to_uppercase().collect::<String>() + &cs.as_str().to_lowercase(),
+                                Some(f) => {
+                                    f.to_uppercase().collect::<String>()
+                                        + &cs.as_str().to_lowercase()
+                                }
                                 None => String::new(),
                             }
                         })
@@ -1092,8 +1105,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     0.0
                 } else {
                     let mean = ns.iter().sum::<f64>() / ns.len() as f64;
-                    let var =
-                        ns.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / ns.len() as f64;
+                    let var = ns.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / ns.len() as f64;
                     var.sqrt()
                 };
                 return QueryResult::Scalar(sd);
@@ -1125,7 +1137,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Slice(a, b) => {
                 let lo = a.saturating_sub(1).min(cur.len());
                 let hi = (*b).min(cur.len());
-                cur = if lo < hi { cur[lo..hi].to_vec() } else { Vec::new() };
+                cur = if lo < hi {
+                    cur[lo..hi].to_vec()
+                } else {
+                    Vec::new()
+                };
             }
             QueryOp::Index(n) => {
                 cur = n
@@ -1191,7 +1207,11 @@ pub fn table_data(lines: &[String], cols: Option<&str>) -> (Vec<String>, Vec<Vec
 pub fn numeric_series(lines: &[String]) -> Vec<f64> {
     lines
         .iter()
-        .filter_map(|l| l.split_whitespace().next().and_then(|t| t.parse::<f64>().ok()))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .next()
+                .and_then(|t| t.parse::<f64>().ok())
+        })
         .collect()
 }
 
@@ -1276,7 +1296,6 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Floor
                 | QueryOp::Ceil
                 | QueryOp::Clamp(_, _)
-
                 | QueryOp::Has(_)
                 | QueryOp::Entries
                 | QueryOp::Add
@@ -1596,7 +1615,11 @@ fn eval_where(e: &crate::expr::Expr, line: &str) -> bool {
         }
         Expr::InSet(field, inner) => {
             let set = str_of(inner);
-            let items: Vec<&str> = set.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            let items: Vec<&str> = set
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
             if items.is_empty() {
                 return true; // empty selection -> no filter
             }
@@ -1665,7 +1688,10 @@ mod tests {
     #[test]
     fn split_doubled_quote() {
         // "" inside a quoted field is one literal quote.
-        assert_eq!(split_delim("\"she \"\"said\"\"\",x", ','), vec!["she \"said\"", "x"]);
+        assert_eq!(
+            split_delim("\"she \"\"said\"\"\",x", ','),
+            vec!["she \"said\"", "x"]
+        );
     }
 
     #[test]

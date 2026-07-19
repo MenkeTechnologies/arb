@@ -89,7 +89,11 @@ fn decode(blob: &[u8]) -> Option<Vec<Command>> {
 
 /// The blob for `key` in `shard`, if present (pure; testable without the FS).
 fn shard_get(shard: &Shard, key: u64) -> Option<&[u8]> {
-    shard.entries.iter().find(|e| e.key == key).map(|e| e.blob.as_slice())
+    shard
+        .entries
+        .iter()
+        .find(|e| e.key == key)
+        .map(|e| e.blob.as_slice())
 }
 
 /// Insert/replace `key`'s blob in `shard` (pure; testable without the FS).
@@ -139,11 +143,14 @@ mod tests {
     fn encode_decode_round_trips_the_ast() {
         let ast = vec![Command {
             name: "gauge".into(),
-            args: vec![Arg::Word(".cpu".into()), Arg::Block(vec![Command {
-                name: "in".into(),
-                args: vec![],
-                pos: 12,
-            }])],
+            args: vec![
+                Arg::Word(".cpu".into()),
+                Arg::Block(vec![Command {
+                    name: "in".into(),
+                    args: vec![],
+                    pos: 12,
+                }]),
+            ],
             pos: 0,
         }];
         let blob = encode(&ast).unwrap();

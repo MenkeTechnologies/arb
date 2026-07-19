@@ -128,7 +128,9 @@ pub fn control_names_typed(e: &Expr, num: &mut Vec<String>, strv: &mut Vec<Strin
         Expr::Neg(a) | Expr::Not(a) => control_names_typed(a, num, strv),
         Expr::InList(l, items) => {
             control_names_typed(l, num, strv);
-            items.iter().for_each(|it| control_names_typed(it, num, strv));
+            items
+                .iter()
+                .for_each(|it| control_names_typed(it, num, strv));
         }
         Expr::InRange(l, lo, hi) => {
             control_names_typed(l, num, strv);
@@ -217,7 +219,10 @@ pub fn substitute_controls(
         Expr::Not(a) => Expr::Not(sub(a)),
         Expr::InList(l, items) => Expr::InList(
             sub(l),
-            items.iter().map(|it| substitute_controls(it, num, strv)).collect(),
+            items
+                .iter()
+                .map(|it| substitute_controls(it, num, strv))
+                .collect(),
         ),
         Expr::InRange(l, lo, hi) => Expr::InRange(sub(l), sub(lo), sub(hi)),
         Expr::Cond(a, b, c) => Expr::Cond(sub(a), sub(b), sub(c)),
@@ -440,8 +445,8 @@ impl Parser {
         let start = self.i;
         let kwc: Vec<char> = kw.chars().collect();
         let end = start + kwc.len();
-        let boundary_ok = end >= self.c.len()
-            || !(self.c[end].is_ascii_alphanumeric() || self.c[end] == '_');
+        let boundary_ok =
+            end >= self.c.len() || !(self.c[end].is_ascii_alphanumeric() || self.c[end] == '_');
         if end <= self.c.len() && self.c[start..end] == kwc[..] && boundary_ok {
             self.i = end;
             true
@@ -612,8 +617,7 @@ impl Parser {
             }
             // `.name` is a control reference (a live widget value); `.5` stays a
             // number. Distinguish by whether the char after `.` is a letter.
-            Some('.')
-                if matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_') =>
+            Some('.') if matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_') =>
             {
                 self.i += 1; // consume the leading `.`
                 Ok(Expr::Control(self.ident()))

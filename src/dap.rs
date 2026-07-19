@@ -69,7 +69,10 @@ pub struct DapShared {
 
 impl DapShared {
     fn new() -> Self {
-        DapShared { state: Mutex::new(DapState::default()), cv: Condvar::new() }
+        DapShared {
+            state: Mutex::new(DapState::default()),
+            cv: Condvar::new(),
+        }
     }
 }
 
@@ -258,15 +261,17 @@ fn spawn_feed(program: Option<String>, input: Option<String>) {
             .as_deref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_default();
-        let spec = crate::parser::parse(&src).ok().and_then(|c| crate::spec::build(&c).ok());
+        let spec = crate::parser::parse(&src)
+            .ok()
+            .and_then(|c| crate::spec::build(&c).ok());
         let out_ops = spec.and_then(|s| s.out).unwrap_or_default();
         let labels: Vec<String> = out_ops.iter().map(|o| format!("{o:?}")).collect();
         let mut stream = crate::stream::StreamState::new();
-        let reader: Box<dyn BufRead> = match input.as_deref().and_then(|p| std::fs::File::open(p).ok())
-        {
-            Some(f) => Box::new(io::BufReader::new(f)),
-            None => Box::new(io::BufReader::new(io::empty())),
-        };
+        let reader: Box<dyn BufRead> =
+            match input.as_deref().and_then(|p| std::fs::File::open(p).ok()) {
+                Some(f) => Box::new(io::BufReader::new(f)),
+                None => Box::new(io::BufReader::new(io::empty())),
+            };
         let mut idx = 0u64;
         for line in reader.lines().map_while(Result::ok) {
             if shared().state.lock().unwrap().terminated {
@@ -275,7 +280,8 @@ fn spawn_feed(program: Option<String>, input: Option<String>) {
             idx += 1;
             stream.push(line.clone());
             let secs = stream.start.elapsed().as_secs_f64();
-            let transformed = match crate::query::eval(&out_ops, std::slice::from_ref(&line), secs) {
+            let transformed = match crate::query::eval(&out_ops, std::slice::from_ref(&line), secs)
+            {
                 crate::query::QueryResult::Lines(v) => v.join("\n"),
                 crate::query::QueryResult::Scalar(s) => crate::query::fmt_scalar(s),
                 crate::query::QueryResult::Pairs(p) => p
@@ -284,7 +290,15 @@ fn spawn_feed(program: Option<String>, input: Option<String>) {
                     .collect::<Vec<_>>()
                     .join("\n"),
             };
-            check_line(idx, &line, stream.total, stream.rate(), &transformed, &[], &labels);
+            check_line(
+                idx,
+                &line,
+                stream.total,
+                stream.rate(),
+                &transformed,
+                &[],
+                &labels,
+            );
             if !transformed.is_empty() {
                 send_event(
                     "output",
@@ -327,8 +341,10 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
         "configurationDone" | "setExceptionBreakpoints" => vec![resp(json!({}))],
         "setBreakpoints" => {
             let bps = compile_bps(&args);
-            let verified: Vec<Value> =
-                bps.iter().map(|b| json!({ "verified": true, "line": b.line })).collect();
+            let verified: Vec<Value> = bps
+                .iter()
+                .map(|b| json!({ "verified": true, "line": b.line }))
+                .collect();
             shared().state.lock().unwrap().bps = bps;
             vec![resp(json!({ "breakpoints": verified }))]
         }
@@ -336,8 +352,14 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
             if args.get("stopOnEntry").and_then(Value::as_bool) == Some(true) {
                 shared().state.lock().unwrap().stepping = true;
             }
-            let program = args.get("program").and_then(Value::as_str).map(str::to_string);
-            let input = args.get("input").and_then(Value::as_str).map(str::to_string);
+            let program = args
+                .get("program")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let input = args
+                .get("input")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             spawn_feed(program, input);
             vec![resp(json!({}))]
         }
@@ -354,14 +376,24 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
             { "name": "Pipeline", "variablesReference": 3000, "expensive": false },
         ] }))],
         "variables" => {
-            let vref = args.get("variablesReference").and_then(Value::as_u64).unwrap_or(0);
+            let vref = args
+                .get("variablesReference")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let st = shared().state.lock().unwrap();
             vec![resp(json!({ "variables": variables_body(&st, vref) }))]
         }
         "evaluate" => {
-            let expr = args.get("expression").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let expr = args
+                .get("expression")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let st = shared().state.lock().unwrap();
-            vec![resp(json!({ "result": evaluate_body(&st, &expr), "variablesReference": 0 }))]
+            vec![resp(
+                json!({ "result": evaluate_body(&st, &expr), "variablesReference": 0 }),
+            )]
         }
         "continue" => {
             {
@@ -402,7 +434,11 @@ pub fn run() {
     let mut r = stdin.lock();
     let mut seq: i64 = 0;
     while let Ok(Some(msg)) = read_message(&mut r) {
-        let cmd = msg.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+        let cmd = msg
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         for out in handle(&msg, &mut seq) {
             send(out);
         }
@@ -457,7 +493,10 @@ mod tests {
 
     #[test]
     fn evaluate_arith_over_line_and_control() {
-        let mut st = DapState { matched_line: "42".into(), ..Default::default() };
+        let mut st = DapState {
+            matched_line: "42".into(),
+            ..Default::default()
+        };
         // Real expression evaluated against the paused line (x = line-as-number).
         assert_eq!(evaluate_body(&st, "x*2"), "84");
         // A control name resolves from the snapshot directly.

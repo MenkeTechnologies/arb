@@ -42,11 +42,25 @@ pub fn diagnose(src: &str) -> Vec<Diag> {
             // Clamp the end to the same line so the range stays on one line.
             let (eline, ecol) = offset_to_line_col(src, end);
             let end_col = if eline == line { ecol } else { start_col + 1 };
-            Diag { message: err.msg, line, start_col, end_col: end_col.max(start_col + 1) }
+            Diag {
+                message: err.msg,
+                line,
+                start_col,
+                end_col: end_col.max(start_col + 1),
+            }
         }
         None => {
-            let ec = src.lines().next().map(|l| l.chars().count() as u32).unwrap_or(0);
-            Diag { message: err.msg, line: 0, start_col: 0, end_col: ec.max(1) }
+            let ec = src
+                .lines()
+                .next()
+                .map(|l| l.chars().count() as u32)
+                .unwrap_or(0);
+            Diag {
+                message: err.msg,
+                line: 0,
+                start_col: 0,
+                end_col: ec.max(1),
+            }
         }
     };
     vec![diag]
@@ -116,14 +130,23 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
         "initialized" | "exit" => vec![],
         "shutdown" => vec![reply(Value::Null)],
         "textDocument/didOpen" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
-            let text = params["textDocument"]["text"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let text = params["textDocument"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let notif = publish_diagnostics(&uri, &text);
             server.docs.insert(uri, text);
             vec![notif]
         }
         "textDocument/didChange" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             // Full sync: the last content change carries the whole document.
             let text = params["contentChanges"]
                 .as_array()
@@ -136,7 +159,10 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             vec![notif]
         }
         "textDocument/didClose" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             server.docs.remove(&uri);
             // Clear squiggles by publishing an empty set.
             vec![json!({
@@ -156,7 +182,9 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
             let ch = params["position"]["character"].as_u64().unwrap_or(0) as u32;
             match hover(&src, line, ch) {
-                Some(md) => vec![reply(json!({ "contents": { "kind": "markdown", "value": md } }))],
+                Some(md) => vec![reply(
+                    json!({ "contents": { "kind": "markdown", "value": md } }),
+                )],
                 None => vec![reply(Value::Null)],
             }
         }
@@ -187,7 +215,10 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             vec![reply(json!(hls))]
         }
         "textDocument/references" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let src = server.docs.get(&uri).cloned().unwrap_or_default();
             let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
             let ch = params["position"]["character"].as_u64().unwrap_or(0) as u32;
@@ -201,7 +232,10 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             vec![reply(json!(locs))]
         }
         "textDocument/definition" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let src = server.docs.get(&uri).cloned().unwrap_or_default();
             let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
             let ch = params["position"]["character"].as_u64().unwrap_or(0) as u32;
@@ -226,9 +260,10 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             let ch = params["position"]["character"].as_u64().unwrap_or(0) as u32;
             // Only widget `.path` names are safely renameable (verbs are keywords).
             match word_at(&src, line, ch).filter(|w| w.starts_with('.')) {
-                Some(w) => match word_occurrences(&src, &w).into_iter().find(|r| {
-                    r["start"]["line"].as_u64() == Some(line as u64)
-                }) {
+                Some(w) => match word_occurrences(&src, &w)
+                    .into_iter()
+                    .find(|r| r["start"]["line"].as_u64() == Some(line as u64))
+                {
                     Some(r) => vec![reply(r)],
                     None => vec![reply(Value::Null)],
                 },
@@ -236,7 +271,10 @@ pub fn handle(server: &mut Server, msg: &Value) -> Vec<Value> {
             }
         }
         "textDocument/rename" => {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+            let uri = params["textDocument"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let src = server.docs.get(&uri).cloned().unwrap_or_default();
             let line = params["position"]["line"].as_u64().unwrap_or(0) as u32;
             let ch = params["position"]["character"].as_u64().unwrap_or(0) as u32;
@@ -313,7 +351,9 @@ fn document_symbols(src: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for (i, line) in src.lines().enumerate() {
         let mut it = line.split_whitespace();
-        let (Some(verb), Some(path)) = (it.next(), it.next()) else { continue };
+        let (Some(verb), Some(path)) = (it.next(), it.next()) else {
+            continue;
+        };
         if crate::spec::WidgetKind::from(verb).is_some() && path.starts_with('.') {
             let len = line_len_utf16(line);
             out.push(json!({
@@ -536,7 +576,10 @@ pub fn corpus() -> &'static [(&'static str, &'static str, &'static str, &'static
 /// one role (e.g. `text` as both widget and query verb) hover as the first
 /// listed sense.
 fn verb_help(word: &str) -> Option<&'static str> {
-    CORPUS.iter().find(|(n, _, _, _)| *n == word).map(|(_, _, d, _)| *d)
+    CORPUS
+        .iter()
+        .find(|(n, _, _, _)| *n == word)
+        .map(|(_, _, d, _)| *d)
 }
 
 // ─────────────────────────── Grammar data (Area A) ───────────────────────────
@@ -553,57 +596,261 @@ pub struct Sig {
 /// contract each `pipeline_from_body` match arm parses (`src/spec.rs`). Keeps
 /// `signatureHelp` faithful to what the parser actually consumes.
 pub const SIGS: &[Sig] = &[
-    Sig { verb: "replace", label: "replace /RE/ TO", params: &["/RE/", "TO"] },
-    Sig { verb: "slice", label: "slice A B", params: &["A", "B"] },
-    Sig { verb: "substr", label: "substr A B", params: &["A", "B"] },
-    Sig { verb: "clamp", label: "clamp LO HI", params: &["LO", "HI"] },
-    Sig { verb: "between", label: "between A B", params: &["A", "B"] },
-    Sig { verb: "cut", label: "cut DELIM N", params: &["DELIM", "N"] },
-    Sig { verb: "grepf", label: "grepf FIELD /RE/", params: &["FIELD", "/RE/"] },
-    Sig { verb: "set", label: "set KEY VAL", params: &["KEY", "VAL"] },
-    Sig { verb: "rename", label: "rename OLD NEW", params: &["OLD", "NEW"] },
-    Sig { verb: "default", label: "default KEY VAL", params: &["KEY", "VAL"] },
-    Sig { verb: "sel", label: "sel CSS [-attr A]", params: &["CSS", "-attr"] },
-    Sig { verb: "field", label: "field COL | KEY...", params: &["COL|KEY"] },
-    Sig { verb: "fields", label: "fields COL...", params: &["COL..."] },
-    Sig { verb: "pick", label: "pick KEY...", params: &["KEY..."] },
-    Sig { verb: "sort", label: "sort [-n] [-r]", params: &["-n", "-r"] },
-    Sig { verb: "take", label: "take N", params: &["N"] },
-    Sig { verb: "drop", label: "drop N", params: &["N"] },
-    Sig { verb: "nth", label: "nth N", params: &["N"] },
-    Sig { verb: "tailn", label: "tailn N", params: &["N"] },
-    Sig { verb: "pad", label: "pad N", params: &["N"] },
-    Sig { verb: "lpad", label: "lpad N", params: &["N"] },
-    Sig { verb: "sma", label: "sma N", params: &["N"] },
-    Sig { verb: "repeat", label: "repeat N", params: &["N"] },
-    Sig { verb: "sample", label: "sample N", params: &["N"] },
-    Sig { verb: "bins", label: "bins N", params: &["N"] },
-    Sig { verb: "index", label: "index N", params: &["N"] },
-    Sig { verb: "over", label: "over N", params: &["N"] },
-    Sig { verb: "under", label: "under N", params: &["N"] },
-    Sig { verb: "percentile", label: "percentile P", params: &["P"] },
-    Sig { verb: "ewma", label: "ewma ALPHA", params: &["ALPHA"] },
-    Sig { verb: "split", label: "split DELIM", params: &["DELIM"] },
-    Sig { verb: "join", label: "join [SEP]", params: &["SEP"] },
-    Sig { verb: "contains", label: "contains SUBSTR", params: &["SUBSTR"] },
-    Sig { verb: "starts", label: "starts PREFIX", params: &["PREFIX"] },
-    Sig { verb: "ends", label: "ends SUFFIX", params: &["SUFFIX"] },
-    Sig { verb: "prepend", label: "prepend STR", params: &["STR"] },
-    Sig { verb: "append", label: "append STR", params: &["STR"] },
-    Sig { verb: "match", label: "match /RE/", params: &["/RE/"] },
-    Sig { verb: "reject", label: "reject /RE/", params: &["/RE/"] },
-    Sig { verb: "extract", label: "extract /RE/", params: &["/RE/"] },
-    Sig { verb: "where", label: "where EXPR", params: &["EXPR"] },
-    Sig { verb: "map", label: "map EXPR", params: &["EXPR"] },
-    Sig { verb: "calc", label: "calc EXPR", params: &["EXPR"] },
-    Sig { verb: "has", label: "has KEY", params: &["KEY"] },
-    Sig { verb: "del", label: "del KEY", params: &["KEY"] },
-    Sig { verb: "sort_by", label: "sort_by FIELD", params: &["FIELD"] },
-    Sig { verb: "unique_by", label: "unique_by FIELD", params: &["FIELD"] },
-    Sig { verb: "count_by", label: "count_by FIELD", params: &["FIELD"] },
-    Sig { verb: "group_by", label: "group_by FIELD", params: &["FIELD"] },
-    Sig { verb: "min_by", label: "min_by FIELD", params: &["FIELD"] },
-    Sig { verb: "max_by", label: "max_by FIELD", params: &["FIELD"] },
+    Sig {
+        verb: "replace",
+        label: "replace /RE/ TO",
+        params: &["/RE/", "TO"],
+    },
+    Sig {
+        verb: "slice",
+        label: "slice A B",
+        params: &["A", "B"],
+    },
+    Sig {
+        verb: "substr",
+        label: "substr A B",
+        params: &["A", "B"],
+    },
+    Sig {
+        verb: "clamp",
+        label: "clamp LO HI",
+        params: &["LO", "HI"],
+    },
+    Sig {
+        verb: "between",
+        label: "between A B",
+        params: &["A", "B"],
+    },
+    Sig {
+        verb: "cut",
+        label: "cut DELIM N",
+        params: &["DELIM", "N"],
+    },
+    Sig {
+        verb: "grepf",
+        label: "grepf FIELD /RE/",
+        params: &["FIELD", "/RE/"],
+    },
+    Sig {
+        verb: "set",
+        label: "set KEY VAL",
+        params: &["KEY", "VAL"],
+    },
+    Sig {
+        verb: "rename",
+        label: "rename OLD NEW",
+        params: &["OLD", "NEW"],
+    },
+    Sig {
+        verb: "default",
+        label: "default KEY VAL",
+        params: &["KEY", "VAL"],
+    },
+    Sig {
+        verb: "sel",
+        label: "sel CSS [-attr A]",
+        params: &["CSS", "-attr"],
+    },
+    Sig {
+        verb: "field",
+        label: "field COL | KEY...",
+        params: &["COL|KEY"],
+    },
+    Sig {
+        verb: "fields",
+        label: "fields COL...",
+        params: &["COL..."],
+    },
+    Sig {
+        verb: "pick",
+        label: "pick KEY...",
+        params: &["KEY..."],
+    },
+    Sig {
+        verb: "sort",
+        label: "sort [-n] [-r]",
+        params: &["-n", "-r"],
+    },
+    Sig {
+        verb: "take",
+        label: "take N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "drop",
+        label: "drop N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "nth",
+        label: "nth N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "tailn",
+        label: "tailn N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "pad",
+        label: "pad N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "lpad",
+        label: "lpad N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "sma",
+        label: "sma N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "repeat",
+        label: "repeat N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "sample",
+        label: "sample N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "bins",
+        label: "bins N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "index",
+        label: "index N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "over",
+        label: "over N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "under",
+        label: "under N",
+        params: &["N"],
+    },
+    Sig {
+        verb: "percentile",
+        label: "percentile P",
+        params: &["P"],
+    },
+    Sig {
+        verb: "ewma",
+        label: "ewma ALPHA",
+        params: &["ALPHA"],
+    },
+    Sig {
+        verb: "split",
+        label: "split DELIM",
+        params: &["DELIM"],
+    },
+    Sig {
+        verb: "join",
+        label: "join [SEP]",
+        params: &["SEP"],
+    },
+    Sig {
+        verb: "contains",
+        label: "contains SUBSTR",
+        params: &["SUBSTR"],
+    },
+    Sig {
+        verb: "starts",
+        label: "starts PREFIX",
+        params: &["PREFIX"],
+    },
+    Sig {
+        verb: "ends",
+        label: "ends SUFFIX",
+        params: &["SUFFIX"],
+    },
+    Sig {
+        verb: "prepend",
+        label: "prepend STR",
+        params: &["STR"],
+    },
+    Sig {
+        verb: "append",
+        label: "append STR",
+        params: &["STR"],
+    },
+    Sig {
+        verb: "match",
+        label: "match /RE/",
+        params: &["/RE/"],
+    },
+    Sig {
+        verb: "reject",
+        label: "reject /RE/",
+        params: &["/RE/"],
+    },
+    Sig {
+        verb: "extract",
+        label: "extract /RE/",
+        params: &["/RE/"],
+    },
+    Sig {
+        verb: "where",
+        label: "where EXPR",
+        params: &["EXPR"],
+    },
+    Sig {
+        verb: "map",
+        label: "map EXPR",
+        params: &["EXPR"],
+    },
+    Sig {
+        verb: "calc",
+        label: "calc EXPR",
+        params: &["EXPR"],
+    },
+    Sig {
+        verb: "has",
+        label: "has KEY",
+        params: &["KEY"],
+    },
+    Sig {
+        verb: "del",
+        label: "del KEY",
+        params: &["KEY"],
+    },
+    Sig {
+        verb: "sort_by",
+        label: "sort_by FIELD",
+        params: &["FIELD"],
+    },
+    Sig {
+        verb: "unique_by",
+        label: "unique_by FIELD",
+        params: &["FIELD"],
+    },
+    Sig {
+        verb: "count_by",
+        label: "count_by FIELD",
+        params: &["FIELD"],
+    },
+    Sig {
+        verb: "group_by",
+        label: "group_by FIELD",
+        params: &["FIELD"],
+    },
+    Sig {
+        verb: "min_by",
+        label: "min_by FIELD",
+        params: &["FIELD"],
+    },
+    Sig {
+        verb: "max_by",
+        label: "max_by FIELD",
+        params: &["FIELD"],
+    },
 ];
 
 /// Signature for a query verb, or `None`.
@@ -614,26 +861,86 @@ pub fn sig_of(verb: &str) -> Option<&'static Sig> {
 /// Top-level directive signatures (`bind`/`expect`/`timeout`/…), ported from the
 /// directive dispatch in `src/spec.rs`.
 pub const DIRECTIVE_SIGS: &[Sig] = &[
-    Sig { verb: "bind", label: "bind KEY ACTION", params: &["KEY", "ACTION"] },
-    Sig { verb: "expect", label: "expect /RE/ ACTION", params: &["/RE/", "ACTION"] },
-    Sig { verb: "timeout", label: "timeout DUR ACTION", params: &["DUR", "ACTION"] },
-    Sig { verb: "grid", label: "grid .widget -row R -col C [-span N]", params: &[".widget", "-row", "-col"] },
-    Sig { verb: "source", label: "source .widget { in ... }", params: &[".widget", "{body}"] },
-    Sig { verb: "search", label: "search .widget { in ... }", params: &[".widget", "{body}"] },
-    Sig { verb: "out", label: "out { ... }", params: &["{body}"] },
-    Sig { verb: "import", label: "import NAME [as ALIAS]", params: &["NAME", "as", "ALIAS"] },
-    Sig { verb: "configure", label: "configure .widget -k v", params: &[".widget", "-k v"] },
+    Sig {
+        verb: "bind",
+        label: "bind KEY ACTION",
+        params: &["KEY", "ACTION"],
+    },
+    Sig {
+        verb: "expect",
+        label: "expect /RE/ ACTION",
+        params: &["/RE/", "ACTION"],
+    },
+    Sig {
+        verb: "timeout",
+        label: "timeout DUR ACTION",
+        params: &["DUR", "ACTION"],
+    },
+    Sig {
+        verb: "grid",
+        label: "grid .widget -row R -col C [-span N]",
+        params: &[".widget", "-row", "-col"],
+    },
+    Sig {
+        verb: "source",
+        label: "source .widget { in ... }",
+        params: &[".widget", "{body}"],
+    },
+    Sig {
+        verb: "search",
+        label: "search .widget { in ... }",
+        params: &[".widget", "{body}"],
+    },
+    Sig {
+        verb: "out",
+        label: "out { ... }",
+        params: &["{body}"],
+    },
+    Sig {
+        verb: "import",
+        label: "import NAME [as ALIAS]",
+        params: &["NAME", "as", "ALIAS"],
+    },
+    Sig {
+        verb: "configure",
+        label: "configure .widget -k v",
+        params: &[".widget", "-k v"],
+    },
 ];
 
 /// Action signatures shared by `bind`/`expect`/`timeout`, ported from
 /// `parse_action` in `src/spec.rs`.
 pub const ACTION_SIGS: &[Sig] = &[
-    Sig { verb: "set", label: "set .NAME VALUE", params: &[".NAME", "VALUE"] },
-    Sig { verb: "quit", label: "quit", params: &[] },
-    Sig { verb: "beep", label: "beep", params: &[] },
-    Sig { verb: "alert", label: "alert MSG", params: &["MSG"] },
-    Sig { verb: "flash", label: "flash .WIDGET [COLOR]", params: &[".WIDGET", "COLOR"] },
-    Sig { verb: "exec", label: "exec CMD", params: &["CMD"] },
+    Sig {
+        verb: "set",
+        label: "set .NAME VALUE",
+        params: &[".NAME", "VALUE"],
+    },
+    Sig {
+        verb: "quit",
+        label: "quit",
+        params: &[],
+    },
+    Sig {
+        verb: "beep",
+        label: "beep",
+        params: &[],
+    },
+    Sig {
+        verb: "alert",
+        label: "alert MSG",
+        params: &["MSG"],
+    },
+    Sig {
+        verb: "flash",
+        label: "flash .WIDGET [COLOR]",
+        params: &[".WIDGET", "COLOR"],
+    },
+    Sig {
+        verb: "exec",
+        label: "exec CMD",
+        params: &["CMD"],
+    },
 ];
 
 /// Generic `-flags` accepted by any widget (`parse_opts` consumes them).
@@ -671,8 +978,9 @@ pub enum Tok {
 }
 
 /// The LSP semantic-token legend (`tokenTypes`); each `Tok` maps to an index.
-pub const TOKEN_LEGEND: &[&str] =
-    &["keyword", "property", "variable", "regexp", "operator", "number", "string"];
+pub const TOKEN_LEGEND: &[&str] = &[
+    "keyword", "property", "variable", "regexp", "operator", "number", "string",
+];
 
 impl Tok {
     /// Index into `TOKEN_LEGEND`, or `None` for punctuation that isn't colored.
@@ -749,10 +1057,10 @@ fn classify_expr(tok: &str) -> Tok {
 /// LSP `CompletionItemKind` for a CORPUS chapter.
 fn kind_for(chapter: &str) -> u8 {
     match chapter {
-        "Widget" => 7,    // Class
+        "Widget" => 7,     // Class
         "Directive" => 14, // Keyword
-        "Action" => 23,   // Event
-        _ => 3,           // Function (Query/Input)
+        "Action" => 23,    // Event
+        _ => 3,            // Function (Query/Input)
     }
 }
 
@@ -900,7 +1208,10 @@ fn word_occurrences(src: &str, word: &str) -> Vec<Value> {
 
 /// UTF-16 column of char-offset `char_col` within `line` (LSP position unit).
 fn col_utf16(line: &str, char_col: usize) -> u32 {
-    line.chars().take(char_col).map(|c| c.len_utf16() as u32).sum()
+    line.chars()
+        .take(char_col)
+        .map(|c| c.len_utf16() as u32)
+        .sum()
 }
 
 /// The `<widget-verb> .path` declaration line for `path`, as a `Location`. Uses
@@ -1099,7 +1410,18 @@ mod tests {
     #[test]
     fn corpus_covers_every_input_marker() {
         // Every stdin format marker `pipeline_from_body` accepts must have a doc.
-        for m in ["in", "in.json", "in.html", "in.xml", "in.logfmt", "in.csv", "in.tsv", "in.yaml", "in.yml", "in.toml"] {
+        for m in [
+            "in",
+            "in.json",
+            "in.html",
+            "in.xml",
+            "in.logfmt",
+            "in.csv",
+            "in.tsv",
+            "in.yaml",
+            "in.yml",
+            "in.toml",
+        ] {
             assert!(verb_help(m).is_some(), "CORPUS missing input marker `{m}`");
         }
     }
@@ -1136,7 +1458,11 @@ mod tests {
     #[test]
     fn every_sig_verb_is_in_corpus() {
         for s in SIGS {
-            assert!(verb_help(s.verb).is_some(), "SIGS verb `{}` not in CORPUS", s.verb);
+            assert!(
+                verb_help(s.verb).is_some(),
+                "SIGS verb `{}` not in CORPUS",
+                s.verb
+            );
         }
     }
 
@@ -1216,6 +1542,9 @@ mod tests {
     #[test]
     fn semantic_tokens_delta_encoding() {
         // `gauge .cpu` -> Verb(0) then WidgetPath(1), delta-encoded.
-        assert_eq!(semantic_tokens("gauge .cpu"), vec![0, 0, 5, 0, 0, 0, 6, 4, 1, 0]);
+        assert_eq!(
+            semantic_tokens("gauge .cpu"),
+            vec![0, 0, 5, 0, 0, 0, 6, 4, 1, 0]
+        );
     }
 }
