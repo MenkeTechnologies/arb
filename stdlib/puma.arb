@@ -6,3 +6,14 @@ gauge .requests -max 1000
 source .requests { in; match /" [1-5][0-9][0-9] /; count }
 tail .paths
 source .paths { in; match /" [1-5][0-9][0-9] /; field 7 }
+
+test "status codes" {
+    given "127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] \"GET /a HTTP/1.1\" 200 12" "127.0.0.1 - - [10/Oct/2000:13:55:37 -0700] \"GET /b HTTP/1.1\" 404 12" "127.0.0.1 - - [10/Oct/2000:13:55:38 -0700] \"GET /c HTTP/1.1\" 200 12"
+    run { in; match /" [1-5][0-9][0-9] /; field 9; tally }
+    want "200\t2" "404\t1"
+}
+test "request paths" {
+    given "127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] \"GET /home HTTP/1.1\" 200 12" "127.0.0.1 - - [10/Oct/2000:13:55:37 -0700] \"GET /about HTTP/1.1\" 200 12"
+    run { in; match /" [1-5][0-9][0-9] /; field 7 }
+    want "/home" "/about"
+}

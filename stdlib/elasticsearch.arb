@@ -6,3 +6,6 @@ gauge .took -max 500
 source .took { in.json; field took_millis; avg }
 tail .log
 source .log { in }
+
+test "level tally groups log levels" { given "{\"level\":\"info\",\"took_millis\":10}" "{\"level\":\"warn\",\"took_millis\":30}" "{\"level\":\"info\",\"took_millis\":20}"; run { in.json; field level; tally }; want "info\t2" "warn\t1" }
+test "took averages query duration" { given "{\"level\":\"info\",\"took_millis\":10}" "{\"level\":\"warn\",\"took_millis\":30}" "{\"level\":\"info\",\"took_millis\":20}"; run { in.json; field took_millis; avg }; want "20" }

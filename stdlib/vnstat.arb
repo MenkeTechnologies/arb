@@ -8,3 +8,6 @@ gauge .tx -max 1000000
 source .tx { in; match /tx/; field 2; numeric; max }
 tail .traffic
 source .traffic { in; match /packets/ }
+
+test "rx rates extracted" { given "   rx         123.45 kbit/s          45 p/s" "   tx          67.89 kbit/s          12 p/s" "   rx         200.00 kbit/s          50 p/s"; run { in; match /rx/; field 2; numeric }; want "123.45" "200.00" }
+test "peak rx rate" { given "   rx         123.45 kbit/s          45 p/s" "   rx         200.00 kbit/s          50 p/s"; run { in; match /rx/; field 2; numeric; max }; want "200" }

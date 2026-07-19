@@ -6,3 +6,9 @@ gauge .threads -max 200
 source .threads { in; reject /^Id/; count }
 tail .active
 source .active { in; reject /^Id/; reject /Sleep/ }
+
+test "command tally" {
+  given "Id User Host db Command Time State Info" "1 root localhost test Query 0 init SELECT" "2 root localhost test Sleep 100 idle NULL" "3 app localhost db Query 5 sending SELECT"
+  run { in; reject /^Id/; field 5; tally }
+  want "Query\t2" "Sleep\t1"
+}

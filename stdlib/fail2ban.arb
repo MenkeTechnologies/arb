@@ -8,3 +8,6 @@ gauge .banrate -max 100
 source .banrate { in; match /Ban /; count }
 tail .log
 source .log { in; match /(Ban|Unban|Found)/ }
+
+test "bans tally groups banned ips" { given "2024-01-01 12:00:01,000 fail2ban.actions [1234]: NOTICE [sshd] Ban 5.6.7.8" "2024-01-01 12:00:02,000 fail2ban.actions [1234]: NOTICE [sshd] Ban 5.6.7.8" "2024-01-01 12:00:03,000 fail2ban.actions [1234]: NOTICE [nginx] Ban 9.9.9.9"; run { in; match /Ban /; field 8; tally }; want "5.6.7.8\t2" "9.9.9.9\t1" }
+test "banrate counts ban events" { given "2024-01-01 12:00:00,000 fail2ban.filter [1234]: INFO [sshd] Found 1.2.3.4" "2024-01-01 12:00:01,000 fail2ban.actions [1234]: NOTICE [sshd] Ban 5.6.7.8" "2024-01-01 12:00:02,000 fail2ban.actions [1234]: NOTICE [nginx] Ban 9.9.9.9"; run { in; match /Ban /; count }; want "2" }

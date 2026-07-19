@@ -8,3 +8,14 @@ gauge .errors -max 100
 source .errors { in.logfmt; where level == 4; count }
 tail .log
 source .log { in }
+
+test "severity mix" {
+    given "level=info db=foo msg=hi" "level=error db=bar msg=oops" "level=info db=baz msg=ok"
+    run { in.logfmt; field level; tally }
+    want "info\t2" "error\t1"
+}
+test "error rate" {
+    given "level=info db=foo" "level=4 db=bar" "level=4 db=baz"
+    run { in.logfmt; where level == 4; count }
+    want "2"
+}

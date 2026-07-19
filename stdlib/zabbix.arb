@@ -6,3 +6,6 @@ gauge .problems -max 100
 source .problems { in.json; field name; count }
 tail .alerts
 source .alerts { in.json; field name }
+
+test "problem severity distribution" { given "{\"name\":\"High CPU\",\"severity\":\"high\"}" "{\"name\":\"Disk full\",\"severity\":\"high\"}" "{\"name\":\"Link down\",\"severity\":\"warning\"}"; run { in.json; field severity; tally }; want "high\t2" "warning\t1" }
+test "problem count" { given "{\"name\":\"High CPU\",\"severity\":\"high\"}" "{\"name\":\"Disk full\",\"severity\":\"high\"}"; run { in.json; field name; count }; want "2" }

@@ -8,3 +8,6 @@ gauge .running -max 100
 source .running { in.json; where status == 1; count }
 tail .log
 source .log { in.logfmt; field textPayload }
+
+test "status tally groups instance states" { given "{\"status\":\"RUNNING\",\"name\":\"a\"}" "{\"status\":\"TERMINATED\",\"name\":\"b\"}" "{\"status\":\"RUNNING\",\"name\":\"c\"}"; run { in.json; field status; tally }; want "RUNNING\t2" "TERMINATED\t1" }
+test "severity tally groups log severity" { given "{\"severity\":\"ERROR\",\"name\":\"a\"}" "{\"severity\":\"INFO\",\"name\":\"b\"}" "{\"severity\":\"ERROR\",\"name\":\"c\"}"; run { in.json; field severity; tally }; want "ERROR\t2" "INFO\t1" }

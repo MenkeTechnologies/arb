@@ -6,3 +6,14 @@ gauge .requests -max 100000
 source .requests { in.json; field requests; sum }
 tail .rt
 source .rt { in.json; field avg_rt }
+
+test "requests sum" {
+  given "{\"status\":\"idle\",\"requests\":100}" "{\"status\":\"busy\",\"requests\":50}"
+  run { in.json; field requests; sum }
+  want "150"
+}
+test "worker status tally" {
+  given "{\"status\":\"idle\",\"requests\":100}" "{\"status\":\"idle\",\"requests\":10}" "{\"status\":\"busy\",\"requests\":50}"
+  run { in.json; field status; tally }
+  want "idle\t2" "busy\t1"
+}

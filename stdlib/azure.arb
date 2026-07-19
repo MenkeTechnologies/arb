@@ -8,3 +8,6 @@ gauge .errors -max 100
 source .errors { in.json; where level == 40; count }
 tail .recent
 source .recent { in.json; field resourceGroupName }
+
+test "ops tally by operation name" { given "{\"operationName\":\"Create\",\"status\":\"Succeeded\",\"level\":10}" "{\"operationName\":\"Delete\",\"status\":\"Failed\",\"level\":40}" "{\"operationName\":\"Create\",\"status\":\"Succeeded\",\"level\":10}"; run { in.json; field operationName; tally }; want "Create\t2" "Delete\t1" }
+test "errors counts level 40 entries" { given "{\"operationName\":\"Create\",\"status\":\"Succeeded\",\"level\":10}" "{\"operationName\":\"Delete\",\"status\":\"Failed\",\"level\":40}" "{\"operationName\":\"Purge\",\"status\":\"Failed\",\"level\":40}"; run { in.json; where level == 40; count }; want "2" }

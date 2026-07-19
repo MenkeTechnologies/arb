@@ -8,3 +8,6 @@ gauge .requests -max 1000
 source .requests { in; match /heroku\[router\]/; count }
 tail .errors
 source .errors { in; match /at=error|code=[HR][0-9][0-9]/ }
+
+test "status tally" { given "2020 heroku[router]: at=info method=GET status=200 path=/a" "2020 heroku[router]: at=info method=GET status=404 path=/b" "2020 heroku[router]: at=info method=GET status=200 path=/c"; run { in; match /heroku\[router\]/; extract /status=[0-9]+/; tally }; want "status=200\t2" "status=404\t1" }
+test "dyno tally" { given "2020 heroku[router]: dyno=web.1 status=200" "2020 heroku[router]: dyno=web.2 status=200" "2020 heroku[router]: dyno=web.1 status=200"; run { in; match /heroku\[router\]/; extract /dyno=[a-z]+\.[0-9]+/; tally }; want "dyno=web.1\t2" "dyno=web.2\t1" }

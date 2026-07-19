@@ -6,3 +6,9 @@ gauge .minions -max 100
 source .minions { in; ends ":"; count }
 tail .responders
 source .responders { in; ends ":"; trim }
+
+test "minion return tally" {
+  given "    True" "    False" "    True"
+  run { in; match /^\s+(True|False)/; trim; tally }
+  want "True\t2" "False\t1"
+}

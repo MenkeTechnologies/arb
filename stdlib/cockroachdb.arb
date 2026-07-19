@@ -8,3 +8,6 @@ bars .available
 source .available { in.csv; field is_available; tally }
 tail .addresses
 source .addresses { in.csv; field address }
+
+test "live tally" { given "id,address,is_available,is_live" "1,localhost:26257,true,true" "2,localhost:26258,true,true" "3,localhost:26259,false,false"; run { in.csv; field is_live; tally }; want "true\t2" "false\t1" }
+test "addresses field" { given "id,address,is_available,is_live" "1,localhost:26257,true,true" "2,localhost:26258,true,false"; run { in.csv; field address }; want "localhost:26257" "localhost:26258" }

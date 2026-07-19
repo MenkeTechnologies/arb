@@ -1,8 +1,20 @@
 # packer — build dashboard from machine-readable output
 #   packer build -machine-readable . | arb -p packer
 bars .types
-source .types { in.csv; field 3; tally }
+source .types { in; cut , 3; tally }
 gauge .errors -max 50
-source .errors { in.csv; field 3; contains error; count }
+source .errors { in; cut , 3; contains error; count }
 tail .messages
-source .messages { in.csv; field 4 }
+source .messages { in; cut , 4 }
+
+test "types tally" {
+  given "1234,,ui,say hello" "1235,,ui,building" "1236,,error,build failed"
+  run { in; cut , 3; tally }
+  want "ui\t2" "error\t1"
+}
+
+test "error count" {
+  given "1234,,ui,say hello" "1235,,ui,building" "1236,,error,build failed"
+  run { in; cut , 3; contains error; count }
+  want "1"
+}

@@ -6,3 +6,14 @@ gauge .slow -max 5000
 source .slow { in.json; field duration_ms; max }
 tail .log
 source .log { in.json; field message }
+
+test "severity mix" {
+    given "{\"error_severity\":\"ERROR\",\"message\":\"boom\"}" "{\"error_severity\":\"LOG\",\"message\":\"ok\"}" "{\"error_severity\":\"ERROR\",\"message\":\"bad\"}"
+    run { in.json; field error_severity; tally }
+    want "ERROR\t2" "LOG\t1"
+}
+test "slowest query" {
+    given "{\"duration_ms\":12.5}" "{\"duration_ms\":300}" "{\"duration_ms\":45}"
+    run { in.json; field duration_ms; max }
+    want "300"
+}

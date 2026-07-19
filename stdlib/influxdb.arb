@@ -8,3 +8,6 @@ gauge .rows -max 1000
 source .rows { in.csv; field _value; numeric; count }
 tail .values
 source .values { in.csv; field _value; nonempty }
+
+test "measurement tally" { given ",result,table,_time,_value,_field,_measurement" ",_result,0,2020-01-01,10,temp,cpu" ",_result,0,2020-01-01,20,temp,cpu" ",_result,1,2020-01-01,5,load,mem"; run { in.csv; field _measurement; nonempty; tally }; want "cpu\t2" "mem\t1" }
+test "row count" { given ",result,table,_time,_value,_field,_measurement" ",_result,0,2020-01-01,10,temp,cpu" ",_result,0,2020-01-01,20,temp,cpu"; run { in.csv; field _value; numeric; count }; want "2" }

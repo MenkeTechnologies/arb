@@ -6,3 +6,14 @@ bars .state
 source .state { in.json; field state; tally }
 tail .builds
 source .builds { in.json; field buildTypeId }
+
+test "build status tally from rest json" {
+    given "{\"status\":\"SUCCESS\",\"state\":\"finished\",\"buildTypeId\":\"Bt1\"}" "{\"status\":\"SUCCESS\",\"state\":\"finished\",\"buildTypeId\":\"Bt2\"}" "{\"status\":\"FAILURE\",\"state\":\"running\",\"buildTypeId\":\"Bt3\"}"
+    run { in.json; field status; tally }
+    want "SUCCESS\t2" "FAILURE\t1"
+}
+test "build state tally" {
+    given "{\"status\":\"SUCCESS\",\"state\":\"finished\",\"buildTypeId\":\"Bt1\"}" "{\"status\":\"FAILURE\",\"state\":\"running\",\"buildTypeId\":\"Bt2\"}"
+    run { in.json; field state; tally }
+    want "finished\t1" "running\t1"
+}

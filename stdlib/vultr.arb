@@ -6,3 +6,6 @@ gauge .count -max 100
 source .count { in; reject /^ID/; nonempty; count }
 tail .instances
 source .instances { in; reject /^ID/; nonempty; field 3 }
+
+test "instance status distribution" { given "ID  IP  LABEL  OS  STATUS  REGION" "abc  1.2.3.4  web  Debian  active  ewr" "def  1.2.3.5  db  Debian  active  ewr" "ghi  1.2.3.6  cache  Debian  stopped  lax"; run { in; reject /^ID/; nonempty; field 5; tally }; want "active\t2" "stopped\t1" }
+test "instance count" { given "ID  IP  LABEL  OS  STATUS  REGION" "abc  1.2.3.4  web  Debian  active  ewr" "def  1.2.3.5  db  Debian  active  ewr"; run { in; reject /^ID/; nonempty; count }; want "2" }

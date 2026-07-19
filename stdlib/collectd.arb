@@ -8,3 +8,6 @@ gauge .samples -max 1000
 source .samples { in; match /^PUTVAL/; count }
 tail .stream
 source .stream { in; match /^PUTVAL/ }
+
+test "metrics tally" { given "PUTVAL host/cpu-0/cpu-user 1592000000:5.5" "PUTVAL host/cpu-0/cpu-user 1592000010:6.5" "PUTVAL host/memory/memory-used 1592000000:2048"; run { in; match /^PUTVAL/; field 2; tally }; want "host/cpu-0/cpu-user\t2" "host/memory/memory-used\t1" }
+test "values cut numeric" { given "PUTVAL host/cpu-0/cpu-user 1592000000:5.5" "PUTVAL host/memory/memory-used 1592000000:2048"; run { in; match /^PUTVAL/; field 3; cut : 2; numeric }; want "5.5" "2048" }

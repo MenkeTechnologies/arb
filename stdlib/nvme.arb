@@ -8,3 +8,15 @@ tail .nodes
 source .nodes { in; match /^\/dev\//; field 1 }
 list .firmware
 source .firmware { in; reject /^Node/; reject /^-+/; field 3 }
+
+test "models tally" {
+  given "Node SN Model Namespace" "---- -- ----- ---------" "/dev/nvme0n1 S123 Samsung 1" "/dev/nvme1n1 S456 WD 1" "/dev/nvme2n1 S789 Samsung 1"
+  run { in; reject /^Node/; reject /^-+/; field 3; tally }
+  want "Samsung\t2" "WD\t1"
+}
+
+test "device count" {
+  given "Node SN Model Namespace" "/dev/nvme0n1 S123 Samsung 1" "/dev/nvme1n1 S456 WD 1" "/dev/nvme2n1 S789 Samsung 1"
+  run { in; match /^\/dev\//; field 1; count }
+  want "3"
+}

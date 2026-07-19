@@ -8,3 +8,14 @@ gauge .chunks -max 1000
 source .chunks { in.csv; field chunk_name; count }
 tail .recent
 source .recent { in.csv; field chunk_name }
+
+test "compression tally" {
+  given "hypertable_name,is_compressed,chunk_name" "metrics,t,_hyper_1_1_chunk" "metrics,f,_hyper_1_2_chunk" "metrics,t,_hyper_1_3_chunk"
+  run { in.csv; field is_compressed; tally }
+  want "t\t2" "f\t1"
+}
+test "hypertable tally" {
+  given "hypertable_name,is_compressed,chunk_name" "metrics,t,_hyper_1_1_chunk" "metrics,f,_hyper_1_2_chunk" "events,t,_hyper_2_1_chunk"
+  run { in.csv; field hypertable_name; tally }
+  want "metrics\t2" "events\t1"
+}

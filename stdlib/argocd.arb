@@ -8,3 +8,6 @@ gauge .apps -max 100
 source .apps { in; reject /^NAME/; count }
 tail .names
 source .names { in; reject /^NAME/; field 1 }
+
+test "sync tally by status" { given "NAME CLUSTER NS PROJECT STATUS HEALTH" "app1 k default default Synced Healthy" "app2 k default default OutOfSync Healthy" "app3 k default default Synced Degraded"; run { in; reject /^NAME/; field 5; tally }; want "Synced\t2" "OutOfSync\t1" }
+test "health tally by health status" { given "NAME CLUSTER NS PROJECT STATUS HEALTH" "app1 k default default Synced Healthy" "app2 k default default OutOfSync Healthy" "app3 k default default Synced Degraded"; run { in; reject /^NAME/; field 6; tally }; want "Healthy\t2" "Degraded\t1" }

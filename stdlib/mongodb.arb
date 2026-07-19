@@ -8,3 +8,14 @@ gauge .lines -max 10000
 source .lines { in.json; count }
 tail .msg
 source .msg { in.json; field msg }
+
+test "severity tally" {
+  given "{\"s\":\"I\",\"c\":\"NETWORK\",\"msg\":\"connection accepted\"}" "{\"s\":\"W\",\"c\":\"STORAGE\",\"msg\":\"slow op\"}" "{\"s\":\"I\",\"c\":\"NETWORK\",\"msg\":\"connection ended\"}"
+  run { in.json; field s; tally }
+  want "I\t2" "W\t1"
+}
+test "component tally" {
+  given "{\"s\":\"I\",\"c\":\"NETWORK\",\"msg\":\"connection accepted\"}" "{\"s\":\"W\",\"c\":\"STORAGE\",\"msg\":\"slow op\"}" "{\"s\":\"I\",\"c\":\"NETWORK\",\"msg\":\"connection ended\"}"
+  run { in.json; field c; tally }
+  want "NETWORK\t2" "STORAGE\t1"
+}

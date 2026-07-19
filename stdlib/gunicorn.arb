@@ -6,3 +6,6 @@ gauge .slow -max 200
 source .slow { in; field 2; where x > 500000; count }
 tail .log
 source .log { in }
+
+test "status tally" { given "200 600000 /a" "500 100000 /b" "200 700000 /c"; run { in; field 1; tally }; want "200\t2" "500\t1" }
+test "slow requests" { given "200 600000 /a" "500 100000 /b" "200 700000 /c"; run { in; field 2; where x > 500000; count }; want "2" }

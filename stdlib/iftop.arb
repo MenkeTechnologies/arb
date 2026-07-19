@@ -8,3 +8,6 @@ gauge .flows -max 100
 source .flows { in; match /=>|<=/; count }
 tail .traffic
 source .traffic { in; match /=>|<=/ }
+
+test "host tally" { given "1 foo.example => 1Kb 2Kb" "2 bar.example <= 3Kb 4Kb" "3 foo.example => 1Kb 2Kb"; run { in; match /=>|<=/; field 2; tally }; want "foo.example\t2" "bar.example\t1" }
+test "direction tally" { given "1 foo.example => 1Kb 2Kb" "2 bar.example <= 3Kb 4Kb" "3 baz.example => 1Kb 2Kb"; run { in; match /=>|<=/; field 3; tally }; want "=>\t2" "<=\t1" }

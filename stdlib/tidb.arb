@@ -8,3 +8,14 @@ gauge .nodes -max 100
 source .nodes { in; reject /^ID/; field 1; count }
 tail .hosts
 source .hosts { in; reject /^ID/; field 3 }
+
+test "component status tally" {
+  given "ID Role Host Ports OS/Arch Status Data" "10.0.0.1:2379 pd 10.0.0.1 2379 linux/x86_64 Up /data" "10.0.0.1:20160 tikv 10.0.0.1 20160 linux/x86_64 Up /data" "10.0.0.1:4000 tidb 10.0.0.1 4000 linux/x86_64 Down /data"
+  run { in; reject /^ID/; field 6; tally }
+  want "Up\t2" "Down\t1"
+}
+test "role tally" {
+  given "ID Role Host Ports OS/Arch Status Data" "10.0.0.1:2379 pd 10.0.0.1 2379 linux/x86_64 Up /data" "10.0.0.1:20160 tikv 10.0.0.1 20160 linux/x86_64 Up /data" "10.0.0.1:20161 tikv 10.0.0.1 20161 linux/x86_64 Up /data"
+  run { in; reject /^ID/; field 2; tally }
+  want "tikv\t2" "pd\t1"
+}

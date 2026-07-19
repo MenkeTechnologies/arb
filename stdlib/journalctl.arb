@@ -6,3 +6,7 @@ bars .units
 source .units { in.json; field _SYSTEMD_UNIT; tally }
 gauge .errors -max 500
 source .errors { in.json; where PRIORITY < 4; count }
+
+test "priority tally" { given "{\"PRIORITY\":\"6\",\"_SYSTEMD_UNIT\":\"sshd.service\"}" "{\"PRIORITY\":\"3\",\"_SYSTEMD_UNIT\":\"nginx.service\"}" "{\"PRIORITY\":\"6\",\"_SYSTEMD_UNIT\":\"sshd.service\"}"; run { in.json; field PRIORITY; tally }; want "6\t2" "3\t1" }
+test "unit tally" { given "{\"PRIORITY\":\"6\",\"_SYSTEMD_UNIT\":\"sshd.service\"}" "{\"PRIORITY\":\"3\",\"_SYSTEMD_UNIT\":\"nginx.service\"}" "{\"PRIORITY\":\"6\",\"_SYSTEMD_UNIT\":\"sshd.service\"}"; run { in.json; field _SYSTEMD_UNIT; tally }; want "sshd.service\t2" "nginx.service\t1" }
+test "error count" { given "{\"PRIORITY\":\"6\",\"_SYSTEMD_UNIT\":\"sshd.service\"}" "{\"PRIORITY\":\"3\",\"_SYSTEMD_UNIT\":\"nginx.service\"}" "{\"PRIORITY\":\"2\",\"_SYSTEMD_UNIT\":\"kernel\"}"; run { in.json; where PRIORITY < 4; count }; want "2" }

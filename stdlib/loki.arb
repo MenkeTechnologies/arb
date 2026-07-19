@@ -6,3 +6,14 @@ gauge .lines -max 1000
 source .lines { in; nonempty; count }
 tail .problems
 source .problems { in; match /level=(error|warn)/ }
+
+test "level tally" {
+  given "ts=1 level=INFO msg=x" "ts=2 level=error msg=y" "ts=3 level=INFO msg=z"
+  run { in; extract /level=(\w+)/; lower; tally }
+  want "info\t2" "error\t1"
+}
+test "problems match" {
+  given "ts=1 level=info msg=x" "ts=2 level=error msg=y" "ts=3 level=warn msg=z"
+  run { in; match /level=(error|warn)/ }
+  want "ts=2 level=error msg=y" "ts=3 level=warn msg=z"
+}

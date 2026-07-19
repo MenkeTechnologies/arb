@@ -6,3 +6,14 @@ gauge .running -max 100
 source .running { in; match /Running/; count }
 tail .containers
 source .containers { in; reject /^CONTAINER/; nonempty }
+
+test "state tally" {
+  given "CONTAINER IMAGE CREATED STATE NAME" "abc123 img1 2h Running web" "def456 img2 3h Exited db"
+  run { in; reject /^CONTAINER/; extract /Running|Exited|Created|Unknown/; tally }
+  want "Exited\t1" "Running\t1"
+}
+test "running count" {
+  given "CONTAINER IMAGE CREATED STATE NAME" "abc123 img1 2h Running web" "def456 img2 3h Exited db"
+  run { in; match /Running/; count }
+  want "1"
+}

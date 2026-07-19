@@ -8,3 +8,15 @@ bars .channels
 source .channels { in; reject /depth/; field 2; tally }
 tail .stats
 source .stats { in; nonempty }
+
+test "channels tally" {
+  given "ts channel depth inflt def req t-o x msgs" "r1 chanA 5 0 0 0 0 0 100" "r2 chanB 3 0 0 0 0 0 250" "r3 chanA 8 0 0 0 0 0 50"
+  run { in; reject /depth/; field 2; tally }
+  want "chanA\t2" "chanB\t1"
+}
+
+test "max messages" {
+  given "ts channel depth inflt def req t-o x msgs" "r1 chanA 5 0 0 0 0 0 100" "r2 chanB 3 0 0 0 0 0 250" "r3 chanA 8 0 0 0 0 0 50"
+  run { in; reject /depth/; field 9; numeric; max }
+  want "250"
+}

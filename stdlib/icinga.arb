@@ -6,3 +6,7 @@ gauge .critical -max 100
 source .critical { in; match /CRIT/; count }
 tail .problems
 source .problems { in; reject /^State/; reject /^OK/; field 2 }
+
+test "state tally" { given "State Host Service" "OK web1 http" "CRITICAL web2 ssh" "OK web3 http"; run { in; reject /^State/; field 1; tally }; want "OK\t2" "CRITICAL\t1" }
+test "critical count" { given "State Host Service" "OK web1 http" "CRITICAL web2 ssh"; run { in; match /CRIT/; count }; want "1" }
+test "problems" { given "State Host Service" "OK web1 http" "CRITICAL web2 ssh"; run { in; reject /^State/; reject /^OK/; field 2 }; want "web2" }

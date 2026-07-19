@@ -5,3 +5,14 @@ source .priority { in.json; field PRIORITY; tally }
 
 tail .messages
 source .messages { in.json; field MESSAGE }
+
+test "journal priority breakdown" {
+    given "{\"PRIORITY\":\"6\",\"MESSAGE\":\"a\"}" "{\"PRIORITY\":\"3\",\"MESSAGE\":\"b\"}" "{\"PRIORITY\":\"6\",\"MESSAGE\":\"c\"}"
+    run { in.json; field PRIORITY; tally }
+    want "6\t2" "3\t1"
+}
+test "journal messages" {
+    given "{\"PRIORITY\":\"6\",\"MESSAGE\":\"started\"}" "{\"PRIORITY\":\"3\",\"MESSAGE\":\"boom\"}"
+    run { in.json; field MESSAGE }
+    want "started" "boom"
+}

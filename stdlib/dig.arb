@@ -6,3 +6,14 @@ gauge .maxttl -max 86400
 source .maxttl { in; match /IN/; field 2; max }
 tail .answers
 source .answers { in; match /IN/ }
+
+test "record type tally" {
+  given "example.com. 300 IN A 1.2.3.4" "example.com. 300 IN AAAA ::1" "example.com. 86400 IN NS ns1.example.com."
+  run { in; match /IN/; field 4; tally }
+  want "A\t1" "AAAA\t1" "NS\t1"
+}
+test "max ttl" {
+  given "example.com. 300 IN A 1.2.3.4" "example.com. 86400 IN NS ns1."
+  run { in; match /IN/; field 2; max }
+  want "86400"
+}

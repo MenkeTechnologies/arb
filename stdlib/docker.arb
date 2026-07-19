@@ -5,3 +5,14 @@ source .containers { in; reject /^CONTAINER/; field 2; tally }
 
 gauge .running -max 100
 source .running { in; reject /^CONTAINER/; count }
+
+test "container name tally" {
+  given "CONTAINER ID   NAME   CPU %" "abc123 web 0.5%" "def456 db 0.3%"
+  run { in; reject /^CONTAINER/; field 2; tally }
+  want "db\t1" "web\t1"
+}
+test "running count" {
+  given "CONTAINER ID   NAME   CPU %" "abc123 web 0.5%" "def456 db 0.3%"
+  run { in; reject /^CONTAINER/; count }
+  want "2"
+}

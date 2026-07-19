@@ -6,3 +6,6 @@ gauge .maxlag -max 100000
 source .maxlag { in; reject /^GROUP/; field 6; max }
 tail .rows
 source .rows { in; reject /^GROUP/ }
+
+test "topic tally" { given "GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG CONSUMER-ID HOST CLIENT-ID" "app orders 0 100 150 50 c1 h1 cl1" "app orders 1 200 260 60 c2 h2 cl2" "app events 0 10 10 0 c3 h3 cl3"; run { in; reject /^GROUP/; field 2; tally }; want "orders\t2" "events\t1" }
+test "max lag" { given "GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG CONSUMER-ID HOST CLIENT-ID" "app orders 0 100 150 50 c1 h1 cl1" "app orders 1 200 260 60 c2 h2 cl2" "app events 0 10 10 0 c3 h3 cl3"; run { in; reject /^GROUP/; field 6; max }; want "60" }

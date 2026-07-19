@@ -6,3 +6,14 @@ gauge .points -max 500
 source .points { in; nonempty; count }
 tail .metrics
 source .metrics { in; nonempty }
+
+test "measurement tally from line protocol" {
+    given "cpu,host=a idle=99 1234" "mem,host=b used=50 1234" "cpu,host=c idle=80 1234"
+    run { in; nonempty; field 1; cut , 1; tally }
+    want "cpu\t2" "mem\t1"
+}
+test "point count skips blanks" {
+    given "cpu,host=a idle=99 1234" "" "mem,host=b used=50 1234"
+    run { in; nonempty; count }
+    want "2"
+}

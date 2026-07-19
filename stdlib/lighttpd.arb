@@ -8,3 +8,7 @@ bars .clients
 source .clients { in; field 1; tally }
 tail .requests
 source .requests { in; extract /"[A-Z]+ [^"]*"/ }
+
+test "status tally" { given "10.0.0.1 - - [18/Jul/2026:10:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 1234 \"-\" \"curl/7.0\"" "10.0.0.2 - - [18/Jul/2026:10:00:01 +0000] \"POST /login HTTP/1.1\" 404 55 \"-\" \"curl/7.0\"" "10.0.0.1 - - [18/Jul/2026:10:00:02 +0000] \"GET /style.css HTTP/1.1\" 200 900 \"-\" \"curl/7.0\""; run { in; field 9; numeric; tally }; want "200\t2" "404\t1" }
+test "client tally" { given "10.0.0.1 - - [18/Jul/2026:10:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 1234 \"-\" \"curl/7.0\"" "10.0.0.2 - - [18/Jul/2026:10:00:01 +0000] \"POST /login HTTP/1.1\" 404 55 \"-\" \"curl/7.0\"" "10.0.0.1 - - [18/Jul/2026:10:00:02 +0000] \"GET /style.css HTTP/1.1\" 200 900 \"-\" \"curl/7.0\""; run { in; field 1; tally }; want "10.0.0.1\t2" "10.0.0.2\t1" }
+test "request extract" { given "10.0.0.1 - - [18/Jul/2026:10:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 1234 \"-\" \"curl/7.0\""; run { in; extract /"[A-Z]+ [^"]*"/ }; want "\"GET /index.html HTTP/1.1\"" }

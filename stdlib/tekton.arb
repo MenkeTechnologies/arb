@@ -6,3 +6,14 @@ gauge .total -max 100
 source .total { in; reject /^NAME/; count }
 tail .runs
 source .runs { in; reject /^NAME/; field 1 }
+
+test "pipelinerun status tally skips header" {
+    given "NAME STATUS STARTED" "run-1 Succeeded 1m" "run-2 Failed 2m" "run-3 Succeeded 3m"
+    run { in; reject /^NAME/; extract /Succeeded|Failed|Running|Cancelled|Started/; tally }
+    want "Succeeded\t2" "Failed\t1"
+}
+test "pipelinerun total count skips header" {
+    given "NAME STATUS STARTED" "run-1 Succeeded 1m" "run-2 Failed 2m"
+    run { in; reject /^NAME/; count }
+    want "2"
+}

@@ -6,3 +6,14 @@ gauge .slow -max 60
 source .slow { in; field 6; max }
 tail .running
 source .running { in; match /SELECT/ }
+
+test "command tally" {
+  given "1 root localhost test Query 0 init SELECT" "2 app host db Sleep 100 idle NULL" "3 app host db Query 5 sending SELECT"
+  run { in; field 5; tally }
+  want "Query\t2" "Sleep\t1"
+}
+test "slow max" {
+  given "1 root localhost test Query 0 init SELECT" "2 app host db Sleep 100 idle NULL" "3 app host db Query 5 sending SELECT"
+  run { in; field 6; max }
+  want "100"
+}

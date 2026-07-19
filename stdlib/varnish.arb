@@ -6,3 +6,14 @@ gauge .slow -max 500
 source .slow { in; field 2; where x > 0.1; count }
 tail .urls
 source .urls { in; field 3 }
+
+test "cache hit/miss tally" {
+  given "hit 0.05 /foo" "hit 0.02 /bar" "miss 0.31 /baz"
+  run { in; field 1; tally }
+  want "hit\t2" "miss\t1"
+}
+test "slow response count" {
+  given "hit 0.05 /foo" "hit 0.20 /bar" "miss 0.31 /baz"
+  run { in; field 2; where x > 0.1; count }
+  want "2"
+}

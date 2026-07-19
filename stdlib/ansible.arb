@@ -6,3 +6,6 @@ gauge .failed -max 50
 source .failed { in; match /^failed:/; count }
 tail .recap
 source .recap { in; match /PLAY RECAP|ok=|changed=|failed=|unreachable=/ }
+
+test "status tally by task result" { given "ok: [host1]" "changed: [host2]" "ok: [host3]" "PLAY RECAP ****"; run { in; match /^(ok|changed|failed|skipping|unreachable):/; field 1; replace /:$/ ; tally }; want "ok\t2" "changed\t1" }
+test "failed counts failed tasks" { given "ok: [host1]" "failed: [host2]" "failed: [host3]"; run { in; match /^failed:/; count }; want "2" }

@@ -6,3 +6,9 @@ gauge .members -max 64
 source .members { in; match /^(valid|leaving|exiting|joining|down|invalid)/; count }
 tail .nodes
 source .nodes { in; match /riak@/; field 4 }
+
+test "member status tally" {
+  given "valid      100.0%      --      'riak@10.0.0.1'" "valid      100.0%      --      'riak@10.0.0.2'" "leaving      0.0%      --      'riak@10.0.0.3'"
+  run { in; match /^(valid|leaving|exiting|joining|down|invalid)/; field 1; tally }
+  want "valid\t2" "leaving\t1"
+}

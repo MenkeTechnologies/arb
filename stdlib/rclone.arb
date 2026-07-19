@@ -8,3 +8,14 @@ gauge .files -max 1000
 source .files { in; field 1; count }
 tail .paths
 source .paths { in; field 2 }
+
+test "extension tally from paths" {
+  given "     1024 dir/foo.txt" "     2048 bar.txt" "      512 baz.log"
+  run { in; field 2; extract /\.[A-Za-z0-9]+$/; tally }
+  want ".txt\t2" ".log\t1"
+}
+test "sizes keep numeric first column" {
+  given "     1024 dir/foo.txt" "     2048 bar.txt"
+  run { in; field 1; numeric }
+  want "1024" "2048"
+}

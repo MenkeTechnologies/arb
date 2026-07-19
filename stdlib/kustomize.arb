@@ -6,3 +6,7 @@ bars .apiversions
 source .apiversions { in; match /^apiVersion:/; field 2; tally }
 tail .names
 source .names { in; match /^  name:/; field 2 }
+
+test "kind tally" { given "apiVersion: apps/v1" "kind: Deployment" "  name: web" "apiVersion: v1" "kind: Service" "  name: websvc"; run { in; match /^kind:/; field 2; tally }; want "Deployment\t1" "Service\t1" }
+test "apiversion tally" { given "apiVersion: apps/v1" "kind: Deployment" "  name: web" "apiVersion: v1" "kind: Service" "  name: websvc"; run { in; match /^apiVersion:/; field 2; tally }; want "apps/v1\t1" "v1\t1" }
+test "resource names" { given "apiVersion: apps/v1" "kind: Deployment" "  name: web" "apiVersion: v1" "kind: Service" "  name: websvc"; run { in; match /^  name:/; field 2 }; want "web" "websvc" }

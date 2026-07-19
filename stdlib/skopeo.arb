@@ -6,3 +6,9 @@ gauge .blobs -max 100
 source .blobs { in; match /Copying blob/; count }
 tail .log
 source .log { in; nonempty }
+
+test "copy op tally" {
+  given "Copying blob sha256:abc" "Copying blob sha256:def" "Copying config sha256:xyz" "Writing manifest to image destination"
+  run { in; nonempty; field 1; tally }
+  want "Copying\t3" "Writing\t1"
+}

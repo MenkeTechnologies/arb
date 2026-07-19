@@ -6,3 +6,6 @@ spark .latency
 source .latency { in.json; field duration }
 tail .levels
 source .levels { in.json; field level }
+
+test "status tally by response code" { given "{\"status\":200,\"duration\":0.01,\"level\":\"info\"}" "{\"status\":404,\"duration\":0.02,\"level\":\"error\"}" "{\"status\":200,\"duration\":0.03,\"level\":\"info\"}"; run { in.json; field status; tally }; want "200\t2" "404\t1" }
+test "levels extracts the log level" { given "{\"status\":200,\"duration\":0.01,\"level\":\"info\"}" "{\"status\":404,\"duration\":0.02,\"level\":\"error\"}"; run { in.json; field level }; want "info" "error" }

@@ -6,3 +6,14 @@ gauge .rows -max 1000
 source .rows { in; nonempty; count }
 tail .out
 source .out { in; nonempty }
+
+test "level tally from pipe-separated rows" {
+    given "" "INFO|started" "ERROR|boom" "INFO|ok"
+    run { in; nonempty; cut | 1; tally }
+    want "INFO\t2" "ERROR\t1"
+}
+test "row count skips blank lines" {
+    given "" "INFO|a" "ERROR|b"
+    run { in; nonempty; count }
+    want "2"
+}

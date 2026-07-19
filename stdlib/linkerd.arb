@@ -8,3 +8,7 @@ gauge .meshed -max 100
 source .meshed { in; reject /^NAME/; nonempty; field 1; count }
 tail .workloads
 source .workloads { in; reject /^NAME/; nonempty }
+
+test "success tally" { given "NAME MESHED SUCCESS RPS LATENCY_P50 LATENCY_P95 LATENCY_P99 TCP_CONN" "web 1/1 100.00% 2.5 1ms 5ms 10ms 3" "api 2/2 100.00% 5.0 2ms 8ms 15ms 6" "db 1/1 99.00% 1.0 1ms 3ms 5ms 2"; run { in; reject /^NAME/; nonempty; field 3; tally }; want "100.00%\t2" "99.00%\t1" }
+test "rps numeric" { given "NAME MESHED SUCCESS RPS LATENCY_P50 LATENCY_P95 LATENCY_P99 TCP_CONN" "web 1/1 100.00% 2.5 1ms 5ms 10ms 3" "api 2/2 100.00% 5.0 2ms 8ms 15ms 6"; run { in; reject /^NAME/; field 4; numeric }; want "2.5" "5.0" }
+test "meshed count" { given "NAME MESHED SUCCESS RPS LATENCY_P50 LATENCY_P95 LATENCY_P99 TCP_CONN" "web 1/1 100.00% 2.5 1ms 5ms 10ms 3" "api 2/2 100.00% 5.0 2ms 8ms 15ms 6" "db 1/1 99.00% 1.0 1ms 3ms 5ms 2"; run { in; reject /^NAME/; nonempty; field 1; count }; want "3" }

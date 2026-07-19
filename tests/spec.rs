@@ -149,6 +149,27 @@ fn all_stdlib_presets_build() {
 }
 
 #[test]
+fn every_stdlib_preset_carries_passing_self_tests() {
+    // Each bundled preset ships `test { … }` blocks that exercise its query
+    // pipelines; run them here so a preset whose transform silently breaks fails
+    // CI (the in-language `arb --test`, enforced in Rust).
+    for name in arb::spec::STDLIB_NAMES {
+        let spec = build(&parse(&format!("import {name}")).unwrap())
+            .unwrap_or_else(|e| panic!("preset `{name}` failed to build: {e}"));
+        let report = arb::testrun::run(&spec.tests);
+        assert!(
+            !spec.tests.is_empty(),
+            "preset `{name}` has no in-language tests"
+        );
+        assert_eq!(
+            report.failed, 0,
+            "preset `{name}` has failing self-tests:\n{}",
+            report.text
+        );
+    }
+}
+
+#[test]
 fn list_presets_includes_stdlib() {
     let names: Vec<String> = arb::spec::list_presets()
         .into_iter()

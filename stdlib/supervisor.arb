@@ -6,3 +6,19 @@ gauge .running -max 100
 source .running { in.json; where uptime > 0; count }
 tail .events
 source .events { in.logfmt; match /processname=/; field eventname }
+
+test "process state tally from json" {
+    given "{\"statename\":\"RUNNING\"}" "{\"statename\":\"STOPPED\"}" "{\"statename\":\"RUNNING\"}"
+    run { in.json; field statename; tally }
+    want "RUNNING\t2" "STOPPED\t1"
+}
+test "running count filters by uptime" {
+    given "{\"uptime\":5}" "{\"uptime\":0}" "{\"uptime\":10}"
+    run { in.json; where uptime > 0; count }
+    want "2"
+}
+test "event name from logfmt stream" {
+    given "processname=web eventname=STARTING pid=1" "other=x"
+    run { in.logfmt; match /processname=/; field eventname }
+    want "STARTING"
+}

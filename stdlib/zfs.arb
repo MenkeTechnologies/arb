@@ -6,3 +6,6 @@ gauge .datasets -max 100
 source .datasets { in; reject /^NAME/; count }
 tail .names
 source .names { in; reject /^NAME/; field 1 }
+
+test "datasets grouped by pool" { given "NAME  USED  AVAIL  MOUNT" "tank  10G  90G  /tank" "tank/data  5G  90G  /tank/data" "rpool  2G  50G  /rpool"; run { in; reject /^NAME/; field 1; cut / 1; tally }; want "tank\t2" "rpool\t1" }
+test "dataset count" { given "NAME  USED  AVAIL  MOUNT" "tank  10G  90G  /tank" "tank/data  5G  90G  /tank/data"; run { in; reject /^NAME/; count }; want "2" }

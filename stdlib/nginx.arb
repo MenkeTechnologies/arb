@@ -8,3 +8,15 @@ source .top_requests { in.json; field request; tally; sort; take 10 }
 
 tail .requests
 source .requests { in.json; field request }
+
+test "status tally" {
+  given "{\"status\":200,\"request\":\"GET /\"}" "{\"status\":200,\"request\":\"GET /a\"}" "{\"status\":404,\"request\":\"GET /missing\"}"
+  run { in.json; field status; tally }
+  want "200\t2" "404\t1"
+}
+
+test "top requests" {
+  given "{\"request\":\"GET /a\"}" "{\"request\":\"GET /a\"}" "{\"request\":\"GET /b\"}"
+  run { in.json; field request; tally; sort; take 10 }
+  want "GET /a\t2" "GET /b\t1"
+}

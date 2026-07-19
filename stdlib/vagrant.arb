@@ -6,3 +6,14 @@ bars .provider
 source .provider { in; reject /^id/; reject /^-/; nonempty; field 3; tally }
 tail .machines
 source .machines { in; reject /^id/; reject /^-/; nonempty; field 5 }
+
+test "vm state tally" {
+  given "id       name    provider   state    directory" "-------------------------------------------------------------" "1a2b3c4  web     virtualbox running  /path/one" "5d6e7f8  cache   virtualbox running  /path/two" "9g0h1i2  db      docker     poweroff /path/three"
+  run { in; reject /^id/; reject /^-/; nonempty; field 4; tally }
+  want "running\t2" "poweroff\t1"
+}
+test "provider tally" {
+  given "id       name    provider   state    directory" "-------------------------------------------------------------" "1a2b3c4  web     virtualbox running  /path/one" "5d6e7f8  cache   virtualbox running  /path/two" "9g0h1i2  db      docker     poweroff /path/three"
+  run { in; reject /^id/; reject /^-/; nonempty; field 3; tally }
+  want "virtualbox\t2" "docker\t1"
+}

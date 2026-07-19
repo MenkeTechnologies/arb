@@ -8,3 +8,14 @@ gauge .total -max 100
 source .total { in; reject /^id/; count }
 tail .instances
 source .instances { in; reject /^id/; field 2 }
+
+test "status tally" {
+  given "id label region type image status ipv4" "123 web-1 us-east g6-standard-1 linode/ubuntu22 running 1.2.3.4" "124 web-2 us-east g6-standard-1 linode/ubuntu22 running 1.2.3.5" "125 db-1 us-west g6-standard-2 linode/ubuntu22 offline 1.2.3.6"
+  run { in; reject /^id/; field 6; tally }
+  want "running\t2" "offline\t1"
+}
+test "region tally" {
+  given "id label region type image status ipv4" "123 web-1 us-east g6-standard-1 linode/ubuntu22 running 1.2.3.4" "124 web-2 us-east g6-standard-1 linode/ubuntu22 running 1.2.3.5" "125 db-1 us-west g6-standard-2 linode/ubuntu22 offline 1.2.3.6"
+  run { in; reject /^id/; field 3; tally }
+  want "us-east\t2" "us-west\t1"
+}

@@ -8,3 +8,14 @@ gauge .slow -max 5000
 source .slow { in.json; field run_time; max }
 tail .log
 source .log { in.json; where run_time > 1000; map class }
+
+test "job class tally" {
+  given "{\"class\":\"HardWorker\",\"run_time\":500,\"retry_count\":0}" "{\"class\":\"HardWorker\",\"run_time\":1500,\"retry_count\":1}" "{\"class\":\"MailWorker\",\"run_time\":200,\"retry_count\":0}"
+  run { in.json; field class; tally }
+  want "HardWorker\t2" "MailWorker\t1"
+}
+test "slowest run_time" {
+  given "{\"class\":\"HardWorker\",\"run_time\":500,\"retry_count\":0}" "{\"class\":\"HardWorker\",\"run_time\":1500,\"retry_count\":1}"
+  run { in.json; field run_time; max }
+  want "1500"
+}

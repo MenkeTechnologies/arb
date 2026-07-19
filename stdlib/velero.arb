@@ -6,3 +6,14 @@ gauge .total -max 100
 source .total { in; reject /^NAME/; count }
 tail .backups
 source .backups { in; reject /^NAME/; field 1 }
+
+test "backup status tally" {
+  given "NAME STATUS ERRORS WARNINGS CREATED EXPIRES STORAGE SELECTOR" "backup-1 Completed 0 0 2020-01-01 29d default <none>" "backup-2 Completed 0 0 2020-01-02 29d default <none>" "backup-3 Failed 1 0 2020-01-03 29d default <none>"
+  run { in; reject /^NAME/; field 2; tally }
+  want "Completed\t2" "Failed\t1"
+}
+test "total backups" {
+  given "NAME STATUS ERRORS WARNINGS CREATED EXPIRES STORAGE SELECTOR" "backup-1 Completed 0 0 2020-01-01 29d default <none>" "backup-2 Failed 1 0 2020-01-02 29d default <none>"
+  run { in; reject /^NAME/; count }
+  want "2"
+}

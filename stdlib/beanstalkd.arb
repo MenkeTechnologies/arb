@@ -6,3 +6,6 @@ gauge .ready -max 1000
 source .ready { in.yaml; field current-jobs-ready }
 tail .stats
 source .stats { in; match /^current-jobs-/ }
+
+test "states tally by non-empty job state" { given "current-jobs-ready: 5" "current-jobs-reserved: 0" "current-jobs-buried: 3" "total-jobs: 8"; run { in; match /^current-jobs-/; reject /: 0$/; field 1; tally }; want "current-jobs-buried:\t1" "current-jobs-ready:\t1" }
+test "ready reads the ready job count" { given "current-jobs-ready: 5" "current-jobs-reserved: 0"; run { in.yaml; field current-jobs-ready }; want "5" }

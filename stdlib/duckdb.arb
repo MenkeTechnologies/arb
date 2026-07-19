@@ -6,3 +6,6 @@ gauge .rows -max 1000
 source .rows { in.csv; drop 1; count }
 tail .data
 source .data { in.csv; drop 1 }
+
+test "rows counts data rows after the header is consumed and one dropped" { given "cat,n" "foo,1" "bar,2" "foo,3"; run { in.csv; drop 1; count }; want "2" }
+test "data drops the first data row" { given "cat,n" "foo,1" "bar,2" "foo,3"; run { in.csv; drop 1 }; want "{\"cat\":\"bar\",\"n\":\"2\"}" "{\"cat\":\"foo\",\"n\":\"3\"}" }

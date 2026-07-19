@@ -6,3 +6,19 @@ gauge .builds -max 100
 source .builds { in; match /^BUILD/; count }
 tail .events
 source .events { in; match /Event:/; field 2 }
+
+test "build status tally" {
+  given "BUILD 42" "Status: success" "BUILD 41" "Status: failure"
+  run { in; match /Status:/; field 2; tally }
+  want "failure\t1" "success\t1"
+}
+test "build count" {
+  given "BUILD 42" "Status: success" "BUILD 41" "Status: failure"
+  run { in; match /^BUILD/; count }
+  want "2"
+}
+test "build events" {
+  given "BUILD 42" "Event: push" "BUILD 41" "Event: pull_request"
+  run { in; match /Event:/; field 2 }
+  want "push" "pull_request"
+}

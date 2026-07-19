@@ -6,3 +6,9 @@ gauge .changes -max 100
 source .changes { in; match /(create|update|delete|replace)/; count }
 tail .resources
 source .resources { in; match /(create|update|delete|replace|same)/ }
+
+test "operation mix" {
+    given "+ create aws:s3:Bucket foo" "~ update aws:ec2:Instance bar" "+ create aws:s3:Bucket baz"
+    run { in; match /(create|update|delete|replace)/; extract /(create|update|delete|replace)/; tally }
+    want "create\t2" "update\t1"
+}

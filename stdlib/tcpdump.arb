@@ -6,3 +6,14 @@ gauge .packets -max 10000
 source .packets { in; nonempty; count }
 tail .capture
 source .capture { in; nonempty }
+
+test "protocol mix tally" {
+    given "12:00:00.1 IP a > b" "12:00:00.2 ARP who" "12:00:00.3 IP c > d"
+    run { in; nonempty; field 2; tally }
+    want "IP\t2" "ARP\t1"
+}
+test "packet count skips blanks" {
+    given "12:00:00.1 IP a > b" "" "12:00:00.3 IP c > d"
+    run { in; nonempty; count }
+    want "2"
+}

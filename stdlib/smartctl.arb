@@ -6,3 +6,9 @@ gauge .failing -max 30
 source .failing { in; match /Pre-fail|Old_age/; field 9; reject /-/; count }
 tail .attributes
 source .attributes { in; match /Pre-fail|Old_age/; field 2 }
+
+test "attribute type tally" {
+  given "  1 Raw_Read_Error_Rate 0x000f 100 100 006 Pre-fail Always - 0" "  5 Reallocated_Sector_Ct 0x0033 100 100 010 Pre-fail Always - 0" "  9 Power_On_Hours 0x0032 100 100 000 Old_age Always - 1234"
+  run { in; match /Pre-fail|Old_age/; field 7; tally }
+  want "Pre-fail\t2" "Old_age\t1"
+}

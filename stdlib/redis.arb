@@ -5,3 +5,9 @@ source .commands { in; field 4; upper; tally }
 
 tail .stream
 source .stream { in }
+
+test "command frequency uppercased" {
+  given "1609459200.000000 [0 127.0.0.1:6379] \"get\" \"k1\"" "1609459200.000001 [0 127.0.0.1:6379] \"get\" \"k2\"" "1609459200.000002 [0 127.0.0.1:6379] \"set\" \"k3\" \"v\""
+  run { in; field 4; upper; tally }
+  want "\"GET\"\t2" "\"SET\"\t1"
+}

@@ -6,3 +6,14 @@ bars .user
 source .user { in; field 1; tally }
 gauge .cpu -max 100
 source .cpu { in; field 3; sum }
+
+test "owners" {
+    given "root 1 0.1 mem cmd" "user 2 0.2 mem cmd" "user 3 0.3 mem cmd"
+    run { in; field 1; tally }
+    want "user\t2" "root\t1"
+}
+test "cpu load" {
+    given "user 1 2.5 mem cmd" "user 2 3.5 mem cmd"
+    run { in; field 3; sum }
+    want "6"
+}

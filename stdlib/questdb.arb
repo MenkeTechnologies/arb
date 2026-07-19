@@ -6,3 +6,14 @@ gauge .rows -max 1000
 source .rows { in.csv; count }
 tail .prices
 source .prices { in.csv; field price }
+
+test "symbol mix" {
+    given "symbol,price" "AAA,10.5" "BBB,20.0" "AAA,11.0"
+    run { in.csv; field symbol; tally }
+    want "AAA\t2" "BBB\t1"
+}
+test "prices column" {
+    given "symbol,price" "AAA,10.5" "BBB,20.0"
+    run { in.csv; field price }
+    want "10.5" "20.0"
+}

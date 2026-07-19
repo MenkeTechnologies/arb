@@ -6,3 +6,6 @@ gauge .errors -max 500
 source .errors { in.json; match /errorCode/; count }
 tail .slow
 source .slow { in.json; field requestParameters; match /Duration/ }
+
+test "events tally by event name" { given "{\"eventName\":\"RunInstances\"}" "{\"eventName\":\"StopInstances\"}" "{\"eventName\":\"RunInstances\"}"; run { in.json; field eventName; tally }; want "RunInstances\t2" "StopInstances\t1" }
+test "errors counts events with an errorCode" { given "{\"eventName\":\"A\",\"errorCode\":\"AccessDenied\"}" "{\"eventName\":\"B\"}" "{\"eventName\":\"C\",\"errorCode\":\"Throttled\"}"; run { in.json; match /errorCode/; count }; want "2" }

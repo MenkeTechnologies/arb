@@ -6,3 +6,9 @@ gauge .nodes -max 100
 source .nodes { in; match /^[UD][NLJM]/; count }
 tail .addrs
 source .addrs { in; match /^[UD][NLJM]/; field 2 }
+
+test "node state tally" {
+  given "UN  10.0.0.1  1.2 GB  256  ?  rack1" "UN  10.0.0.2  1.1 GB  256  ?  rack1" "DN  10.0.0.3  0 B  256  ?  rack1"
+  run { in; match /^[UD][NLJM]/; field 1; tally }
+  want "UN\t2" "DN\t1"
+}

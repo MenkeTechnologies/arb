@@ -3,6 +3,9 @@
 gauge .total -max 50
 source .total { in; nonempty; count }
 bars .prefixes
-source .prefixes { in; nonempty; field 1; split - ; first; tally }
+source .prefixes { in; nonempty; field 1; cut - 1; tally }
 list .contexts
 source .contexts { in; nonempty }
+
+test "prefix tally" { given "prod-us-east" "prod-eu-west" "dev-us-east"; run { in; nonempty; field 1; cut - 1; tally }; want "prod\t2" "dev\t1" }
+test "context count" { given "prod-us-east" "prod-eu-west" "dev-us-east"; run { in; nonempty; count }; want "3" }

@@ -6,3 +6,15 @@ tail  .stream
 source .avg    { in; avg }
 source .max    { in; max }
 source .stream { in }
+
+test "average" {
+  given "10" "20" "30"
+  run { in; avg }
+  want "20"
+}
+
+test "maximum" {
+  given "10" "20" "30"
+  run { in; max }
+  want "30"
+}

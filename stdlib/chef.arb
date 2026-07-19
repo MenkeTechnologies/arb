@@ -6,3 +6,6 @@ gauge .resources -max 200
 source .resources { in; match /action/; count }
 tail .converged
 source .converged { in; match /^\s*\*/; field 2 }
+
+test "actions tally" { given "  * package[nginx] action install" "  * service[nginx] action start" "  * package[curl] action install"; run { in; match /action/; field 4; tally }; want "install\t2" "start\t1" }
+test "converged" { given "  * package[nginx] action install" "  * service[nginx] action start"; run { in; match /^\s*\*/; field 2 }; want "package[nginx]" "service[nginx]" }

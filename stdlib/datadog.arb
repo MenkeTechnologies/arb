@@ -8,3 +8,19 @@ tail .errors
 source .errors { in; match /[Ee]rror/; trim }
 list .checks
 source .checks { in; match /Instance ID:/; field 3 }
+
+test "check state tally" {
+  given "    Status: OK" "    Status: CRITICAL" "    Status: OK"
+  run { in; match /Status:/; field 2; tally }
+  want "OK\t2" "CRITICAL\t1"
+}
+test "ok count" {
+  given "    Status: OK" "    Status: CRITICAL"
+  run { in; match /Status: OK/; count }
+  want "1"
+}
+test "check instance ids" {
+  given "    Instance ID: cpu:abc [OK]" "    Instance ID: disk:xyz [OK]"
+  run { in; match /Instance ID:/; field 3 }
+  want "cpu:abc" "disk:xyz"
+}

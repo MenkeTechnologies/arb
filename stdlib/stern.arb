@@ -6,3 +6,14 @@ gauge .errors -max 100
 source .errors { in; lower; contains error; count }
 tail .logs
 source .logs { in; nonempty }
+
+test "per-container log volume" {
+    given "pod-a app-1 hello" "pod-b app-2 world" "pod-c app-1 hi"
+    run { in; nonempty; field 2; tally }
+    want "app-1\t2" "app-2\t1"
+}
+test "error count case-insensitive" {
+    given "some ERROR here" "fine" "Error again"
+    run { in; lower; contains error; count }
+    want "2"
+}

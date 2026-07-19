@@ -6,3 +6,6 @@ gauge .builds -max 200
 source .builds { in; reject /^id/; count }
 tail .recent
 source .recent { in; reject /^id/; field 2 }
+
+test "status tally" { given "id  pipeline  build  status  duration" "73  main/test  1  succeeded  1m" "74  main/test  2  succeeded  2m" "75  main/deploy  1  failed  30s"; run { in; reject /^id/; field 4; tally }; want "succeeded\t2" "failed\t1" }
+test "recent field" { given "id  pipeline  build  status  duration" "73  main/test  1  succeeded  1m" "75  main/deploy  1  failed  30s"; run { in; reject /^id/; field 2 }; want "main/test" "main/deploy" }

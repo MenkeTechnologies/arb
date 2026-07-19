@@ -6,3 +6,14 @@ gauge .hitrate -max 100
 source .hitrate { in; match /^STAT get_hits/; field 3; sum }
 tail .misses
 source .misses { in; match /^STAT get_misses/ }
+
+test "cmd tally" {
+  given "STAT get_hits 100" "STAT set_hits 50" "STAT delete_hits 5"
+  run { in; match /^STAT (get|set|delete|touch|incr|decr)_hits/; field 2; tally }
+  want "delete_hits\t1" "get_hits\t1" "set_hits\t1"
+}
+test "hits sum" {
+  given "STAT get_hits 100" "STAT get_misses 5" "STAT get_hits 50"
+  run { in; match /^STAT get_hits/; field 3; sum }
+  want "150"
+}

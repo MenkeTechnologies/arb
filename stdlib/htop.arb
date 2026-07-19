@@ -8,3 +8,7 @@ gauge .mem -max 100
 source .mem { in; match /^ *[0-9]+ /; field 10; max }
 tail .procs
 source .procs { in; match /^ *[0-9]+ /; field 12 }
+
+test "state tally" { given "  100 root 20 0 100M 50M 10M R 50.0 1.5 0:01.00 top" "  101 root 20 0 200M 60M 12M S 30.0 2.0 0:02.00 bash" "  102 root 20 0 200M 60M 12M R 10.0 1.0 0:03.00 zsh"; run { in; match /^ *[0-9]+ /; field 8; tally }; want "R\t2" "S\t1" }
+test "cpu avg" { given "  100 root 20 0 100M 50M 10M R 50.0 1.5 0:01.00 top" "  101 root 20 0 200M 60M 12M S 30.0 2.0 0:02.00 bash"; run { in; match /^ *[0-9]+ /; field 9; avg }; want "40" }
+test "mem max" { given "  100 root 20 0 100M 50M 10M R 50.0 1.5 0:01.00 top" "  101 root 20 0 200M 60M 12M S 30.0 2.0 0:02.00 bash"; run { in; match /^ *[0-9]+ /; field 10; max }; want "2" }

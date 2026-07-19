@@ -8,3 +8,14 @@ gauge .consumers -max 500
 source .consumers { in; field 3; sum }
 tail .queues
 source .queues { in }
+
+test "queue states" {
+    given "q1 5 2 running" "q2 10 1 idle" "q3 0 0 running"
+    run { in; field 4; tally }
+    want "running\t2" "idle\t1"
+}
+test "total backlog" {
+    given "q1 5 2 running" "q2 10 1 idle"
+    run { in; field 2; sum }
+    want "15"
+}

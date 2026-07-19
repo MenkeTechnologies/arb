@@ -6,3 +6,6 @@ tail .log
 source .status { in.json; field status; tally }
 source .paths  { in.json; field path; tally }
 source .log    { in }
+
+test "status tally" { given "{\"status\":200,\"path\":\"/a\"}" "{\"status\":500,\"path\":\"/b\"}" "{\"status\":200,\"path\":\"/c\"}"; run { in.json; field status; tally }; want "200\t2" "500\t1" }
+test "path tally" { given "{\"status\":200,\"path\":\"/a\"}" "{\"status\":200,\"path\":\"/b\"}" "{\"status\":200,\"path\":\"/a\"}"; run { in.json; field path; tally }; want "/a\t2" "/b\t1" }

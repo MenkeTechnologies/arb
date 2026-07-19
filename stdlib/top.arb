@@ -4,3 +4,9 @@ gauge .cpu -max 100
 tail  .procs
 source .cpu   { in; field 3; sum }
 source .procs { in }
+
+test "total cpu sum" {
+  given "user 101 2.5 0.1 100 200 ?? S 1:00PM 0:01 foo" "user 102 1.5 0.2 100 200 ?? S 1:00PM 0:02 bar"
+  run { in; field 3; sum }
+  want "4"
+}

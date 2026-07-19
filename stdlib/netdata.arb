@@ -6,3 +6,15 @@ gauge .critical -max 50
 source .critical { in.json; field status; match /CRITICAL/; count }
 tail .alarms
 source .alarms { in.json; field name }
+
+test "status tally" {
+  given "{\"name\":\"cpu\",\"status\":\"CLEAR\"}" "{\"name\":\"ram\",\"status\":\"WARNING\"}" "{\"name\":\"disk\",\"status\":\"CRITICAL\"}" "{\"name\":\"net\",\"status\":\"CLEAR\"}"
+  run { in.json; field status; tally }
+  want "CLEAR\t2" "CRITICAL\t1" "WARNING\t1"
+}
+
+test "critical count" {
+  given "{\"name\":\"cpu\",\"status\":\"CLEAR\"}" "{\"name\":\"disk\",\"status\":\"CRITICAL\"}"
+  run { in.json; field status; match /CRITICAL/; count }
+  want "1"
+}

@@ -6,3 +6,6 @@ gauge .received -max 100
 source .received { in.json; field msg; contains received; count }
 tail .jobs
 source .jobs { in.json; field msg }
+
+test "levels tally groups by log level" { given "{\"level\":\"info\",\"msg\":\"received job 1\"}" "{\"level\":\"warning\",\"msg\":\"retry\"}" "{\"level\":\"info\",\"msg\":\"done\"}"; run { in.json; field level; tally }; want "info\t2" "warning\t1" }
+test "received counts received-job messages" { given "{\"level\":\"info\",\"msg\":\"received job 1\"}" "{\"level\":\"info\",\"msg\":\"received job 2\"}" "{\"level\":\"info\",\"msg\":\"done\"}"; run { in.json; field msg; contains received; count }; want "2" }

@@ -8,3 +8,7 @@ gauge .slow -max 500
 source .slow { in.json; field runtime; where x > 5; count }
 tail .failures
 source .failures { in.json; match /task-failed/; field exception }
+
+test "states tally" { given "{\"type\": \"task-succeeded\", \"runtime\": 2.0}" "{\"type\": \"task-succeeded\", \"runtime\": 8.0}" "{\"type\": \"task-failed\", \"exception\": \"ValueError\"}"; run { in.json; field type; tally }; want "task-succeeded\t2" "task-failed\t1" }
+test "slow count" { given "{\"type\": \"task-succeeded\", \"runtime\": 2.0}" "{\"type\": \"task-succeeded\", \"runtime\": 8.0}" "{\"type\": \"task-succeeded\", \"runtime\": 12.0}"; run { in.json; field runtime; where x > 5; count }; want "2" }
+test "failures" { given "{\"type\": \"task-failed\", \"exception\": \"ValueError\"}"; run { in.json; match /task-failed/; field exception }; want "ValueError" }

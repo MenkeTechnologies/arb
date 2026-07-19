@@ -6,3 +6,14 @@ gauge .errors -max 100
 source .errors { in; match /^[EF]/; count }
 tail .log
 source .log { in; nonempty }
+
+test "severity tally" {
+  given "I0718 12:00:00 server.go:1] starting" "W0718 12:00:01 raft.go:2] slow" "E0718 12:00:02 alpha.go:3] failed"
+  run { in; extract /^[IWEF]/; tally }
+  want "E\t1" "I\t1" "W\t1"
+}
+test "error count" {
+  given "I0718 ok" "E0718 boom" "F0718 fatal"
+  run { in; match /^[EF]/; count }
+  want "2"
+}

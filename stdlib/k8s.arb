@@ -5,3 +5,5 @@ source .status { in; reject /^NAME/; field 3; tally }
 
 tail .pods
 source .pods { in; reject /^NAME/ }
+
+test "pod status tally" { given "NAME    READY   STATUS    RESTARTS   AGE" "web-1   1/1     Running   0          5d" "web-2   0/1     Running   0          2m" "db-1    0/1     Pending   0          1m"; run { in; reject /^NAME/; field 3; tally }; want "Running\t2" "Pending\t1" }

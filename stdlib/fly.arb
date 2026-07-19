@@ -6,3 +6,6 @@ bars .regions
 source .regions { in; field 3; tally }
 tail .log
 source .log { in; nonempty }
+
+test "levels tally groups by log level" { given "2024-01-01T00:00:00Z app[abc] iad info started" "2024-01-01T00:00:01Z app[abc] iad warn slow" "2024-01-01T00:00:02Z app[abc] lax info ok"; run { in; field 4; tally }; want "info\t2" "warn\t1" }
+test "regions tally groups by region" { given "2024-01-01T00:00:00Z app[abc] iad info started" "2024-01-01T00:00:01Z app[abc] iad warn slow" "2024-01-01T00:00:02Z app[abc] lax info ok"; run { in; field 3; tally }; want "iad\t2" "lax\t1" }

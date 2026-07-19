@@ -6,3 +6,6 @@ gauge .total -max 100
 source .total { in; reject /^NAME/; nonempty; count }
 tail .messages
 source .messages { in; reject /^NAME/; field 5 }
+
+test "ready tally groups by the suspended column" { given "NAMESPACE NAME REVISION SUSPENDED READY MESSAGE" "flux-system apps main@sha1 False True Applied" "default web main@sha2 False True Applied" "default api main@sha3 True False suspended"; run { in; reject /^NAME/; field 4; tally }; want "False\t2" "True\t1" }
+test "total counts non-header resources" { given "NAMESPACE NAME REVISION SUSPENDED READY MESSAGE" "flux-system apps main@sha1 False True Applied" "default web main@sha2 False True Applied"; run { in; reject /^NAME/; nonempty; count }; want "2" }

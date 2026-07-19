@@ -8,3 +8,6 @@ histo .enqueued
 source .enqueued { in; reject /^Name/; reject /^Connecting/; field 5; tally }
 tail .queues
 source .queues { in; reject /^Name/; reject /^Connecting/; field 1 }
+
+test "depths tally by queue size" { given "Name Queue Size ..." "Q.foo 5 0 0 100 0" "Q.bar 5 0 0 50 0" "Q.baz 2 0 0 200 0"; run { in; reject /^Name/; reject /^Connecting/; field 2; tally }; want "5\t2" "2\t1" }
+test "maxdepth is the largest queue depth" { given "Name Queue Size ..." "Q.foo 5 0 0 100 0" "Q.bar 12 0 0 50 0" "Q.baz 2 0 0 200 0"; run { in; reject /^Name/; reject /^Connecting/; field 2; numeric; max }; want "12" }

@@ -8,3 +8,14 @@ gauge .memused -max 100
 source .memused { in; match /kbmemused/; reject /%memused/; field 5; max }
 tail .raw
 source .raw { in }
+
+test "cpu utilization from idle" {
+  given "12:00:01 all 5.00 0.00 2.00 1.00 0.00 92.00" "12:00:02 all 10.00 0.00 3.00 1.00 0.00 86.00"
+  run { in; match /all/; field 8; where x < 100; map 100 - x; avg }
+  want "11"
+}
+test "runq-sz tally skips header" {
+  given "12:00:00 runq-sz plist-sz ldavg-1 ldavg-5 ldavg-15 blocked" "12:00:01 2 100 0.50 0.40 0.30 0" "12:00:02 2 101 0.55 0.40 0.30 0"
+  run { in; reject /runq-sz/; field 2; tally }
+  want "2\t2"
+}

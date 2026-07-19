@@ -6,3 +6,15 @@ gauge .reporting -max 200
 source .reporting { in.json; field reporting; contains true; count }
 tail .apps
 source .apps { in.json; field name }
+
+test "severity tally" {
+  given "{\"name\":\"web\",\"alertSeverity\":\"CRITICAL\",\"reporting\":true}" "{\"name\":\"api\",\"alertSeverity\":\"NOT_ALERTING\",\"reporting\":true}" "{\"name\":\"worker\",\"alertSeverity\":\"NOT_ALERTING\",\"reporting\":false}"
+  run { in.json; field alertSeverity; tally }
+  want "NOT_ALERTING\t2" "CRITICAL\t1"
+}
+
+test "reporting count" {
+  given "{\"name\":\"web\",\"reporting\":true}" "{\"name\":\"api\",\"reporting\":false}" "{\"name\":\"worker\",\"reporting\":true}"
+  run { in.json; field reporting; contains true; count }
+  want "2"
+}

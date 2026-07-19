@@ -6,3 +6,6 @@ gauge .errors -max 100
 source .errors { in; match /ERROR/; count }
 tail .log
 source .log { in; nonempty }
+
+test "levels tally by log level" { given "2023-01-01 111 INFO topic msg" "2023-01-01 112 ERROR topic boom" "2023-01-01 113 INFO topic ok"; run { in; nonempty; field 3; tally }; want "INFO\t2" "ERROR\t1" }
+test "errors counts ERROR lines" { given "2023-01-01 111 INFO topic msg" "2023-01-01 112 ERROR topic boom"; run { in; match /ERROR/; count }; want "1" }

@@ -6,3 +6,14 @@ bars .metrics
 source .metrics { in; contains :; cut : 1; tally }
 tail .stream
 source .stream { in; contains | }
+
+test "metric-type tally from statsd protocol" {
+    given "user.count:1|c" "page.time:5|ms" "user.count:3|c"
+    run { in; contains |; cut | 2; cut : 1; tally }
+    want "c\t2" "ms\t1"
+}
+test "metric-name tally" {
+    given "user.count:1|c" "page.time:5|ms" "user.count:3|c"
+    run { in; contains :; cut : 1; tally }
+    want "user.count\t2" "page.time\t1"
+}

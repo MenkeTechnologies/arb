@@ -1,10 +1,14 @@
-# clickhouse — query_log dashboard from clickhouse-client TSV output
-#   clickhouse-client -q "SELECT type, query_duration_ms, query FROM system.query_log" | arb -p clickhouse
+# clickhouse — query_log dashboard from clickhouse-client TSVWithNames output
+#   clickhouse-client --format=TSVWithNames -q "SELECT type, query_duration_ms, query FROM system.query_log" | arb -p clickhouse
 bars .type
-source .type { in.tsv; field 1; tally }
+source .type { in.tsv; field type; tally }
 histo .duration
-source .duration { in.tsv; field 2; numeric }
+source .duration { in.tsv; field query_duration_ms; numeric }
 gauge .events -max 1000
-source .events { in.tsv; field 1; count }
+source .events { in.tsv; field type; count }
 tail .queries
-source .queries { in.tsv; field 3; nonempty }
+source .queries { in.tsv; field query; nonempty }
+
+test "type tally" { given "type\tquery_duration_ms\tquery" "QueryStart\t0\tSELECT 1" "QueryFinish\t120\tSELECT 1" "QueryFinish\t45\tSELECT 2"; run { in.tsv; field type; tally }; want "QueryFinish\t2" "QueryStart\t1" }
+test "duration numeric" { given "type\tquery_duration_ms\tquery" "QueryStart\t0\tSELECT 1" "QueryFinish\t120\tSELECT 1"; run { in.tsv; field query_duration_ms; numeric }; want "0" "120" }
+test "queries nonempty" { given "type\tquery_duration_ms\tquery" "QueryFinish\t120\tSELECT 1"; run { in.tsv; field query; nonempty }; want "SELECT 1" }

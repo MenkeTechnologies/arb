@@ -6,3 +6,15 @@ bars .proto
 source .proto { in; match /^(tcp|udp)/; field 1; tally }
 tail .conns
 source .conns { in; match /^(tcp|udp)/ }
+
+test "state tally" {
+  given "tcp4 0 0 127.0.0.1.5432 127.0.0.1.54321 ESTABLISHED" "tcp4 0 0 *.22 *.* LISTEN" "tcp4 0 0 10.0.0.1.443 10.0.0.2.55000 ESTABLISHED"
+  run { in; match /^(tcp|udp)/; field 6; tally }
+  want "ESTABLISHED\t2" "LISTEN\t1"
+}
+
+test "proto tally" {
+  given "tcp4 0 0 a b ESTABLISHED" "tcp4 0 0 c d LISTEN" "udp4 0 0 e f idle" "Active Internet connections"
+  run { in; match /^(tcp|udp)/; field 1; tally }
+  want "tcp4\t2" "udp4\t1"
+}

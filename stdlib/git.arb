@@ -5,3 +5,5 @@ source .commits { in; count }
 
 tail .log
 source .log { in }
+
+test "commits counts log lines" { given "abc123 first commit" "def456 second commit" "ghi789 third commit"; run { in; count }; want "3" }

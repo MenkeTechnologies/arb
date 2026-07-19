@@ -6,3 +6,9 @@ gauge .running -max 100
 source .running { in.json; field status; match /RUNNING/; count }
 tail .pipelines
 source .pipelines { in.json; field name }
+
+test "execution status tally" {
+  given "{\"name\":\"deploy\",\"status\":\"SUCCEEDED\"}" "{\"name\":\"deploy\",\"status\":\"SUCCEEDED\"}" "{\"name\":\"build\",\"status\":\"RUNNING\"}"
+  run { in.json; field status; tally }
+  want "SUCCEEDED\t2" "RUNNING\t1"
+}

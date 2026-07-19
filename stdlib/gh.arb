@@ -6,3 +6,6 @@ gauge .open -max 50
 source .open { in.json; field state; match /OPEN/; count }
 tail .titles
 source .titles { in.json; field title }
+
+test "state tally groups pr states" { given "{\"state\":\"OPEN\",\"title\":\"a\"}" "{\"state\":\"CLOSED\",\"title\":\"b\"}" "{\"state\":\"OPEN\",\"title\":\"c\"}"; run { in.json; field state; tally }; want "OPEN\t2" "CLOSED\t1" }
+test "open counts open prs" { given "{\"state\":\"OPEN\",\"title\":\"a\"}" "{\"state\":\"CLOSED\",\"title\":\"b\"}" "{\"state\":\"OPEN\",\"title\":\"c\"}"; run { in.json; field state; match /OPEN/; count }; want "2" }

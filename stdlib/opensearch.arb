@@ -8,3 +8,15 @@ gauge .indices -max 500
 source .indices { in; reject /^health/; count }
 tail .names
 source .names { in; reject /^health/; field 3 }
+
+test "health tally" {
+  given "health status index uuid pri rep" "green open logs-1 abc 1 1" "yellow open logs-2 def 1 1" "green open logs-3 ghi 1 1"
+  run { in; reject /^health/; field 1; tally }
+  want "green\t2" "yellow\t1"
+}
+
+test "index count" {
+  given "health status index uuid pri rep" "green open logs-1 abc 1 1" "yellow open logs-2 def 1 1" "green open logs-3 ghi 1 1"
+  run { in; reject /^health/; count }
+  want "3"
+}

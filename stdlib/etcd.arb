@@ -6,3 +6,6 @@ gauge .errors -max 100
 source .errors { in.json; field level; match /error|warn/; count }
 tail .log
 source .log { in.json; field msg }
+
+test "level tally groups zap log levels" { given "{\"level\":\"info\",\"msg\":\"serving\"}" "{\"level\":\"error\",\"msg\":\"boom\"}" "{\"level\":\"info\",\"msg\":\"ok\"}"; run { in.json; field level; tally }; want "info\t2" "error\t1" }
+test "errors counts error and warn lines" { given "{\"level\":\"error\",\"msg\":\"boom\"}" "{\"level\":\"info\",\"msg\":\"ok\"}" "{\"level\":\"warn\",\"msg\":\"eh\"}"; run { in.json; field level; match /error|warn/; count }; want "2" }

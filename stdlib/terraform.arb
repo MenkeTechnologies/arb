@@ -8,3 +8,14 @@ gauge .applied -max 100
 source .applied { in.json; match /apply_complete/; count }
 tail .msg
 source .msg { in.json; field @message }
+
+test "change types tally" {
+  given "{\"change\":\"create\"}" "{\"change\":\"create\"}" "{\"change\":\"delete\"}"
+  run { in.json; field change; tally }
+  want "create\t2" "delete\t1"
+}
+test "applied count" {
+  given "{\"@message\":\"apply_complete: done\"}" "{\"@message\":\"planning\"}" "{\"@message\":\"apply_complete: ok\"}"
+  run { in.json; match /apply_complete/; count }
+  want "2"
+}

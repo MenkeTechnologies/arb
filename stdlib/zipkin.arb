@@ -8,3 +8,7 @@ gauge .slowest -max 1000000
 source .slowest { in.json; field duration; numeric; max }
 tail .traces
 source .traces { in.json; field name }
+
+test "span names tallied" { given "{\"name\":\"get\",\"kind\":\"SERVER\",\"duration\":1200}" "{\"name\":\"get\",\"kind\":\"CLIENT\",\"duration\":800}" "{\"name\":\"query\",\"kind\":\"CLIENT\",\"duration\":5000}"; run { in.json; field name; tally }; want "get\t2" "query\t1" }
+test "span kinds tallied" { given "{\"name\":\"get\",\"kind\":\"SERVER\",\"duration\":1200}" "{\"name\":\"get\",\"kind\":\"CLIENT\",\"duration\":800}" "{\"name\":\"query\",\"kind\":\"CLIENT\",\"duration\":5000}"; run { in.json; field kind; nonempty; tally }; want "CLIENT\t2" "SERVER\t1" }
+test "slowest span duration" { given "{\"name\":\"get\",\"kind\":\"SERVER\",\"duration\":1200}" "{\"name\":\"query\",\"kind\":\"CLIENT\",\"duration\":5000}"; run { in.json; field duration; numeric; max }; want "5000" }

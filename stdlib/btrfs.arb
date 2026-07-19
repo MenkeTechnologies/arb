@@ -6,3 +6,6 @@ gauge .subvols -max 100
 source .subvols { in; count }
 tail .paths
 source .paths { in; field 9 }
+
+test "parents tally by top-level id" { given "ID 256 gen 30 top level 5 path @home" "ID 257 gen 31 top level 5 path @data" "ID 258 gen 32 top level 9 path @logs"; run { in; field 7; tally }; want "5\t2" "9\t1" }
+test "paths extracts the subvolume path" { given "ID 256 gen 30 top level 5 path @home" "ID 257 gen 31 top level 5 path @data"; run { in; field 9 }; want "@home" "@data" }

@@ -8,3 +8,7 @@ gauge .spans -max 1000
 source .spans { in.json; field spanID; count }
 tail .trace
 source .trace { in.json; field operationName; nonempty }
+
+test "operations tally" { given "{\"operationName\":\"GET /api\",\"duration\":1200,\"spanID\":\"a1\"}" "{\"operationName\":\"GET /api\",\"duration\":800,\"spanID\":\"a2\"}" "{\"operationName\":\"POST /login\",\"duration\":500,\"spanID\":\"a3\"}"; run { in.json; field operationName; tally }; want "GET /api\t2" "POST /login\t1" }
+test "span count" { given "{\"operationName\":\"GET /api\",\"duration\":1200,\"spanID\":\"a1\"}" "{\"operationName\":\"GET /api\",\"duration\":800,\"spanID\":\"a2\"}" "{\"operationName\":\"POST /login\",\"duration\":500,\"spanID\":\"a3\"}"; run { in.json; field spanID; count }; want "3" }
+test "durations numeric" { given "{\"operationName\":\"GET /api\",\"duration\":1200,\"spanID\":\"a1\"}" "{\"operationName\":\"POST /login\",\"duration\":500,\"spanID\":\"a3\"}"; run { in.json; field duration; numeric }; want "1200" "500" }

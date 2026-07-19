@@ -8,3 +8,14 @@ gauge .count -max 100
 source .count { in; reject /^CONTAINER/; count }
 tail .containers
 source .containers { in; reject /^CONTAINER/; field 2 }
+
+test "status mix" {
+    given "CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS" "a1 nginx sh 5min Up p" "a2 redis sh 6min Up p" "a3 redis sh 7min Exited p"
+    run { in; reject /^CONTAINER/; field 5; tally }
+    want "Up\t2" "Exited\t1"
+}
+test "image mix" {
+    given "CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS" "a1 nginx sh 5min Up p" "a2 redis sh 6min Up p" "a3 redis sh 7min Up p"
+    run { in; reject /^CONTAINER/; field 2; tally }
+    want "redis\t2" "nginx\t1"
+}

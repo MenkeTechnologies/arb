@@ -6,3 +6,7 @@ gauge .free -max 16000000
 source .free { in; reject /[a-z]/; field 4; max }
 bars .runq
 source .runq { in; reject /[a-z]/; field 1; tally }
+
+test "idle avg over data rows" { given "procs r b swpd free" "1 0 0 8000000 100 200 0 0 5 3 400 500 10 5 82 3 0" "2 0 0 7900000 100 200 0 0 5 3 400 500 12 6 78 4 0"; run { in; reject /[a-z]/; field 15; avg }; want "80" }
+test "free memory max" { given "procs r b swpd free" "1 0 0 8000000 100 200 0 0 5 3 400 500 10 5 82 3 0" "2 0 0 7900000 100 200 0 0 5 3 400 500 12 6 78 4 0"; run { in; reject /[a-z]/; field 4; max }; want "8000000" }
+test "run-queue length distribution" { given "procs r b swpd free" "1 0 0 8000000 100 200 0 0 5 3 400 500 10 5 82 3 0" "1 0 0 7900000 100 200 0 0 5 3 400 500 12 6 78 4 0" "2 0 0 7900000 100 200 0 0 5 3 400 500 12 6 78 4 0"; run { in; reject /[a-z]/; field 1; tally }; want "1\t2" "2\t1" }

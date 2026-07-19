@@ -6,3 +6,14 @@ gauge .tasks -max 100
 source .tasks { in; reject /^TASK/; count }
 tail .running
 source .running { in; reject /^TASK/; match /RUNNING/; field 1 }
+
+test "status tally" {
+  given "TASK    PID    STATUS" "redis   1234   RUNNING" "nginx   5678   STOPPED" "web     9012   RUNNING"
+  run { in; reject /^TASK/; field 3; tally }
+  want "RUNNING\t2" "STOPPED\t1"
+}
+test "running task names" {
+  given "TASK    PID    STATUS" "redis   1234   RUNNING" "nginx   5678   STOPPED" "web     9012   RUNNING"
+  run { in; reject /^TASK/; match /RUNNING/; field 1 }
+  want "redis" "web"
+}

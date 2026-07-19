@@ -6,3 +6,14 @@ gauge .max -max 1000
 source .max { in; reject /^#/; field 2; max }
 tail .raw
 source .raw { in; reject /^#/ }
+
+test "sample names" {
+    given "# HELP http_requests total requests" "http_requests 42" "http_errors 7" "http_requests 43"
+    run { in; reject /^#/; field 1; tally }
+    want "http_requests\t2" "http_errors\t1"
+}
+test "peak value" {
+    given "# HELP http_requests total" "http_requests 42" "http_errors 7"
+    run { in; reject /^#/; field 2; max }
+    want "42"
+}

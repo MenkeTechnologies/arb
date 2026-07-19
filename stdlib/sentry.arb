@@ -6,3 +6,9 @@ gauge .events -max 500
 source .events { in; reject /^ID/; count }
 tail .messages
 source .messages { in; reject /^ID/; pick 3… }
+
+test "event level tally lowercased" {
+  given "ID Level Message" "abc ERROR boom" "def error bang" "ghi WARNING slow"
+  run { in; reject /^ID/; field 2; lower; tally }
+  want "error\t2" "warning\t1"
+}

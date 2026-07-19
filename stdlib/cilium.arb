@@ -6,3 +6,6 @@ gauge .endpoints -max 100
 source .endpoints { in; reject /^ENDPOINT/; count }
 tail .list
 source .list { in; reject /^ENDPOINT/ }
+
+test "ingress tally" { given "ENDPOINT   POLICY   IDENTITY" "1234   Enabled   5678" "2345   Disabled   6789" "3456   Enabled   7890"; run { in; reject /^ENDPOINT/; field 2; tally }; want "Enabled\t2" "Disabled\t1" }
+test "list reject header" { given "ENDPOINT   POLICY   IDENTITY" "1234   Enabled   5678"; run { in; reject /^ENDPOINT/ }; want "1234   Enabled   5678" }

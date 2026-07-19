@@ -8,3 +8,14 @@ gauge .sessions -max 200
 source .sessions { in; reject /^-/; reject /session_id/; field 1; numeric; count }
 tail .requests
 source .requests { in; reject /^-/; nonempty }
+
+test "status tally" {
+  given "session_id status wait_type" "----------- ------- ---------" "51 running CXPACKET" "52 suspended PAGEIOLATCH" "53 running noop"
+  run { in; reject /^-/; reject /status/; field 2; tally }
+  want "running\t2" "suspended\t1"
+}
+test "waits tally" {
+  given "session_id status wait_type" "----------- ------- ---------" "51 running CXPACKET" "52 suspended PAGEIOLATCH" "53 running"
+  run { in; reject /^-/; reject /wait_type/; field 3; nonempty; tally }
+  want "CXPACKET\t1" "PAGEIOLATCH\t1"
+}

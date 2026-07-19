@@ -8,3 +8,15 @@ gauge .open -max 100
 source .open { in; match /\bopen\b/; count }
 tail .ports
 source .ports { in; match /\/(tcp|udp)/ }
+
+test "state tally" {
+  given "PORT     STATE SERVICE" "22/tcp   open  ssh" "80/tcp   open  http" "443/tcp  closed https"
+  run { in; match /\/(tcp|udp)/; field 2; tally }
+  want "open\t2" "closed\t1"
+}
+
+test "open count" {
+  given "22/tcp   open  ssh" "80/tcp   open  http" "443/tcp  closed https"
+  run { in; match /\bopen\b/; count }
+  want "2"
+}

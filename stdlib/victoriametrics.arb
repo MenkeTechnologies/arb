@@ -6,3 +6,6 @@ bars .metrics
 source .metrics { in; reject /^#/; field 1; extract /^[a-zA-Z_:]+/; tally }
 tail .samples
 source .samples { in; reject /^#/; nonempty }
+
+test "metric families tallied by name" { given "# HELP vm_foo" "# TYPE counter" "vm_foo_total 5" "vm_foo_total{q=\"1\"} 3" "vm_bar 2"; run { in; reject /^#/; field 1; extract /^[a-zA-Z_:]+/; tally }; want "vm_foo_total\t2" "vm_bar\t1" }
+test "series count skips comments and blanks" { given "# HELP x" "vm_foo 5" "vm_bar 2" ""; run { in; reject /^#/; nonempty; count }; want "2" }

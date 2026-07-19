@@ -3,6 +3,9 @@
 bars .codes
 source .codes { in.json; field response_code; tally }
 gauge .slow -max 500
-source .slow { in.json; field duration; where duration > 1000; count }
+source .slow { in.json; where duration > 1000; count }
 tail .hosts
 source .hosts { in.json; field authority; take 20 }
+
+test "codes tally groups response codes" { given "{\"response_code\":200,\"duration\":50,\"authority\":\"a\"}" "{\"response_code\":500,\"duration\":50,\"authority\":\"b\"}" "{\"response_code\":200,\"duration\":50,\"authority\":\"c\"}"; run { in.json; field response_code; tally }; want "200\t2" "500\t1" }
+test "slow counts requests over 1000ms" { given "{\"response_code\":200,\"duration\":1500,\"authority\":\"a\"}" "{\"response_code\":500,\"duration\":50,\"authority\":\"b\"}" "{\"response_code\":200,\"duration\":2000,\"authority\":\"c\"}"; run { in.json; where duration > 1000; count }; want "2" }

@@ -6,3 +6,6 @@ gauge .up -max 100
 source .up { in; match /^UN/; count }
 tail .nodes
 source .nodes { in; match /^[UD][NLJM]/; field 2 }
+
+test "status tally" { given "UN  127.0.0.1  1.5MB  256  100%  abc  rack1" "UN  127.0.0.2  2MB  256  100%  def  rack1" "DN  127.0.0.3  1MB  256  100%  ghi  rack1"; run { in; match /^[UD][NLJM]/; field 1; tally }; want "UN\t2" "DN\t1" }
+test "nodes field" { given "UN  127.0.0.1  1.5MB  256  100%  abc  rack1" "DN  127.0.0.2  2MB  256  100%  def  rack1"; run { in; match /^[UD][NLJM]/; field 2 }; want "127.0.0.1" "127.0.0.2" }

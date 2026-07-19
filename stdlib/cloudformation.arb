@@ -8,3 +8,6 @@ list .failed
 source .failed { in; match /FAILED|ROLLBACK/; field 2 }
 tail .stacks
 source .stacks { in; field 2 }
+
+test "status tally" { given "CREATE_COMPLETE stack-one" "CREATE_COMPLETE stack-two" "CREATE_FAILED stack-three"; run { in; field 1; tally }; want "CREATE_COMPLETE\t2" "CREATE_FAILED\t1" }
+test "failed field" { given "CREATE_COMPLETE stack-one" "UPDATE_ROLLBACK_COMPLETE stack-two" "CREATE_FAILED stack-three"; run { in; match /FAILED|ROLLBACK/; field 2 }; want "stack-two" "stack-three" }

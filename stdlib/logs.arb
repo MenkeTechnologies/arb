@@ -4,3 +4,9 @@ bars .levels
 tail .log
 source .levels { in.json; field level; tally }
 source .log    { in }
+
+test "level tally" {
+  given "{\"level\":\"info\",\"msg\":\"a\"}" "{\"level\":\"error\",\"msg\":\"b\"}" "{\"level\":\"info\",\"msg\":\"c\"}"
+  run { in.json; field level; tally }
+  want "info\t2" "error\t1"
+}

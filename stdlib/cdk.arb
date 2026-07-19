@@ -6,3 +6,6 @@ gauge .events -max 100
 source .events { in; contains |; count }
 tail .resources
 source .resources { in; contains |; cut | 6; trim; nonempty }
+
+test "status tally" { given "Stack1 |  0 | 10:23:45 AM | CREATE_IN_PROGRESS | AWS::S3::Bucket | MyBucket" "Stack1 |  1 | 10:23:47 AM | CREATE_COMPLETE | AWS::S3::Bucket | MyBucket" "Stack1 |  2 | 10:23:49 AM | CREATE_COMPLETE | AWS::CDK::Metadata | CDKMetadata"; run { in; contains |; cut | 4; trim; tally }; want "CREATE_COMPLETE\t2" "CREATE_IN_PROGRESS\t1" }
+test "resources" { given "Stack1 |  1 | 10:23:47 AM | CREATE_COMPLETE | AWS::S3::Bucket | MyBucket"; run { in; contains |; cut | 6; trim; nonempty }; want "MyBucket" }

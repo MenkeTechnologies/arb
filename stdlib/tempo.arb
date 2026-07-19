@@ -6,3 +6,14 @@ gauge .errors -max 100
 source .errors { in.json; field level; match /error/; count }
 tail .messages
 source .messages { in.json; field msg }
+
+test "log level tally from json" {
+    given "{\"level\":\"info\",\"msg\":\"a\"}" "{\"level\":\"error\",\"msg\":\"b\"}" "{\"level\":\"info\",\"msg\":\"c\"}"
+    run { in.json; field level; tally }
+    want "info\t2" "error\t1"
+}
+test "error level count" {
+    given "{\"level\":\"info\",\"msg\":\"a\"}" "{\"level\":\"error\",\"msg\":\"b\"}"
+    run { in.json; field level; match /error/; count }
+    want "1"
+}

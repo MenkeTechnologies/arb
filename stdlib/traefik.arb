@@ -8,3 +8,14 @@ tail .requests
 source .requests { in.json; field RequestPath }
 gauge .errors -max 100
 source .errors { in.json; field DownstreamStatus; over 499; count }
+
+test "status tally" {
+  given "{\"DownstreamStatus\":200,\"ServiceName\":\"web@docker\",\"RequestPath\":\"/\"}" "{\"DownstreamStatus\":200,\"ServiceName\":\"web@docker\",\"RequestPath\":\"/x\"}" "{\"DownstreamStatus\":404,\"ServiceName\":\"api@docker\",\"RequestPath\":\"/y\"}"
+  run { in.json; field DownstreamStatus; tally }
+  want "200\t2" "404\t1"
+}
+test "server error count" {
+  given "{\"DownstreamStatus\":200}" "{\"DownstreamStatus\":503}" "{\"DownstreamStatus\":500}"
+  run { in.json; field DownstreamStatus; over 499; count }
+  want "2"
+}

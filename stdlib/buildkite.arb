@@ -8,3 +8,6 @@ gauge .failed -max 100
 source .failed { in.json; field state; match /failed/; count }
 tail .builds
 source .builds { in.json; field message }
+
+test "state tally by build state" { given "{\"state\":\"passed\",\"branch\":\"main\",\"message\":\"a\"}" "{\"state\":\"failed\",\"branch\":\"dev\",\"message\":\"b\"}" "{\"state\":\"passed\",\"branch\":\"main\",\"message\":\"c\"}"; run { in.json; field state; tally }; want "passed\t2" "failed\t1" }
+test "failed counts failed builds" { given "{\"state\":\"passed\",\"branch\":\"main\",\"message\":\"a\"}" "{\"state\":\"failed\",\"branch\":\"dev\",\"message\":\"b\"}" "{\"state\":\"failed\",\"branch\":\"main\",\"message\":\"c\"}"; run { in.json; field state; match /failed/; count }; want "2" }

@@ -6,3 +6,14 @@ gauge .errors -max 50
 source .errors { in; match /^Error:/; count }
 tail .changes
 source .changes { in; match /Notice:/; contains Stage }
+
+test "message levels" {
+    given "Notice: applying configuration" "Error: failed to apply catalog" "Notice: finished run"
+    run { in; nonempty; field 1; tally }
+    want "Notice:\t2" "Error:\t1"
+}
+test "error count" {
+    given "Error: could not retrieve catalog" "Notice: applied" "Error: failed to apply"
+    run { in; match /^Error:/; count }
+    want "2"
+}

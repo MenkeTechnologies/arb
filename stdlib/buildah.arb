@@ -6,3 +6,6 @@ gauge .count -max 100
 source .count { in; reject /^REPOSITORY/; count }
 tail .tags
 source .tags { in; reject /^REPOSITORY/; field 2 }
+
+test "repos tally by repository" { given "REPOSITORY TAG IMAGE ID CREATED SIZE" "localhost/foo latest abc 2 days 100 MB" "localhost/bar v1 def 3 days 50 MB" "localhost/foo v2 ghi 4 days 80 MB"; run { in; reject /^REPOSITORY/; field 1; tally }; want "localhost/foo\t2" "localhost/bar\t1" }
+test "count totals the images" { given "REPOSITORY TAG IMAGE ID CREATED SIZE" "localhost/foo latest abc 2 days 100 MB" "localhost/bar v1 def 3 days 50 MB"; run { in; reject /^REPOSITORY/; count }; want "2" }

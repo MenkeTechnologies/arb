@@ -2,3 +2,9 @@
 #   ps aux | arb -p table
 table .rows
 source .rows { in }
+
+test "passthrough rows unchanged" {
+    given "USER PID CMD" "root 1 init"
+    run { in }
+    want "USER PID CMD" "root 1 init"
+}

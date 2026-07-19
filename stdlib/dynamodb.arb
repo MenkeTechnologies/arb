@@ -6,3 +6,6 @@ gauge .items -max 1000
 source .items { in.json; count }
 tail .keys
 source .keys { in.json; field id }
+
+test "status tally groups items by status" { given "{\"id\":\"1\",\"status\":\"active\"}" "{\"id\":\"2\",\"status\":\"idle\"}" "{\"id\":\"3\",\"status\":\"active\"}"; run { in.json; field status; tally }; want "active\t2" "idle\t1" }
+test "keys extracts item ids" { given "{\"id\":\"1\",\"status\":\"active\"}" "{\"id\":\"2\",\"status\":\"idle\"}"; run { in.json; field id }; want "1" "2" }

@@ -6,3 +6,7 @@ gauge .pkts -max 100000
 source .pkts { in; reject /Chain|target|^$/; field 1; where x > 0; sum }
 tail .sources
 source .sources { in; reject /Chain|target|^$/; field 8 }
+
+test "targets by tally" { given " pkts bytes target     prot opt in     out     source               destination" "  100  5000 ACCEPT     tcp  --  *      *       10.0.0.1             0.0.0.0/0" "   50  2000 DROP       all  --  *      *       10.0.0.2             0.0.0.0/0" "   20  1000 ACCEPT     tcp  --  *      *       10.0.0.1             0.0.0.0/0"; run { in; reject /Chain|target|^$/; field 3; tally }; want "ACCEPT\t2" "DROP\t1" }
+test "packet count sum" { given " pkts bytes target     prot opt in     out     source               destination" "  100  5000 ACCEPT     tcp  --  *      *       10.0.0.1             0.0.0.0/0" "   50  2000 DROP       all  --  *      *       10.0.0.2             0.0.0.0/0" "   20  1000 ACCEPT     tcp  --  *      *       10.0.0.1             0.0.0.0/0"; run { in; reject /Chain|target|^$/; field 1; where x > 0; sum }; want "170" }
+test "source addrs" { given " pkts bytes target     prot opt in     out     source               destination" "  100  5000 ACCEPT     tcp  --  *      *       10.0.0.1             0.0.0.0/0" "   50  2000 DROP       all  --  *      *       10.0.0.2             0.0.0.0/0"; run { in; reject /Chain|target|^$/; field 8 }; want "10.0.0.1" "10.0.0.2" }

@@ -8,3 +8,21 @@ gauge .active -max 100
 source .active { in; reject /Refreshing/; field 3; numeric; over 0; count }
 tail .flows
 source .flows { in; reject /Refreshing/; nonempty }
+
+test "received over zero" {
+  given "Refreshing:" "firefox/1234/1000\t12.5\t3.2" "sshd/999/0\t0.1\t0.0" "firefox/1234/1000\t8.0\t1.0"
+  run { in; reject /Refreshing/; field 3; numeric; over 0 }
+  want "3.2" "1.0"
+}
+
+test "procs tally" {
+  given "Refreshing:" "firefox/1234/1000\t12.5\t3.2" "sshd/999/0\t0.1\t0.0" "firefox/1234/1000\t8.0\t1.0"
+  run { in; reject /Refreshing/; field 1; tally }
+  want "firefox/1234/1000\t2" "sshd/999/0\t1"
+}
+
+test "active count" {
+  given "Refreshing:" "firefox/1234/1000\t12.5\t3.2" "sshd/999/0\t0.1\t0.0" "firefox/1234/1000\t8.0\t1.0"
+  run { in; reject /Refreshing/; field 3; numeric; over 0; count }
+  want "2"
+}

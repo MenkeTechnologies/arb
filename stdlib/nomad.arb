@@ -6,3 +6,15 @@ gauge .running -max 200
 source .running { in.json; where CreateIndex > 0; count }
 tail .evals
 source .evals { in.json; field EvalID }
+
+test "status tally" {
+  given "{\"ClientStatus\":\"running\",\"CreateIndex\":5}" "{\"ClientStatus\":\"running\",\"CreateIndex\":0}" "{\"ClientStatus\":\"complete\",\"CreateIndex\":12}"
+  run { in.json; field ClientStatus; tally }
+  want "running\t2" "complete\t1"
+}
+
+test "running count" {
+  given "{\"ClientStatus\":\"running\",\"CreateIndex\":5}" "{\"ClientStatus\":\"running\",\"CreateIndex\":0}" "{\"ClientStatus\":\"complete\",\"CreateIndex\":12}"
+  run { in.json; where CreateIndex > 0; count }
+  want "2"
+}

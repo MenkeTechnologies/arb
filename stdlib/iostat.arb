@@ -8,3 +8,6 @@ gauge .tps -max 500
 source .tps { in; match /^[a-z]/; field 2; max }
 tail .raw
 source .raw { in }
+
+test "device tally" { given "sda 10.0 500.0 20.0" "sdb 5.0 100.0 10.0" "sda 3.0 50.0 5.0"; run { in; match /^[a-z]/; field 1; tally }; want "sda\t2" "sdb\t1" }
+test "peak read" { given "sda 10.0 500.0 20.0" "sdb 5.0 100.0 10.0" "sda 3.0 800.0 5.0"; run { in; match /^[a-z]/; field 3; max }; want "800" }

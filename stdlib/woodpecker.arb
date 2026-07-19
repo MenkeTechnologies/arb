@@ -8,3 +8,6 @@ gauge .total -max 100
 source .total { in; reject /^NUMBER/; nonempty; count }
 tail .pipelines
 source .pipelines { in; reject /^NUMBER/; nonempty }
+
+test "pipeline status distribution" { given "NUMBER  STATUS  EVENT  BRANCH" "3  success  push  main" "2  failure  push  main" "1  success  pull  dev"; run { in; reject /^NUMBER/; nonempty; field 2; tally }; want "success\t2" "failure\t1" }
+test "pipeline branch distribution" { given "NUMBER  STATUS  EVENT  BRANCH" "3  success  push  main" "2  failure  push  main" "1  success  pull  dev"; run { in; reject /^NUMBER/; nonempty; field 4; tally }; want "main\t2" "dev\t1" }

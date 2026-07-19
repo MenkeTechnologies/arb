@@ -8,3 +8,14 @@ gauge .errors -max 100
 source .errors { in.json; field level; match /ERROR/; count }
 tail .events
 source .events { in.json; field event }
+
+test "status mix" {
+    given "{\"status\":\"ok\",\"event\":\"a\"}" "{\"status\":\"fail\",\"event\":\"b\"}" "{\"status\":\"ok\",\"event\":\"c\"}"
+    run { in.json; field status; tally }
+    want "ok\t2" "fail\t1"
+}
+test "error count" {
+    given "{\"level\":\"ERROR\"}" "{\"level\":\"INFO\"}" "{\"level\":\"ERROR\"}"
+    run { in.json; field level; match /ERROR/; count }
+    want "2"
+}

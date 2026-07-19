@@ -8,3 +8,9 @@ gauge .packets -max 100000
 source .packets { in; nonempty; count }
 tail .packets_raw
 source .packets_raw { in; nonempty }
+
+test "protocol tally" {
+  given "1 0.000000 10.0.0.1 → 10.0.0.2 TCP 74 SYN" "2 0.000001 10.0.0.2 → 10.0.0.1 TCP 66 ACK" "3 0.000002 10.0.0.1 → 8.8.8.8 UDP 90 query"
+  run { in; nonempty; field 6; tally }
+  want "TCP\t2" "UDP\t1"
+}

@@ -6,3 +6,6 @@ gauge .runners -max 100
 source .runners { in.json; field resource_class; count }
 tail .classes
 source .classes { in.json; field resource_class }
+
+test "versions tally" { given "{\"resource_class\": \"ns/small\", \"version\": \"1.0.0\"}" "{\"resource_class\": \"ns/large\", \"version\": \"1.0.0\"}" "{\"resource_class\": \"ns/small\", \"version\": \"1.1.0\"}"; run { in.json; field version; tally }; want "1.0.0\t2" "1.1.0\t1" }
+test "classes field" { given "{\"resource_class\": \"ns/small\", \"version\": \"1.0.0\"}"; run { in.json; field resource_class }; want "ns/small" }

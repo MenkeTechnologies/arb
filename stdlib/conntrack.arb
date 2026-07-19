@@ -8,3 +8,6 @@ gauge .assured -max 5000
 source .assured { in; match /ASSURED/; count }
 tail .flows
 source .flows { in }
+
+test "proto tally" { given "    [NEW] tcp      6 120 SYN_SENT src=10.0.0.1 dst=10.0.0.2" "[UPDATE] tcp      6 60 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 [ASSURED]" "    [NEW] udp      17 30 src=10.0.0.3 dst=10.0.0.4"; run { in; field 1; tally }; want "[NEW]\t2" "[UPDATE]\t1" }
+test "assured count" { given "    [NEW] tcp 6 120 SYN_SENT src=10.0.0.1" "[UPDATE] tcp 6 60 ESTABLISHED src=10.0.0.1 [ASSURED]" "[UPDATE] tcp 6 60 ESTABLISHED src=10.0.0.2 [ASSURED]"; run { in; match /ASSURED/; count }; want "2" }

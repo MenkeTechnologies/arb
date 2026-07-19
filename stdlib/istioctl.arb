@@ -6,3 +6,6 @@ gauge .proxies -max 100
 source .proxies { in; reject /^NAME/; count }
 tail .proxies
 source .proxies { in; reject /^NAME/; field 1 }
+
+test "cds tally" { given "NAME                    CDS        LDS        EDS        RDS        ISTIOD" "productpage-v1.default  SYNCED     SYNCED     SYNCED     SYNCED     istiod-1" "reviews-v1.default      SYNCED     SYNCED     SYNCED     SYNCED     istiod-1" "ratings-v1.default      SYNCED     STALE      SYNCED     SYNCED     istiod-1"; run { in; reject /^NAME/; field 3; tally }; want "SYNCED\t2" "STALE\t1" }
+test "proxy count" { given "NAME                    CDS        LDS        EDS        RDS        ISTIOD" "productpage-v1.default  SYNCED     SYNCED     SYNCED     SYNCED     istiod-1" "reviews-v1.default      SYNCED     SYNCED     SYNCED     SYNCED     istiod-1"; run { in; reject /^NAME/; count }; want "2" }

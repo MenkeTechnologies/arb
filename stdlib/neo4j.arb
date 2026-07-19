@@ -6,3 +6,14 @@ gauge .nodes -max 1000
 source .nodes { in.csv; field label; count }
 tail .rows
 source .rows { in.csv; field name }
+
+test "label tally" {
+  given "label,name" "Person,alice" "Person,bob" "Movie,matrix"
+  run { in.csv; field label; tally }
+  want "Person\t2" "Movie\t1"
+}
+test "node count" {
+  given "label,name" "Person,alice" "Person,bob" "Movie,matrix"
+  run { in.csv; field label; count }
+  want "3"
+}

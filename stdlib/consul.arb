@@ -3,8 +3,24 @@
 bars .status
 source .status { in.json; field Status; tally }
 bars .service
-source .service { in.json; reject /Status=passing/; field ServiceName; tally }
+source .service { in.json; reject /passing/; field ServiceName; tally }
 gauge .critical -max 50
-source .critical { in.json; match /Status=critical/; count }
+source .critical { in.json; match /critical/; count }
 tail .log
 source .log { in.json; field Output }
+
+test "status tally" {
+  given "{\"Status\":\"passing\"}" "{\"Status\":\"critical\"}" "{\"Status\":\"passing\"}"
+  run { in.json; field Status; tally }
+  want "passing\t2" "critical\t1"
+}
+test "non-passing services" {
+  given "{\"Status\":\"critical\",\"ServiceName\":\"web\"}" "{\"Status\":\"warning\",\"ServiceName\":\"db\"}" "{\"Status\":\"passing\",\"ServiceName\":\"cache\"}"
+  run { in.json; reject /passing/; field ServiceName; tally }
+  want "db\t1" "web\t1"
+}
+test "critical count" {
+  given "{\"Status\":\"critical\"}" "{\"Status\":\"passing\"}"
+  run { in.json; match /critical/; count }
+  want "1"
+}

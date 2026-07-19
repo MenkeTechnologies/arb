@@ -8,3 +8,14 @@ text .total
 source .total { in; count }
 tail .log
 source .log { in }
+
+test "error count" {
+  given "[1.2] usb new device" "[2.3] EXT4-fs error bad block" "[3.4] task hung failure detected"
+  run { in; match /error|fail|warn/; count }
+  want "2"
+}
+test "total messages" {
+  given "[1.2] usb new device" "[2.3] EXT4-fs mounted" "[3.4] eth0 link up"
+  run { in; count }
+  want "3"
+}

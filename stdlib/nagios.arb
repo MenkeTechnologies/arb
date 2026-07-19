@@ -6,3 +6,14 @@ gauge .critical -max 100
 source .critical { in; match /CRITICAL/; count }
 tail .problems
 source .problems { in; reject /OK/ }
+
+test "state tally" {
+  given "host service state info" "web1 http OK fine" "web2 http CRITICAL down" "db1 mysql OK fine"
+  run { in; reject /^host/; field 3; tally }
+  want "OK\t2" "CRITICAL\t1"
+}
+test "critical count" {
+  given "host service state info" "web1 http OK fine" "web2 http CRITICAL down" "db1 mysql OK fine"
+  run { in; match /CRITICAL/; count }
+  want "1"
+}

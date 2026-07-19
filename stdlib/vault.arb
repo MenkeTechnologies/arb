@@ -1,10 +1,21 @@
 # vault — audit-log request paths, latency, and error rate
 #   vault audit -format=json | arb -p vault
 bars .paths
-source .paths { in.json; field request.path; tally }
+source .paths { in.json; field request path; tally }
 gauge .latency -max 500
-source .latency { in.json; field request.duration_ms; where x > 0; avg }
+source .latency { in.json; field request duration_ms; where x > 0; avg }
 gauge .errors -max 100
 source .errors { in.json; match /error/; count }
 tail .denied
 source .denied { in.json; match /permission denied/ }
+
+test "request path tally" {
+  given "{\"request\":{\"path\":\"sys/health\"}}" "{\"request\":{\"path\":\"sys/health\"}}" "{\"request\":{\"path\":\"secret/data/app\"}}"
+  run { in.json; field request path; tally }
+  want "sys/health\t2" "secret/data/app\t1"
+}
+test "denied requests" {
+  given "{\"error\":\"permission denied\",\"request\":{\"path\":\"secret/data\"}}" "{\"request\":{\"path\":\"sys/health\"}}"
+  run { in.json; match /permission denied/ }
+  want "{\"error\":\"permission denied\",\"request\":{\"path\":\"secret/data\"}}"
+}

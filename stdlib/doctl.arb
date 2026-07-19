@@ -8,3 +8,19 @@ gauge .droplets -max 100
 source .droplets { in; reject /^ID/; count }
 tail .names
 source .names { in; reject /^ID/; field 2 }
+
+test "droplet status tally" {
+  given "ID Name PubIP PrivIP IPv6 Mem VCPU Disk Region Image VPC Status Tags" "12345 web 1.2.3.4 10.0.0.1 ipv6a 1024 1 25 nyc1 ubuntu vpc1 active tag1" "67890 db 5.6.7.8 10.0.0.2 ipv6b 2048 2 50 sfo2 debian vpc2 off tag2"
+  run { in; reject /^ID/; field 12; tally }
+  want "active\t1" "off\t1"
+}
+test "region tally" {
+  given "ID Name PubIP PrivIP IPv6 Mem VCPU Disk Region Image VPC Status Tags" "12345 web 1.2.3.4 10.0.0.1 ipv6a 1024 1 25 nyc1 ubuntu vpc1 active tag1" "67890 db 5.6.7.8 10.0.0.2 ipv6b 2048 2 50 sfo2 debian vpc2 off tag2"
+  run { in; reject /^ID/; field 9; tally }
+  want "nyc1\t1" "sfo2\t1"
+}
+test "droplet names" {
+  given "ID Name PubIP PrivIP IPv6 Mem VCPU Disk Region Image VPC Status Tags" "12345 web 1.2.3.4 10.0.0.1 ipv6a 1024 1 25 nyc1 ubuntu vpc1 active tag1" "67890 db 5.6.7.8 10.0.0.2 ipv6b 2048 2 50 sfo2 debian vpc2 off tag2"
+  run { in; reject /^ID/; field 2 }
+  want "web" "db"
+}

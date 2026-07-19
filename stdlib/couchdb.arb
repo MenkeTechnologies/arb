@@ -6,3 +6,14 @@ gauge .errors -max 100
 source .errors { in; match /\[error\]/; count }
 tail .requests
 source .requests { in; match /GET|PUT|POST|DELETE/ }
+
+test "log level tally" {
+  given "[notice] req GET /db 200" "[error] req PUT /db 500" "[notice] req GET /x 200"
+  run { in; field 1; tally }
+  want "[notice]\t2" "[error]\t1"
+}
+test "error count" {
+  given "[notice] GET /db 200" "[error] PUT /db 500"
+  run { in; match /\[error\]/; count }
+  want "1"
+}

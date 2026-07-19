@@ -6,3 +6,14 @@ gauge .backlog -max 500
 source .backlog { in; reject /State/; field 2; sum }
 tail .conns
 source .conns { in; match /ESTAB/ }
+
+test "socket state tally skips header" {
+    given "State Recv-Q x" "ESTAB 0 y" "LISTEN 0 z" "ESTAB 5 w"
+    run { in; reject /State/; field 1; tally }
+    want "ESTAB\t2" "LISTEN\t1"
+}
+test "recv-queue backlog sum" {
+    given "State Recv-Q x" "ESTAB 5 y" "LISTEN 3 z"
+    run { in; reject /State/; field 2; sum }
+    want "8"
+}
