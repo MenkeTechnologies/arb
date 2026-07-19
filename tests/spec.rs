@@ -1020,3 +1020,19 @@ fn test_blocks_parse_into_spec_tests() {
     // An unknown clause errors (fail-closed).
     assert!(build(&parse("test \"x\" { given \"a\"; run { in }; bogus \"y\" }").unwrap()).is_err());
 }
+
+#[test]
+fn spawn_pty_flag_and_send_action() {
+    use arb::spec::BindAction;
+    // `spawn -pty CMD` sets spawn + the pty flag; plain spawn does not.
+    let s = build(&parse("tail .t\nspawn -pty seq 1 3").unwrap()).unwrap();
+    assert_eq!(s.spawn.as_deref(), Some("seq 1 3"));
+    assert!(s.spawn_pty);
+    let s2 = build(&parse("tail .t\nspawn seq 1 3").unwrap()).unwrap();
+    assert!(!s2.spawn_pty);
+    // `send "text"` parses to a Send action; the lexer already turns \n into a
+    // real newline, and empty send errors.
+    let s3 = build(&parse("tail .t\nbind C-y send \"yes\\n\"").unwrap()).unwrap();
+    assert!(matches!(&s3.binds[0].action, BindAction::Send(t) if t == "yes\n"));
+    assert!(build(&parse("bind C-y send").unwrap()).is_err());
+}

@@ -85,7 +85,8 @@ spawn { tail -f a.log; grep err }   block form → one `sh -c` string ✅
 ! vmstat 1 every 1s      re-run a command on a timer ✅ (headless runs it once)
 < file.log               read a file as the stream ✅ (quote absolute paths: `< "/var/log/x"`)
 out { … }                downstream emission (to | next), shaped by controls
-send "text"              send input to spawned process (Expect) ⬜
+spawn -pty CMD           run CMD on a pseudo-terminal (acts interactive) ✅
+send "text"              write to a `spawn -pty` child's stdin (Expect) ✅
 ```
 
 `spawn CMD` (or `spawn { CMD }`) makes a spec self-sourcing: arb runs CMD via
@@ -96,8 +97,12 @@ output into the stream — in the TUI/served dashboard it loops in the backgroun
 headless (piped onward) it runs CMD **once**, because a reducer/emit over an
 endless timer source could never terminate. At most one stream source may be
 declared (`spawn`/`< FILE`/`! …`); a CLI `--run 'PROD | _ | CONS'` producer wins
-over all of them. The interactive `send`/PTY react leg + the `.ps.sel` selection
-widget (§14) remain ⬜ (no PTY substrate yet).
+over all of them. **`spawn -pty CMD`** runs the spawn command on a pseudo-terminal
+so it behaves as if interactive, and keeps a writer to its stdin so a **`send
+"text"`** action (a bind/expect action, like `set`/`beep`/`exec`) can drive it —
+Expect-style automation, e.g. `expect { /password:/ send "hunter2\n" }`. The
+`send` write happens in the TUI (headless falls back to a plain pipe). The
+`.ps.sel` selection widget (§14) is still ⬜ (it needs per-widget named sources).
 
 ## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 
@@ -295,7 +300,7 @@ expect /panic|OOM/ beep                          # …or a single action
 expect /down/ exec "notify-send arb"
 timeout 5s alert "stream idle"           # fire when no new line for 5s (Ns/Nms/Nm)
 # actions: set .name V | quit | beep | alert MSG | flash .w COLOR | exec CMD
-#          | { … }  (a block runs several in order)
+#          | send "text" (to a spawn -pty child) | { … } (a block, run in order)
 ```
 
 The block form groups several clauses under one `expect`:
@@ -308,8 +313,9 @@ expect {
 }
 ```
 
-`spawn CMD` (SPEC §7) launches a process whose stdout feeds the stream; the
-interactive `send`/PTY react leg is still ⬜ Planned.
+`spawn CMD` (SPEC §7) launches a process whose stdout feeds the stream;
+`spawn -pty CMD` runs it on a pseudo-terminal and a `send "text"` action writes
+to its stdin, so an `expect { /re/ send "…" }` clause automates it (Expect).
 
 ## 14. Events — bind (Tk)
 
@@ -498,7 +504,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
-4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source. *(interactive `send`/PTY react + `.ps.sel`: ⬜)*
+4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source, `spawn -pty CMD` + the `send "text"` action (Expect-style automation of a PTY child). *(`.ps.sel` selection widget: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
 7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*

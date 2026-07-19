@@ -588,6 +588,10 @@ the terminal or the browser) is complete:
   reads a file, and `! CMD every Ns` re-runs CMD on a timer (headless: once). So
   a dashboard preset needs nothing piped in (`arb top.arb` with `spawn top -b`).
   One stream source per spec; a CLI `--run` producer wins if both given.
+- **Expect-style automation** — `spawn -pty CMD` runs the source on a
+  pseudo-terminal (so it acts interactive), and a `send "text"` action writes to
+  its stdin, so `expect { /password:/ send "hunter2\n" }` drives it — scripted
+  interaction with a live process, in the spec.
 - **Zero-config sniffing** — `cmd | arb` (no spec) peeks the stream and
   auto-picks a preset by data shape (JSON→`json`/`logs`, `docker`/`top`/`k8s`
   headers, git-log, CSV→`table`); a non-blocking `poll` peek never hangs, and

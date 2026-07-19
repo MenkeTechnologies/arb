@@ -57,6 +57,10 @@ rayon = "1.12.0"
 # Package-dep version-constraint checking (arb install). Already in the tree
 # transitively; a dtolnay zero-runtime-dep crate, same durability tier as serde.
 semver = "1"
+# `spawn -pty CMD`: run a spawn source on a pseudo-terminal so it behaves as if
+# interactive, and keep a writer to its stdin for the Expect `send` action.
+# Cross-platform (macOS/Linux), the same pin the sibling zwire-host uses.
+portable-pty = "0.9.0"
 
 # rkyv-backed script cache (`~/.arb/scripts.rkyv`) — same architecture every
 # sibling lang ships (zshrs/rubylang/elisprs/vimlrs/awkrs): the outer shard is a

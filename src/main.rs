@@ -625,7 +625,22 @@ fn main() -> io::Result<()> {
 
         // Feed the stream: a spawned producer (`--run`/`spawn`/`< file`), a
         // `! CMD every Ns` poll loop, or stdin.
-        let err_pane = if let Some(prod) = &producer {
+        let err_pane = if spec.spawn_pty && run_pipeline.is_none() && producer.is_some() {
+            // `spawn -pty CMD`: run on a PTY so the child acts interactive, and
+            // keep the stdin writer so `send "…"` can drive it (Expect). The PTY
+            // merges stdout+stderr, so there's no separate error pane.
+            let prod = producer.as_deref().unwrap();
+            match arb::pty::spawn_pty_producer(prod, state.clone()) {
+                Ok(writer) => {
+                    controls.lock().unwrap().pty_writer = Some(writer);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("arb: spawn -pty: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(prod) = &producer {
             match spawn_producer(prod, state.clone()) {
                 Ok(es) => Some((es, "stderr".to_string())),
                 Err(e) => {

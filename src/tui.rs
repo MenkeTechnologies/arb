@@ -130,6 +130,9 @@ pub struct Controls {
     pub scroll: HashMap<String, usize>,
     /// Previous mouse-down (time, col, row) for double-click detection.
     pub last_click: Option<(Instant, u16, u16)>,
+    /// Writer to a `spawn -pty` child's stdin, so the `send "…"` action can drive
+    /// it (Expect). `None` unless the stream source is a PTY.
+    pub pty_writer: Option<Box<dyn std::io::Write + Send>>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -262,6 +265,15 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn();
+        }
+        BindAction::Send(text) => {
+            // Write to the `spawn -pty` child's stdin (Expect `send`); a no-op
+            // when the source isn't a PTY. Best-effort — a closed child is fine.
+            if let Some(w) = c.pty_writer.as_mut() {
+                use std::io::Write;
+                let _ = w.write_all(text.as_bytes());
+                let _ = w.flush();
+            }
         }
         BindAction::Seq(actions) => {
             for a in actions {

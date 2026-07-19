@@ -159,6 +159,9 @@ pub enum BindAction {
     Flash { widget: String, color: String },
     /// Run a shell command, fire-and-forget (never waits, never blocks the loop).
     Exec(String),
+    /// Write text to a `spawn -pty` child's stdin — the Expect `send`. No-op
+    /// unless the stream source is a PTY. Include `\n` to submit a line.
+    Send(String),
     /// Run several actions in order (block form `{ alert "x"; beep }`).
     Seq(Vec<BindAction>),
 }
@@ -259,6 +262,16 @@ fn parse_action(verb: &str, params: &[Arg]) -> Result<BindAction, String> {
             }
             Ok(BindAction::Exec(cmd))
         }
+        "send" => {
+            let text = joined();
+            if text.is_empty() {
+                return Err("send: missing text".into());
+            }
+            // The lexer already turns `\n`/`\t` in a quoted string into the real
+            // char, and (like Expect) `send` never auto-appends — so `send "y\n"`
+            // submits a line, `send "y"` leaves the cursor on the same line.
+            Ok(BindAction::Send(text))
+        }
         "flash" => {
             let widget = params
                 .first()
@@ -349,6 +362,10 @@ pub struct Spec {
     /// feed sample lines through a query pipeline and assert the output. Run
     /// headlessly by `arb --test`; ignored by every other mode.
     pub tests: Vec<TestCase>,
+    /// `spawn -pty CMD`: run the spawn command on a pseudo-terminal (so it acts
+    /// interactive) and keep a writer to its stdin for the `send` action. Only
+    /// meaningful with `spawn` set and in the interactive TUI.
+    pub spawn_pty: bool,
 }
 
 /// One in-language test case: feed `given` lines through the `run` pipeline
@@ -519,6 +536,7 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
             ));
         }
         dst.spawn = Some(sp);
+        dst.spawn_pty = src.spawn_pty;
     }
     if let Some(f) = src.source_file {
         if stream_source_set(dst) {
@@ -710,12 +728,18 @@ fn build_into(
                 };
                 spec.tests.push(parse_test_case(name, body)?);
             } else if c.name == "spawn" {
-                // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use its
-                // stdout as the stream (input source, in place of stdin).
-                let cmd = match c.args.first() {
+                // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use
+                // its stdout as the stream (input source, in place of stdin). A
+                // leading `-pty` runs CMD on a pseudo-terminal so it behaves as if
+                // interactive and `send "…"` can drive its stdin (Expect).
+                let args = c.args.as_slice();
+                let (pty, args) = match args.first().and_then(Arg::as_str) {
+                    Some("-pty") => (true, &args[1..]),
+                    _ => (false, args),
+                };
+                let cmd = match args.first() {
                     Some(Arg::Block(b)) => block_to_shell(b),
-                    _ => c
-                        .args
+                    _ => args
                         .iter()
                         .filter_map(Arg::as_str)
                         .collect::<Vec<_>>()
@@ -728,6 +752,7 @@ fn build_into(
                     return Err("spawn: a stream source is already declared".into());
                 }
                 spec.spawn = Some(cmd);
+                spec.spawn_pty = pty;
             } else if c.name == "<" {
                 // `< FILE`: read FILE as the stream (input source, in place of stdin).
                 // An unquoted absolute path (`/var/log/x`) is truncated by the lexer's
