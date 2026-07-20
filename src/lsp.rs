@@ -583,6 +583,7 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("cols", "Directive", "Size the grid's column tracks: N fixed cells, N% percentage, or N*/* weight.", "cols \"20 * 2*\""),
     ("gap", "Directive", "Blank cells between grid rows/columns (default 0).", "gap 1"),
     ("layout", "Directive", "Auto-tile direction when no widget has a grid cell (horizontal | vertical).", "layout horizontal"),
+    ("theme", "Directive", "Set the color palette: one of 31 built-ins (see arb --list-themes) or `theme custom c1..c6`.", "theme neon-noir"),
     ("configure", "Directive", "Merge new -opts into an already-declared widget (build-time; later keys win).", ".cpu configure -max 200"),
     ("actor", "Directive", "Declare a message-handling actor with a single scalar state and one handler per message.", "actor sq(state) { on job(x) { reply x * x } }"),
     ("on", "Directive", "A message handler inside an actor body: on MSG(params) { stmts; reply EXPR }.", "on job(x) { reply x * 2 }"),

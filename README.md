@@ -480,6 +480,15 @@ to tint its border and accent — both apply in the TUI and the web dashboard, s
 panels read cleanly and can be status-coded (green ok, red errors). `list`/`tail`
 take `-limit N` (alias `-lines N`) to cap the rows shown to the last N.
 
+`theme NAME` recolors the whole TUI from **31 built-in palettes** (the
+storageshower HUD schemes shared with the sibling `iftoprs`/`htoprs` apps —
+`neon-noir`, `blade-runner`, `night-city`, `megacorp`, … ; `arb --list-themes`
+prints them with swatches), or `theme custom c1..c6` for your own 6-index
+256-color palette. With a theme active, each widget's default accent is the
+theme accent and `-color accent|primary|alt|mid|dim|bg` resolves through it;
+`-color green`/`red`/… stay fixed overrides, and `--theme NAME` overrides the
+spec (`find / | arb --fzf --theme neon-noir`).
+
 ### Testing pipelines in the language itself
 
 A spec can carry its own unit tests. A `test "NAME" { … }` block feeds sample

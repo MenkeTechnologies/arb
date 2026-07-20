@@ -30,6 +30,7 @@ pub mod sniff;
 pub mod spec;
 pub mod stream;
 pub mod testrun;
+pub mod theme;
 pub mod tui;
 pub mod web;
 pub mod xpath;

@@ -880,6 +880,7 @@ pub fn run(
                     prev_ref,
                     &fzf_prompt,
                     &fzf_header,
+                    spec.theme,
                     &mut hitmap,
                 );
             });
@@ -1139,7 +1140,7 @@ fn render(
                 ..Default::default()
             };
             let meta = cmeta.get(name).unwrap_or(&default_meta);
-            render_control(f, rects[i], w, val, meta, &raw, focus == Some(name));
+            render_control(f, rects[i], w, val, meta, &raw, focus == Some(name), spec.theme);
             continue;
         }
         // Resolve `apply .name` placeholders against the live input values before
@@ -1160,7 +1161,7 @@ fn render(
             .get(w.path.trim_start_matches('.'))
             .copied()
             .unwrap_or(0);
-        render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc);
+        render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc, spec.theme);
     }
 }
 
@@ -1719,7 +1720,7 @@ pub fn update_sel_controls(spec: &Spec, raw: &[String], c: &mut Controls) {
     }
 }
 
-fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool) {
+fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool, accent: Color) {
     let label = w
         .opts
         .get("title")
@@ -1727,7 +1728,7 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool)
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
     let border = if focused {
-        Color::Cyan
+        accent
     } else {
         Color::DarkGray
     };
@@ -1738,7 +1739,7 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool)
     let body = if focused {
         Line::from(vec![
             Span::raw(val.to_string()),
-            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::styled("▏", Style::default().fg(accent)),
         ])
     } else if val.is_empty() {
         Line::from(Span::styled(
@@ -1754,6 +1755,7 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool)
 /// Render an interactive control (slider/check/facet); text kinds delegate to
 /// [`render_input`]. `meta` is the control's parallel metadata; `raw` is the live
 /// stream (for a `-field` facet's candidates).
+#[allow(clippy::too_many_arguments)]
 fn render_control(
     f: &mut Frame,
     area: Rect,
@@ -1762,7 +1764,9 @@ fn render_control(
     meta: &ControlMeta,
     raw: &[String],
     focused: bool,
+    theme: Option<crate::theme::Palette>,
 ) {
+    let accent = theme_accent(theme);
     let label = w
         .opts
         .get("label")
@@ -1770,7 +1774,7 @@ fn render_control(
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
     let border = if focused {
-        Color::Cyan
+        accent
     } else {
         Color::DarkGray
     };
@@ -1779,14 +1783,14 @@ fn render_control(
         .border_style(Style::default().fg(border))
         .title(format!(" {label} "));
     match meta.kind {
-        ControlKind::Text => render_input(f, area, w, val, focused),
+        ControlKind::Text => render_input(f, area, w, val, focused, accent),
         ControlKind::Slider => {
             let v = val.trim().parse::<f64>().unwrap_or(meta.min);
             let span = (meta.max - meta.min).max(f64::MIN_POSITIVE);
             let filled = (((v - meta.min) / span) * 20.0).round().clamp(0.0, 20.0) as usize;
             let bar: String = "█".repeat(filled) + &"─".repeat(20 - filled);
             let body = Line::from(vec![
-                Span::styled(bar, Style::default().fg(Color::Cyan)),
+                Span::styled(bar, Style::default().fg(accent)),
                 Span::raw(format!("  {}", crate::query::fmt_scalar(v))),
             ]);
             f.render_widget(Paragraph::new(body).block(block), area);
@@ -1795,7 +1799,7 @@ fn render_control(
             let on = val == "1";
             let body = Line::from(Span::styled(
                 format!("[{}] {label}", if on { "x" } else { " " }),
-                Style::default().fg(if on { Color::Cyan } else { Color::Gray }),
+                Style::default().fg(if on { accent } else { Color::Gray }),
             ));
             f.render_widget(Paragraph::new(body).block(block), area);
         }
@@ -1817,7 +1821,7 @@ fn render_control(
                     };
                     let style = if focused && i == meta.cursor {
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(accent)
                             .add_modifier(Modifier::REVERSED)
                     } else {
                         Style::default()
@@ -1843,7 +1847,7 @@ fn render_control(
                     let mark = if cur { "▸ " } else { "  " };
                     let mut style = Style::default();
                     if cur {
-                        style = style.fg(Color::Cyan);
+                        style = style.fg(accent);
                         if focused {
                             style = style.add_modifier(Modifier::REVERSED);
                         } else {
@@ -1985,6 +1989,7 @@ fn render_fzf(
     preview: Option<(&[String], &str)>,
     prompt: &str,
     header: &str,
+    theme: Option<crate::theme::Palette>,
     hitmap: &mut Vec<HitTarget>,
 ) -> usize {
     // Reserve a bottom strip for the stderr pane when present.
@@ -2025,9 +2030,9 @@ fn render_fzf(
     } else {
         format!(" ({})", marks.len())
     };
-    // fzf-style prompt: cyan prompt string, the query with a cursor bar, then a
-    // cyan matched/total(marked) counter and dim key hints.
-    let cyan = Style::default().fg(Color::Cyan);
+    // fzf-style prompt: accent prompt string, the query with a cursor bar, then an
+    // accent matched/total(marked) counter and dim key hints (theme-aware).
+    let cyan = Style::default().fg(theme_accent(theme));
     let prompt_line = Line::from(vec![
         Span::styled(prompt.to_string(), cyan.add_modifier(Modifier::BOLD)),
         Span::raw(format!("{filter}\u{258f}")),
@@ -2234,6 +2239,36 @@ fn hex_color(hex: &str) -> Color {
     Color::Cyan
 }
 
+/// Resolve a widget's accent color, theme-aware. Precedence: an explicit theme
+/// palette slot (`-color accent|primary|alt|mid|dim|bg`) → a fixed semantic name
+/// (`-color green`, theme-independent) → otherwise the theme accent when a theme
+/// is active, else the classic cyan default. Backward-compatible: with no theme
+/// and a semantic/absent name this is exactly the old `hex_color(color_hex(..))`.
+fn resolve_accent(name: Option<&str>, theme: Option<crate::theme::Palette>) -> Color {
+    if let Some(n) = name {
+        let nl = n.trim().to_ascii_lowercase();
+        if let Some(p) = theme {
+            if let Some(col) = p.slot(&nl) {
+                return col;
+            }
+        }
+        if crate::spec::is_named_color(&nl) {
+            return hex_color(crate::spec::color_hex(Some(&nl)));
+        }
+        // Unknown name: fall through to the theme accent / cyan default.
+    }
+    match theme {
+        Some(p) => p.accent(),
+        None => hex_color(crate::spec::color_hex(None)),
+    }
+}
+
+/// The theme-aware focus/highlight accent (focused control borders, fzf cursor,
+/// prompt) — the theme accent when set, else cyan.
+fn theme_accent(theme: Option<crate::theme::Palette>) -> Color {
+    theme.map(|p| p.accent()).unwrap_or(Color::Cyan)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_widget(
     f: &mut Frame,
@@ -2245,6 +2280,7 @@ fn render_widget(
     flash: Option<&str>,
     tab_sel: usize,
     scroll: usize,
+    theme: Option<crate::theme::Palette>,
 ) {
     // `-label`/`-title` overrides the widget's display name (the dot-path).
     let name = w
@@ -2264,7 +2300,7 @@ fn render_widget(
     // element (gauge/bar fill, spark, chart line, table header). Default cyan. A
     // live `flash` action temporarily overrides the color.
     let color_name = flash.or_else(|| w.opts.get("color").map(String::as_str));
-    let accent = hex_color(crate::spec::color_hex(color_name));
+    let accent = resolve_accent(color_name, theme);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
@@ -2798,7 +2834,7 @@ mod tests {
         let st = StreamState::new();
         let data = vec!["one".to_string(), "two".to_string()];
         let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
-        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0, 0))
+        term.draw(|f| render_widget(f, f.area(), w, &st, &data, None, None, 0, 0, None))
             .unwrap();
         term.backend()
             .buffer()
@@ -3469,6 +3505,35 @@ mod tests {
         );
         // A container shows its bound stream content, not an apology string.
         assert!(render_text("block .b").contains("two"));
+    }
+
+    #[test]
+    fn theme_directive_sets_palette_and_resolve_accent() {
+        use super::resolve_accent;
+        use ratatui::style::Color;
+        // `theme neon-noir` sets the palette; accent (c2) = index 231.
+        let sp = build(&parse("theme neon-noir\ntext .t <- in").unwrap()).unwrap();
+        let th = sp.theme;
+        assert_eq!(th.map(|p| p.accent()), Some(Color::Indexed(231)));
+        // No -color, theme active -> theme accent.
+        assert_eq!(resolve_accent(None, th), Color::Indexed(231));
+        // A palette slot resolves through the theme.
+        assert_eq!(resolve_accent(Some("dim"), th), Color::Indexed(57)); // c5
+        // A fixed semantic name is theme-independent (green hex, not a slot).
+        assert_eq!(resolve_accent(Some("green"), th), super::hex_color("#00e676"));
+        // No theme, no color -> classic cyan default (backward compatible).
+        assert_eq!(resolve_accent(None, None), super::hex_color(crate::spec::color_hex(None)));
+    }
+
+    #[test]
+    fn theme_custom_and_unknown() {
+        // `theme custom c1..c6` builds a palette from six indices.
+        let sp = build(&parse("theme custom 1 2 3 4 5 6\ntext .t <- in").unwrap()).unwrap();
+        assert_eq!(sp.theme.map(|p| p.accent()), Some(ratatui::style::Color::Indexed(2)));
+        // An unknown theme name is a build error.
+        assert!(build(&parse("theme bogus\ntext .t <- in").unwrap()).is_err());
+        // `theme custom` with the wrong count of indices errors.
+        assert!(build(&parse("theme custom 1 2 3\ntext .t <- in").unwrap()).is_err());
     }
 
     #[test]

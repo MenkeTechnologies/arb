@@ -99,6 +99,19 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m List available presets (stdlib + ~/.arb/lib) and exit"
     )]
     list: bool,
+    /// Override the spec's color theme (one of the 31 built-ins, e.g. neon-noir).
+    #[arg(
+        long = "theme",
+        value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Color theme (one of 31, e.g. neon-noir); overrides the spec"
+    )]
+    theme: Option<String>,
+    /// List the 31 built-in color themes (with swatches) and exit.
+    #[arg(
+        long = "list-themes",
+        help = "\x1b[32m//\x1b[0m List the 31 built-in color themes and exit"
+    )]
+    list_themes: bool,
     /// Save a spec as a named user preset in `~/.arb/lib`, then exit.
     /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
     #[arg(
@@ -447,6 +460,19 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    if cli.list_themes {
+        // Each theme printed with a 6-cell 256-color swatch (its c1..c6 palette).
+        let mut out = io::stdout().lock();
+        for (name, pal) in arb::theme::THEMES {
+            let swatch: String = pal
+                .iter()
+                .map(|&c| format!("\x1b[48;5;{c}m  \x1b[0m"))
+                .collect();
+            writeln!(out, "{swatch}  {name}")?;
+        }
+        return Ok(());
+    }
+
     if let Some(name) = cli.save.clone() {
         return save_preset(&name, &cli);
     }
@@ -517,7 +543,7 @@ fn main() -> io::Result<()> {
         None
     };
 
-    let spec = if positional_pipeline {
+    let mut spec = if positional_pipeline {
         // The positional was a pipeline, not a spec file — use the zero-config
         // default (a select list under `--fzf`, otherwise a stream tail).
         spec::build(&parser::parse(default_spec_src(cli.fzf)).unwrap()).unwrap()
@@ -538,6 +564,18 @@ fn main() -> io::Result<()> {
             }
         }
     };
+
+    // `--theme NAME` overrides the spec's theme (or sets one on a zero-config /
+    // fzf spec, so `find / | arb --fzf --theme neon-noir` recolors the picker).
+    if let Some(name) = &cli.theme {
+        match arb::theme::by_name(name) {
+            Some(p) => spec.theme = Some(p),
+            None => {
+                eprintln!("arb: --theme: unknown theme `{name}` (see `arb --list-themes`)");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Select mode is the fzf surface expressed as a widget: `--fzf` synthesizes a
     // `select` spec, and a hand-written `select .name` widget turns it on too — so

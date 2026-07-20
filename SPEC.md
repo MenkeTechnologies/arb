@@ -466,9 +466,24 @@ arb's expression grammar — handler bodies use arb expressions directly.
 ```
 target tui                 # default
 target web -port 8080      # served page + WS
-theme cyberpunk            # shared HUD scheme (matches sibling apps)
+theme neon-noir            # one of 31 built-in palettes (arb --list-themes)
+theme custom 201 231 93 219 57 53   # a custom 6-index (256-color) palette
 set refresh 250            # ms redraw throttle
 ```
+
+**Themes** — `theme NAME` sets the active color palette from the 31 built-ins
+(the storageshower HUD palettes shared with the sibling `iftoprs`/`htoprs` apps:
+`neon-sprawl`, `acid-rain`, `neon-noir`, `blade-runner`, `night-city`,
+`megacorp`, `zaibatsu`, `iftopcolor`, … — `arb --list-themes` prints them with
+swatches). Each is a 6-color palette `(primary, accent, alt, mid, dim, bg)` of
+256-color terminal indices; `theme custom c1 c2 c3 c4 c5 c6` supplies your own.
+With a theme active, every widget's default accent is the theme accent, and
+`-color <slot>` (`accent`/`primary`/`alt`/`mid`/`dim`/`bg`) resolves through it —
+so the whole TUI recolors as one system. The fixed semantic names (`-color green`
+/`red`/…) remain theme-independent explicit overrides, and with **no** `theme`
+the palette is the classic cyan default (themes are purely additive). `--theme
+NAME` overrides the spec (e.g. `find / | arb --fzf --theme neon-noir`). The
+served web dashboard keeps zgui-core's own colorscheme picker.
 
 Ships today as `arb --serve --port N`: a std-only HTTP server renders the same
 spec as a live browser dashboard, pushing widget data over a WebSocket (hand-rolled
@@ -570,6 +585,7 @@ src/spec.rs      spec interpreter: widgets, source/out pipelines, query-verb
                  parse, import resolution, preset library
 src/query.rs     jq/xpath/css/yq engine (pipeline eval over every format)
 src/actor.rs     actor system (§15): actor/on/reply parse + handler compiler, mpsc-mailbox threads (spawn/send/ask/pool), `via` parallel stream fan-out
+src/theme.rs     31 built-in color palettes (storageshower, shared with iftoprs/htoprs) + custom palette; theme-aware color resolution
 src/expr.rs      expression layer: fn/lambdas/operators → fusevm::Chunk on the VM
 src/stream.rs    stdin ring buffer + stream stats
 src/tui.rs       ratatui backend: render, event loop, fzf mode

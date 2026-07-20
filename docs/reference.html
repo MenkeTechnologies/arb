@@ -848,37 +848,42 @@
           <pre><code class="lang-arb">layout horizontal</code></pre>
         </article>
         <article class="doc-entry" id="doc-directives-14">
-          <h3><a class="doc-anchor" href="#doc-directives-14">#</a> <code>configure</code></h3>
+          <h3><a class="doc-anchor" href="#doc-directives-14">#</a> <code>theme</code></h3>
+          <p>Set the color palette: one of 31 built-ins (see arb --list-themes) or `theme custom c1..c6`.</p>
+          <pre><code class="lang-arb">theme neon-noir</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-15">
+          <h3><a class="doc-anchor" href="#doc-directives-15">#</a> <code>configure</code></h3>
           <p>Merge new -opts into an already-declared widget (build-time; later keys win).</p>
           <pre><code class="lang-arb">.cpu configure -max 200</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-15">
-          <h3><a class="doc-anchor" href="#doc-directives-15">#</a> <code>actor</code></h3>
+        <article class="doc-entry" id="doc-directives-16">
+          <h3><a class="doc-anchor" href="#doc-directives-16">#</a> <code>actor</code></h3>
           <p>Declare a message-handling actor with a single scalar state and one handler per message.</p>
           <pre><code class="lang-arb">actor sq(state) { on job(x) { reply x * x } }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-16">
-          <h3><a class="doc-anchor" href="#doc-directives-16">#</a> <code>on</code></h3>
+        <article class="doc-entry" id="doc-directives-17">
+          <h3><a class="doc-anchor" href="#doc-directives-17">#</a> <code>on</code></h3>
           <p>A message handler inside an actor body: on MSG(params) { stmts; reply EXPR }.</p>
           <pre><code class="lang-arb">on job(x) { reply x * 2 }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-17">
-          <h3><a class="doc-anchor" href="#doc-directives-17">#</a> <code>reply</code></h3>
+        <article class="doc-entry" id="doc-directives-18">
+          <h3><a class="doc-anchor" href="#doc-directives-18">#</a> <code>reply</code></h3>
           <p>Inside a handler, send an expression's value back to an ask/via caller.</p>
           <pre><code class="lang-arb">reply state + x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-18">
-          <h3><a class="doc-anchor" href="#doc-directives-18">#</a> <code>spawn</code></h3>
+        <article class="doc-entry" id="doc-directives-19">
+          <h3><a class="doc-anchor" href="#doc-directives-19">#</a> <code>spawn</code></h3>
           <p>Bind a session actor: spawn NAME = ACTOR(init); tell/ask drive it (distinct from the spawn CMD source).</p>
           <pre><code class="lang-arb">spawn w = worker(0)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-19">
-          <h3><a class="doc-anchor" href="#doc-directives-19">#</a> <code>pool</code></h3>
+        <article class="doc-entry" id="doc-directives-20">
+          <h3><a class="doc-anchor" href="#doc-directives-20">#</a> <code>pool</code></h3>
           <p>Bind a supervised session pool: pool NAME = ACTOR * N (a dead worker is respawned).</p>
           <pre><code class="lang-arb">pool p = worker * 8</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-20">
-          <h3><a class="doc-anchor" href="#doc-directives-20">#</a> <code>supervise</code></h3>
+        <article class="doc-entry" id="doc-directives-21">
+          <h3><a class="doc-anchor" href="#doc-directives-21">#</a> <code>supervise</code></h3>
           <p>Set a ref's crash policy: supervise NAME { on crash { restart | stop } } (default restart).</p>
           <pre><code class="lang-arb">supervise p { on crash { restart } }</code></pre>
         </article>

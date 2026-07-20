@@ -579,6 +579,10 @@ pub struct Spec {
     /// `layout horizontal|vertical` — the no-grid auto-tile direction (default
     /// vertical). Ignored once any widget declares a grid cell.
     pub flow: Flow,
+    /// `theme NAME` / `theme custom c1..c6` — the active color palette (one of the
+    /// 31 built-ins or a custom 6-index palette). `None` = the classic fixed
+    /// scheme (cyan default + named colors), so themes are purely additive.
+    pub theme: Option<crate::theme::Palette>,
 }
 
 /// A layout track size (a grid row/column). Maps to a ratatui `Constraint`.
@@ -813,6 +817,10 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     }
     // Session refs already namespaced by `prefix_spec`; carry them over.
     dst.actor_refs.extend(src.actor_refs);
+    // A module's `theme` applies only when the host hasn't set one (host wins).
+    if dst.theme.is_none() {
+        dst.theme = src.theme;
+    }
     if let Some(out) = src.out {
         if dst.out.is_some() {
             return Err(format!(
@@ -1147,6 +1155,36 @@ fn build_into(
                     .and_then(|s| s.parse::<u16>().ok())
                     .ok_or("gap: expected a cell count (`gap 1`)")?;
                 spec.gap = n.min(64);
+            } else if c.name == "theme" {
+                // `theme NAME` — one of the 31 built-in palettes; or
+                // `theme custom c1 c2 c3 c4 c5 c6` — a 6-index custom palette.
+                let first = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("theme: expected a name (`theme neon-noir`) or `theme custom c1..c6`")?;
+                if first == "custom" {
+                    let idx: Vec<u8> = c.args[1..]
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .filter_map(|s| s.parse::<u8>().ok())
+                        .collect();
+                    if idx.len() != 6 {
+                        return Err(
+                            "theme custom: expected 6 color indices 0-255 (`theme custom c1 c2 c3 c4 c5 c6`)"
+                                .into(),
+                        );
+                    }
+                    spec.theme = Some(crate::theme::custom([
+                        idx[0], idx[1], idx[2], idx[3], idx[4], idx[5],
+                    ]));
+                } else {
+                    spec.theme = Some(crate::theme::by_name(first).ok_or_else(|| {
+                        format!(
+                            "theme: unknown theme `{first}` (see `arb --list-themes`; or `theme custom c1..c6`)"
+                        )
+                    })?);
+                }
             } else if c.name == "layout" {
                 // `layout horizontal|vertical` — the no-grid auto-tile direction.
                 match c.args.first().and_then(Arg::as_str) {
@@ -1600,6 +1638,25 @@ pub fn parse_scalar(s: &str) -> f64 {
         }
     }
     s.parse::<f64>().unwrap_or(0.0)
+}
+
+/// Whether `name` is one of the fixed semantic color names (green/red/…) — an
+/// explicit, theme-independent override, distinct from a theme palette slot.
+pub fn is_named_color(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "green"
+            | "red"
+            | "yellow"
+            | "orange"
+            | "magenta"
+            | "pink"
+            | "blue"
+            | "white"
+            | "gray"
+            | "grey"
+            | "cyan"
+    )
 }
 
 pub fn color_hex(name: Option<&str>) -> &'static str {
