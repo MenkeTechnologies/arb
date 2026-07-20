@@ -828,37 +828,57 @@
           <pre><code class="lang-arb">grid .cpu -row 0 -col 0 -span 2</code></pre>
         </article>
         <article class="doc-entry" id="doc-directives-10">
-          <h3><a class="doc-anchor" href="#doc-directives-10">#</a> <code>configure</code></h3>
+          <h3><a class="doc-anchor" href="#doc-directives-10">#</a> <code>rows</code></h3>
+          <p>Size the grid's row tracks: N fixed cells, N% percentage, or N*/* proportional weight.</p>
+          <pre><code class="lang-arb">rows "1 2 1"</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-11">
+          <h3><a class="doc-anchor" href="#doc-directives-11">#</a> <code>cols</code></h3>
+          <p>Size the grid's column tracks: N fixed cells, N% percentage, or N*/* weight.</p>
+          <pre><code class="lang-arb">cols "20 * 2*"</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-12">
+          <h3><a class="doc-anchor" href="#doc-directives-12">#</a> <code>gap</code></h3>
+          <p>Blank cells between grid rows/columns (default 0).</p>
+          <pre><code class="lang-arb">gap 1</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-13">
+          <h3><a class="doc-anchor" href="#doc-directives-13">#</a> <code>layout</code></h3>
+          <p>Auto-tile direction when no widget has a grid cell (horizontal | vertical).</p>
+          <pre><code class="lang-arb">layout horizontal</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-14">
+          <h3><a class="doc-anchor" href="#doc-directives-14">#</a> <code>configure</code></h3>
           <p>Merge new -opts into an already-declared widget (build-time; later keys win).</p>
           <pre><code class="lang-arb">.cpu configure -max 200</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-11">
-          <h3><a class="doc-anchor" href="#doc-directives-11">#</a> <code>actor</code></h3>
+        <article class="doc-entry" id="doc-directives-15">
+          <h3><a class="doc-anchor" href="#doc-directives-15">#</a> <code>actor</code></h3>
           <p>Declare a message-handling actor with a single scalar state and one handler per message.</p>
           <pre><code class="lang-arb">actor sq(state) { on job(x) { reply x * x } }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-12">
-          <h3><a class="doc-anchor" href="#doc-directives-12">#</a> <code>on</code></h3>
+        <article class="doc-entry" id="doc-directives-16">
+          <h3><a class="doc-anchor" href="#doc-directives-16">#</a> <code>on</code></h3>
           <p>A message handler inside an actor body: on MSG(params) { stmts; reply EXPR }.</p>
           <pre><code class="lang-arb">on job(x) { reply x * 2 }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-13">
-          <h3><a class="doc-anchor" href="#doc-directives-13">#</a> <code>reply</code></h3>
+        <article class="doc-entry" id="doc-directives-17">
+          <h3><a class="doc-anchor" href="#doc-directives-17">#</a> <code>reply</code></h3>
           <p>Inside a handler, send an expression's value back to an ask/via caller.</p>
           <pre><code class="lang-arb">reply state + x</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-14">
-          <h3><a class="doc-anchor" href="#doc-directives-14">#</a> <code>spawn</code></h3>
+        <article class="doc-entry" id="doc-directives-18">
+          <h3><a class="doc-anchor" href="#doc-directives-18">#</a> <code>spawn</code></h3>
           <p>Bind a session actor: spawn NAME = ACTOR(init); tell/ask drive it (distinct from the spawn CMD source).</p>
           <pre><code class="lang-arb">spawn w = worker(0)</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-15">
-          <h3><a class="doc-anchor" href="#doc-directives-15">#</a> <code>pool</code></h3>
+        <article class="doc-entry" id="doc-directives-19">
+          <h3><a class="doc-anchor" href="#doc-directives-19">#</a> <code>pool</code></h3>
           <p>Bind a supervised session pool: pool NAME = ACTOR * N (a dead worker is respawned).</p>
           <pre><code class="lang-arb">pool p = worker * 8</code></pre>
         </article>
-        <article class="doc-entry" id="doc-directives-16">
-          <h3><a class="doc-anchor" href="#doc-directives-16">#</a> <code>supervise</code></h3>
+        <article class="doc-entry" id="doc-directives-20">
+          <h3><a class="doc-anchor" href="#doc-directives-20">#</a> <code>supervise</code></h3>
           <p>Set a ref's crash policy: supervise NAME { on crash { restart | stop } } (default restart).</p>
           <pre><code class="lang-arb">supervise p { on crash { restart } }</code></pre>
         </article>

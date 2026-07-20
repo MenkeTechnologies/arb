@@ -569,6 +569,71 @@ pub struct Spec {
     /// declaration order. The TUI spawns these once at startup; `tell`/`ask` bind
     /// actions drive them (SPEC §15).
     pub actor_refs: Vec<crate::actor::RefDecl>,
+    /// `rows "1 2 1"` — the grid's row track sizes (`None` = uniform). A track is
+    /// `N` (fixed cells), `N%` (percentage), or `N*`/`*` (weight, proportional).
+    pub row_tracks: Option<Vec<Track>>,
+    /// `cols "20 * 2*"` — the grid's column track sizes (`None` = uniform).
+    pub col_tracks: Option<Vec<Track>>,
+    /// `gap N` — blank cells between grid rows/columns (default 0).
+    pub gap: u16,
+    /// `layout horizontal|vertical` — the no-grid auto-tile direction (default
+    /// vertical). Ignored once any widget declares a grid cell.
+    pub flow: Flow,
+}
+
+/// A layout track size (a grid row/column). Maps to a ratatui `Constraint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Track {
+    /// `N` — a fixed cell count (`Constraint::Length`).
+    Length(u16),
+    /// `N%` — a percentage of the axis (`Constraint::Percentage`).
+    Percentage(u16),
+    /// `N*` / `*` — a proportional weight; remaining space splits by weight
+    /// (`Constraint::Fill`). Bare `*` is weight 1.
+    Fill(u16),
+}
+
+/// The auto-tile direction when no widget declares a grid cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Flow {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Parse a track spec (`"20 * 2* 30%"`) into a track list. A token ending in `%`
+/// is a percentage, one ending in `*` is a proportional weight (`*` = 1), and a
+/// bare integer is a fixed cell count. Empty/invalid tokens are an error.
+pub fn parse_tracks(spec: &str) -> Result<Vec<Track>, String> {
+    let mut out = Vec::new();
+    for tok in spec.split_whitespace() {
+        let track = if let Some(pct) = tok.strip_suffix('%') {
+            Track::Percentage(
+                pct.parse::<u16>()
+                    .map_err(|_| format!("track: bad percentage `{tok}`"))?
+                    .min(100),
+            )
+        } else if let Some(w) = tok.strip_suffix('*') {
+            let weight = if w.is_empty() {
+                1
+            } else {
+                w.parse::<u16>()
+                    .map_err(|_| format!("track: bad weight `{tok}`"))?
+                    .max(1)
+            };
+            Track::Fill(weight)
+        } else {
+            Track::Length(
+                tok.parse::<u16>()
+                    .map_err(|_| format!("track: bad length `{tok}` (use N, N%, or N*)"))?,
+            )
+        };
+        out.push(track);
+    }
+    if out.is_empty() {
+        return Err("track spec is empty".into());
+    }
+    Ok(out)
 }
 
 /// One in-language test case: feed `given` lines through the `run` pipeline
@@ -1059,6 +1124,42 @@ fn build_into(
                     return Err("`!`: a stream source is already declared".into());
                 }
                 spec.poll = Some((cmd, dur));
+            } else if c.name == "rows" || c.name == "cols" {
+                // `rows "1 2 1"` / `cols "20 * 2*"` — proportional grid track sizes.
+                let spec_str = c
+                    .args
+                    .iter()
+                    .filter_map(Arg::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let tracks = parse_tracks(&spec_str)?;
+                if c.name == "rows" {
+                    spec.row_tracks = Some(tracks);
+                } else {
+                    spec.col_tracks = Some(tracks);
+                }
+            } else if c.name == "gap" {
+                // `gap N` — blank cells between grid rows/columns.
+                let n = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .ok_or("gap: expected a cell count (`gap 1`)")?;
+                spec.gap = n.min(64);
+            } else if c.name == "layout" {
+                // `layout horizontal|vertical` — the no-grid auto-tile direction.
+                match c.args.first().and_then(Arg::as_str) {
+                    Some("horizontal") | Some("h") => spec.flow = Flow::Horizontal,
+                    Some("vertical") | Some("v") => spec.flow = Flow::Vertical,
+                    other => {
+                        return Err(format!(
+                            "layout: expected `horizontal` or `vertical`, got `{}`",
+                            other.unwrap_or("")
+                        )
+                        .into())
+                    }
+                }
             } else if c.name == "grid" {
                 let path = c
                     .args

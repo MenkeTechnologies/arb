@@ -278,9 +278,24 @@ utilities (`Clear`, `RatatuiLogo`) unused.
 
 ```
 # no grid → widgets auto-tile (vertical flow). Only add geometry to override.
+layout horizontal                      # auto-tile in a row instead of a column
 grid .a -row 0 -col 0 -span 2          # -span = colspan; -rowspan/-colspan explicit
 grid .b -row 1 -col 0
+
+# Proportional tracks (Tk `grid`-style, ratatui Constraints under the hood):
+rows "1 2 1"                            # 3 rows; the middle is 2× tall (weights)
+cols "20 * 2*"                          # col 0 fixed 20 cells, col 1 weight 1, col 2 weight 2
+gap  1                                  # 1 blank cell between every row/column
 ```
+
+A **track** is `N` (a fixed cell count → `Length`), `N%` (a percentage of the
+axis → `Percentage`), or `N*` / `*` (a proportional weight → `Fill`; bare `*` is
+weight 1). `rows`/`cols` size the grid's tracks (unset = equal weights); a shorter
+spec sizes the leading tracks and the rest fill. `gap N` inserts blank cells
+between tracks. Without any `grid` cell, widgets auto-tile in the `layout`
+direction (`vertical` default, `horizontal` for a row), sized by the flow-axis
+track spec when given. The **served web dashboard uses a responsive CSS grid** —
+`rows`/`cols`/`gap`/`layout` shape the terminal TUI.
 
 ## 11. Binding
 

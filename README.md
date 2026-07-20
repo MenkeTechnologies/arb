@@ -469,7 +469,11 @@ a braille scatter, `map` a world map of `lon lat` points, `calendar` a month gri
 `linegauge` a thin one-line bar), arranged by `grid` — `grid .w -row R -col C`
 places a widget, and
 `-span N` (or `-rowspan`/`-colspan`) lets one span several cells, so a main
-`chart` can be wide while small gauges take a single cell. Any widget takes
+`chart` can be wide while small gauges take a single cell. Track sizes are
+Tk-`grid`-style: `rows "1 2 1"` / `cols "20 * 2*"` give each row/column a fixed
+cell count (`20`), a percentage (`30%`), or a proportional weight (`*` = 1, `2*`
+= 2×); `gap N` spaces the cells; `layout horizontal` auto-tiles in a row instead
+of a column. Any widget takes
 `-label "…"` to set a human header (instead of the dot-path) and `-color NAME`
 (`green`/`red`/`yellow`/`orange`/`magenta`/`blue`/`white`/`gray`, default `cyan`)
 to tint its border and accent — both apply in the TUI and the web dashboard, so

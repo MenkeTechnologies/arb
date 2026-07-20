@@ -2086,13 +2086,44 @@ fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) 
     f.render_widget(List::new(items).block(block), area);
 }
 
+/// Map a [`Track`] to its ratatui `Constraint`.
+fn track_to_constraint(t: crate::spec::Track) -> Constraint {
+    use crate::spec::Track;
+    match t {
+        Track::Length(n) => Constraint::Length(n),
+        Track::Percentage(n) => Constraint::Percentage(n),
+        Track::Fill(w) => Constraint::Fill(w),
+    }
+}
+
+/// Build `n` track constraints: index `i` uses `tracks[i]` when given, else an
+/// equal-weight `Fill(1)`. A shorter spec sizes the leading tracks and lets the
+/// rest fill; a longer one is ignored past `n`.
+fn track_cons(tracks: Option<&Vec<crate::spec::Track>>, n: usize) -> Vec<Constraint> {
+    (0..n)
+        .map(|i| {
+            tracks
+                .and_then(|t| t.get(i))
+                .map(|&t| track_to_constraint(t))
+                .unwrap_or(Constraint::Fill(1))
+        })
+        .collect()
+}
+
 pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
+    use crate::spec::Flow;
     let ws = &spec.widgets;
     let grid_mode = ws.iter().any(|w| w.grid.is_some());
     if !grid_mode {
-        let n = ws.len().max(1) as u32;
-        let cons: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
-        return Layout::vertical(cons).split(area).to_vec();
+        // Auto-tile in the `layout` direction with `gap` spacing; the flow-axis
+        // track spec (`rows` for vertical, `cols` for horizontal) sizes the tiles
+        // when given, else they split evenly.
+        let n = ws.len().max(1);
+        let lay = match spec.flow {
+            Flow::Vertical => Layout::vertical(track_cons(spec.row_tracks.as_ref(), n)),
+            Flow::Horizontal => Layout::horizontal(track_cons(spec.col_tracks.as_ref(), n)),
+        };
+        return lay.spacing(spec.gap).split(area).to_vec();
     }
     // Each widget occupies `(row, col)` and spans `(rowspan, colspan)` cells.
     let cells: Vec<(usize, usize, usize, usize)> = ws
@@ -2108,20 +2139,20 @@ pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
         .map(|(r, _, rs, _)| r + rs)
         .max()
         .unwrap_or(1)
-        .max(1);
+        .max(1)
+        .max(spec.row_tracks.as_ref().map_or(0, |t| t.len()));
     let cols = cells
         .iter()
         .map(|(_, c, _, cs)| c + cs)
         .max()
         .unwrap_or(1)
-        .max(1);
-    let row_cons: Vec<Constraint> = (0..rows)
-        .map(|_| Constraint::Ratio(1, rows as u32))
-        .collect();
-    let row_chunks = Layout::vertical(row_cons).split(area);
-    let col_cons: Vec<Constraint> = (0..cols)
-        .map(|_| Constraint::Ratio(1, cols as u32))
-        .collect();
+        .max(1)
+        .max(spec.col_tracks.as_ref().map_or(0, |t| t.len()));
+    // Proportional row/column tracks (`rows`/`cols`), with `gap` cells between.
+    let row_chunks = Layout::vertical(track_cons(spec.row_tracks.as_ref(), rows))
+        .spacing(spec.gap)
+        .split(area);
+    let col_cons = track_cons(spec.col_tracks.as_ref(), cols);
     cells
         .iter()
         .map(|&(r, c, rs, cs)| {
@@ -2136,7 +2167,9 @@ pub fn compute_rects(area: Rect, spec: &Spec) -> Vec<Rect> {
                 width: area.width,
                 height,
             };
-            let col_chunks = Layout::horizontal(col_cons.clone()).split(band);
+            let col_chunks = Layout::horizontal(col_cons.clone())
+                .spacing(spec.gap)
+                .split(band);
             let left = col_chunks[c.min(cols - 1)];
             let right = col_chunks[(c + cs - 1).min(cols - 1)];
             Rect {
@@ -2655,6 +2688,76 @@ mod tests {
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].height, 20);
         assert_eq!(rects[1].y, 20);
+    }
+
+    fn rects_of(src: &str, w: u16, h: u16) -> Vec<Rect> {
+        let spec = build(&parse(src).unwrap()).unwrap();
+        compute_rects(
+            Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+            &spec,
+        )
+    }
+
+    #[test]
+    fn parse_tracks_lengths_percents_weights() {
+        use crate::spec::{parse_tracks, Track};
+        assert_eq!(
+            parse_tracks("20 * 2* 30%").unwrap(),
+            vec![Track::Length(20), Track::Fill(1), Track::Fill(2), Track::Percentage(30)]
+        );
+        assert!(parse_tracks("").is_err());
+        assert!(parse_tracks("bogus").is_err());
+    }
+
+    #[test]
+    fn cols_weighted_split_proportionally() {
+        // `cols "1* 2*"` → two columns in a 1:2 ratio across width 90 = 30 / 60.
+        let r = rects_of(
+            "gauge .a\ngauge .b\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ncols \"1* 2*\"",
+            90,
+            20,
+        );
+        assert_eq!(r[0].width, 30);
+        assert_eq!(r[1].width, 60);
+        assert_eq!(r[1].x, 30);
+    }
+
+    #[test]
+    fn cols_fixed_length_then_fill() {
+        // `cols "20 *"` → first column a fixed 20 cells, second fills the rest.
+        let r = rects_of(
+            "gauge .a\ngauge .b\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ncols \"20 *\"",
+            80,
+            20,
+        );
+        assert_eq!(r[0].width, 20);
+        assert_eq!(r[1].width, 60);
+    }
+
+    #[test]
+    fn gap_inserts_spacing_between_cells() {
+        // `gap 2` puts 2 blank cells between the two columns: (92-2)/2 = 45 each.
+        let r = rects_of(
+            "gauge .a\ngauge .b\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ngap 2",
+            92,
+            20,
+        );
+        assert_eq!(r[0].width, 45);
+        assert_eq!(r[1].x, 47); // 45 + 2 gap
+    }
+
+    #[test]
+    fn layout_horizontal_tiles_side_by_side() {
+        // `layout horizontal` lays the auto (no-grid) widgets in a row.
+        let r = rects_of("gauge .a\ngauge .b\nlayout horizontal", 80, 20);
+        assert_eq!(r[0].width, 40);
+        assert_eq!(r[1].x, 40);
+        assert_eq!(r[0].height, 20); // full height, not stacked
     }
 
     // Renders one widget into a TestBackend and returns its cell text.
