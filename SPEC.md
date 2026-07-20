@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Actors are out of scope — dataflow/pub-sub belong to `stryke`.)
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Akka-style actors ship: `actor NAME(state) { on MSG { … } }` + a `via NAME * N` pipeline op that fans the stream across a supervised worker pool in parallel — see §15.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -346,23 +346,51 @@ deferred (line-granular, terminal-gated — Shift+drag is the better copy path).
 
 ## 15. Actors — Akka-style concurrency
 
-> **❌ Out of scope (not built, not planned).** Dataflow / actors / pub-sub belong
-> to `stryke`; arb stays in the UI-generation lane to avoid duplication. The
-> sketch below is retained as design rationale only — see §21.
+An **actor** is a named behavior with a single scalar `state` and one handler per
+message. Handlers run arb expressions (the same fusevm-lowered core as
+`map`/`where`/`calc`) over `state`, the message parameters, and any locals they
+assign; `reply EXPR` sends a value back to an `ask`/`via` caller.
 
 ```
 actor worker(state) {
-    on job(x) { reply heavy(x) }
-    on reset  { state = 0 }
+    on job(x) {
+        state = state + 1        # per-worker running count
+        reply x * x              # value sent back to ask / via
+    }
+    on reset { state = 0 }
 }
-w    = spawn worker(0)               # ref
-send w job(payload)                  # tell
-r    = ask  w job(payload)           # ask (await reply)
-pool p = spawn worker * 8            # supervised pool
-
-source .out { in | via(p, x => heavy(x)) }   # fan stream across pool (parallel)
-supervise p { on crash { restart } }
 ```
+
+Handlers are separated like every other verb — a newline or `;` (a `{ … }` block
+does **not** end a command, so two handlers on one line is an error).
+
+**Runtime** — one OS thread per actor, each blocking on an `mpsc` mailbox:
+
+| Operation | Meaning |
+| --- | --- |
+| *spawn* | start an actor with an initial `state`; returns a mailbox ref |
+| *send* (tell) | post a message, fire-and-forget |
+| *ask* | post a message with a one-shot reply channel, block for `reply` |
+| *pool* | a supervised round-robin pool of N copies; a worker whose thread dies is respawned on the next dispatch |
+
+**Pipeline fan-out (`via`)** is the stream-facing consumer — it fans the passthrough
+across a pool in parallel, each line's scalar becoming a `job(x)` ask whose reply
+is the output line, order preserved:
+
+```
+source .out { in; via worker * 8 }   # 8-worker pool
+out       { in; via worker }          # default: one worker per hardware thread
+```
+
+A pure-map handler (`reply x * x`) is deterministic regardless of pool width. A
+handler that mutates `state` is partitioned across workers, so with `N > 1` a line
+sees only the state of the worker that handled it (documented non-determinism —
+use `via worker * 1` for a single sequential accumulator).
+
+The runtime lives in `src/actor.rs` (declaration + handler compiler + threads);
+`via` is `QueryOp::Via`, evaluated by `actor::run_via` (rayon fan-out over the
+pool). `heavy(x)`-style user functions are not part of arb's expression grammar —
+handler bodies use arb expressions directly.
 
 ## 16. Targets
 
@@ -472,6 +500,7 @@ src/ast.rs       AST types (Command / Arg)
 src/spec.rs      spec interpreter: widgets, source/out pipelines, query-verb
                  parse, import resolution, preset library
 src/query.rs     jq/xpath/css/yq engine (pipeline eval over every format)
+src/actor.rs     actor system (§15): actor/on/reply parse + handler compiler, mpsc-mailbox threads (spawn/send/ask/pool), `via` parallel stream fan-out
 src/expr.rs      expression layer: fn/lambdas/operators → fusevm::Chunk on the VM
 src/stream.rs    stdin ring buffer + stream stats
 src/tui.rs       ratatui backend: render, event loop, fzf mode
@@ -493,8 +522,8 @@ The compute core (expressions, `calc`, `where`) lowers to a `fusevm::Chunk` and
 runs on the VM; declarative widget/layout construction is plain Rust and needs no
 VM. Language design (lexer/parser/ast/interp/semantics) is arb-original.
 
-All SPEC modules now have code (script-package registry included; native/cdylib
-packages remain future work). (Actors are out of scope — §21.)
+All SPEC modules now have code (script-package registry + the actor system
+included; native/cdylib packages remain future work).
 
 ## 21. Milestones
 
@@ -506,6 +535,6 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source, `spawn -pty CMD` + the `send "text"` action (Expect-style automation of a PTY child). *(`.ps.sel` selection widget: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
-6. ❌ Actors — out of scope: dataflow / actors / pub-sub belong to stryke; arb stays in the UI-generation lane (no duplication).
+6. ✅ Actors — Akka-style message-passing (§15): `actor NAME(state) { on MSG(p) { … reply EXPR } }` declarations compiled to `ActorDef`; a real runtime of one `mpsc`-mailbox OS thread per actor with *spawn* / *send* (tell) / *ask* (await reply) / supervised round-robin *pool* (respawns a dead worker); handler bodies run arb expressions (fusevm) over `state` + params + locals; and the `via NAME * N` pipeline op fans the stream across a pool in parallel (rayon), order preserved. *(imperative top-level `w = spawn`/`send w …` binding syntax: ⬜ — the stream-facing `via` is the shipped surface.)*
 7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*
 8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). Diagnostics anchor to the offending verb even when nested inside a `source`/`out` body (not the enclosing directive). *(per-token argument precision — squiggle the `/re/` itself, not its verb — ⬜)*

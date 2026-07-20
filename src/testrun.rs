@@ -97,6 +97,20 @@ test \"wrong on purpose\" {\n\
     }
 
     #[test]
+    fn via_actor_pipeline_is_testable() {
+        // A `via` stage fans the given scalars across a pool of `sq`; the reply
+        // (x*x) is the output line. Exercises spec build -> QueryOp::Via -> the
+        // actor runtime, the same path `arb --test` runs.
+        let src = "actor sq(state) {\n on job(x) { reply x * x }\n }\n\
+                   test \"squares via actor pool\" {\n\
+                     given \"2\" \"3\" \"4\"\n\
+                     run { in; via sq * 2 }\n\
+                     want \"4\" \"9\" \"16\"\n\
+                   }\n";
+        assert_eq!(run(&tests_of(src)).failed, 0);
+    }
+
+    #[test]
     fn jq_and_xpath_pipelines_are_testable() {
         let jq = tests_of(
             "test \"jq path\" { given \"{\\\"a\\\":{\\\"b\\\":7}}\"; run { in.json; .a.b }; want \"7\" }",

@@ -9,6 +9,7 @@
 //! layer, fusevm lowering, query verbs, and the rest of SPEC.md are later
 //! milestones — not stubbed here as if present.
 
+pub mod actor;
 pub mod ast;
 pub mod banner;
 pub mod cache;

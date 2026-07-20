@@ -602,11 +602,20 @@ the terminal or the browser) is complete:
   format change misses cleanly and a corrupt shard resets on its own. Same
   architecture every sibling lang ships.
 
+**Actors ship** (SPEC §15) — `actor NAME(state) { on MSG(p) { … reply EXPR } }`
+declares an Akka-style behavior; the runtime is one `mpsc`-mailbox OS thread per
+actor with tell/ask/supervised-pool semantics, and a `via NAME * N` pipeline op
+fans the stream across a worker pool in parallel:
+
+```sh
+seq 1 1000000 | arb -e 'actor sq(state) { on job(x) { reply x * x } }
+                        out { in; via sq * 8 }'   # squared across 8 workers
+```
+
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — native/cdylib
 packages and multi-version semver resolution for the registry (the git index,
 `arb publish`, install/search/update all ship), and the upstream-**command**
 sniffing leg (producer argv) — zero-config **data-shape** sniffing already ships.
-Akka-style actors are **out of scope** — dataflow / pub-sub belong to `stryke`.
 
 Nothing is faked: unrecognized widget verbs are ignored so specs stay
 forward-compatible, and unbuilt features are absent, not stubbed.

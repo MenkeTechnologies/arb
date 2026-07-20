@@ -43,6 +43,11 @@ pub enum QueryOp {
     /// Replace each line with the value of an expression (field-aware; `x` =
     /// line-as-number), computed on the fusevm VM.
     Map(Expr),
+    /// `via NAME [* N]` — fan the stream across a supervised pool of `N` copies
+    /// of actor `NAME` (default: one per hardware thread). Each line's scalar is
+    /// asked as the actor's first-handler message; the reply is the output line,
+    /// order preserved. A parallel actor map (see [`crate::actor::run_via`]).
+    Via(std::sync::Arc<crate::actor::ActorDef>, usize),
     /// Reduce to the current line count.
     Count,
     /// Reduce to lines-per-second over the elapsed window.
@@ -368,6 +373,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     };
                     *l = fmt_num(v);
                 }
+            }
+            QueryOp::Via(def, workers) => {
+                cur = crate::actor::run_via(def, *workers, &cur);
             }
             QueryOp::Count => return QueryResult::Scalar(cur.len() as f64),
             QueryOp::Rate => {

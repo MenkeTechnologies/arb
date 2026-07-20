@@ -4,10 +4,12 @@
 //! forward-compatible.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use regex::Regex;
 
+use crate::actor::ActorDef;
 use crate::ast::{Arg, Command};
 use crate::query::{FieldSel, QueryOp};
 
@@ -366,6 +368,9 @@ pub struct Spec {
     /// interactive) and keep a writer to its stdin for the `send` action. Only
     /// meaningful with `spawn` set and in the interactive TUI.
     pub spawn_pty: bool,
+    /// `actor NAME(state) { on MSG { … } }` declarations, by name. A `via NAME`
+    /// pipeline op resolves against this registry at build time (SPEC §15).
+    pub actors: BTreeMap<String, Arc<ActorDef>>,
 }
 
 /// One in-language test case: feed `given` lines through the `run` pipeline
@@ -411,8 +416,11 @@ pub fn resolve_pipeline(
                 if let Some(val) = inputs.get(name).filter(|v| !v.trim().is_empty()) {
                     // Parse the input text as a pipeline body (prefix `in;` so it
                     // is a valid source body) and splice its ops in.
+                    // A live `apply` input is typed at render time, before any
+                    // actor is in scope — `via` there resolves against an empty
+                    // registry (unknown-actor errors just drop the transform).
                     if let Ok(cmds) = crate::parser::parse(&format!("in; {val}")) {
-                        if let Ok(sub) = pipeline_from_body(&cmds) {
+                        if let Ok(sub) = pipeline_from_body(&cmds, &BTreeMap::new()) {
                             out.extend(sub);
                         }
                     }
@@ -521,6 +529,12 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     dst.mouse_binds.extend(src.mouse_binds);
     dst.resize_binds.extend(src.resize_binds);
     dst.tests.extend(src.tests);
+    // A namespaced module's `via` ops already embed their resolved `Arc<ActorDef>`
+    // (bound during the fresh sub-build), so they work post-merge. Carry the defs
+    // under `ns.NAME` keys so they don't collide with the host's actors.
+    for (name, def) in src.actors {
+        dst.actors.insert(prefix_name(&name, ns), def);
+    }
     if let Some(out) = src.out {
         if dst.out.is_some() {
             return Err(format!(
@@ -600,6 +614,12 @@ fn build_into(
                     let sub = crate::parser::parse(&src)?;
                     build_into(spec, &sub, depth + 1)?;
                 }
+            } else if c.name == "actor" {
+                // `actor NAME(state) { on MSG(p) { … } }` — a message-handling
+                // behavior (SPEC §15). Stored by name; a `via NAME` pipeline op
+                // fans the stream across a pool of it.
+                let def = crate::actor::parse_actor(&c.args)?;
+                spec.actors.insert(def.name.clone(), Arc::new(def));
             } else if let Some(kind) = WidgetKind::from(&c.name) {
                 let path = c
                     .args
@@ -632,7 +652,7 @@ fn build_into(
                     Some(Arg::Block(b)) => b,
                     _ => return Err("source: expected `{ body }`".into()),
                 };
-                let pipeline = pipeline_from_body(body)?;
+                let pipeline = pipeline_from_body(body, &spec.actors)?;
                 set_source(spec, path, Source { pipeline })?;
             } else if c.name == "search" {
                 // `search .name { in; … }` — a select widget's fuzzy-match key
@@ -646,7 +666,7 @@ fn build_into(
                     Some(Arg::Block(b)) => b,
                     _ => return Err("search: expected `{ body }`".into()),
                 };
-                let pipeline = pipeline_from_body(body)?;
+                let pipeline = pipeline_from_body(body, &spec.actors)?;
                 set_search(spec, path, pipeline)?;
             } else if c.name == "bind" {
                 // `bind KEY ACTION` — KEY is a control key (`C-<letter>`, `<Enter>`…),
@@ -712,7 +732,8 @@ fn build_into(
                     Some(Arg::Block(b)) => b,
                     _ => return Err("out: expected `{ body }`".into()),
                 };
-                spec.out = Some(pipeline_from_body(body)?);
+                let pipeline = pipeline_from_body(body, &spec.actors)?;
+                spec.out = Some(pipeline);
             } else if c.name == "test" {
                 // `test "NAME" { given …; run { in; … }; want … }` — an
                 // in-language unit test, run headlessly by `arb --test`.
@@ -726,7 +747,8 @@ fn build_into(
                     Some(Arg::Block(b)) => b,
                     _ => return Err("test: expected `{ given …; run { … }; want … }`".into()),
                 };
-                spec.tests.push(parse_test_case(name, body)?);
+                let tc = parse_test_case(name, body, &spec.actors)?;
+                spec.tests.push(tc);
             } else if c.name == "spawn" {
                 // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use
                 // its stdout as the stream (input source, in place of stdin). A
@@ -1345,7 +1367,11 @@ fn parse_opts(args: &[Arg]) -> BTreeMap<String, String> {
 /// Parse a `test "NAME" { … }` body into a [`TestCase`]. Clauses: `given LINES…`
 /// (input, one line per arg), `run { in; … }` (the pipeline, required), and
 /// `want LINES…` (expected output). Unknown clauses / a missing `run` error.
-fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
+fn parse_test_case(
+    name: String,
+    body: &[Command],
+    actors: &BTreeMap<String, Arc<ActorDef>>,
+) -> Result<TestCase, String> {
     let str_args = |c: &Command| -> Vec<String> {
         c.args
             .iter()
@@ -1367,7 +1393,7 @@ fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
                 };
                 // Reuse the real body compiler, so a test can exercise native
                 // verbs and the jq/xpath front-ends alike.
-                ops = Some(pipeline_from_body(b).map_err(|e| e.msg)?);
+                ops = Some(pipeline_from_body(b, actors).map_err(|e| e.msg)?);
             }
             other => {
                 return Err(format!(
@@ -1386,7 +1412,10 @@ fn parse_test_case(name: String, body: &[Command]) -> Result<TestCase, String> {
 }
 
 /// Compile a `source { … }` body into a query pipeline. Must start with `in`.
-fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::SpecError> {
+fn pipeline_from_body(
+    cmds: &[Command],
+    actors: &BTreeMap<String, Arc<ActorDef>>,
+) -> Result<Vec<QueryOp>, crate::err::SpecError> {
     let mut ops = Vec::new();
     let mut saw_in = false;
     for c in cmds {
@@ -1577,6 +1606,36 @@ fn pipeline_from_body(cmds: &[Command]) -> Result<Vec<QueryOp>, crate::err::Spec
                         .collect::<Vec<_>>()
                         .join(" ");
                     ops.push(QueryOp::Map(crate::expr::parse(&src)?));
+                }
+                "via" => {
+                    // `via NAME` / `via NAME * N` — fan the stream across a pool of
+                    // actor NAME. Tokens join then split on `*`: left = actor name,
+                    // right = optional worker count (0 = one per hardware thread).
+                    let joined = c
+                        .args
+                        .iter()
+                        .filter_map(Arg::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let (name, workers) = match joined.split_once('*') {
+                        Some((n, w)) => {
+                            let count = w.trim().parse::<usize>().map_err(|_| {
+                                format!("via: `* {}` is not a worker count", w.trim())
+                            })?;
+                            // Cap the pool so `via NAME * 9999999` can't spawn a
+                            // runaway number of threads.
+                            (n.trim().to_string(), count.min(1024))
+                        }
+                        None => (joined.trim().to_string(), 0),
+                    };
+                    if name.is_empty() {
+                        return Err("via: expected an actor name (`via NAME [* N]`)".into());
+                    }
+                    let def = actors
+                        .get(&name)
+                        .ok_or_else(|| format!("via: no actor named `{name}` in scope (declare `actor {name}(state) {{ … }}` before this `via`)"))?
+                        .clone();
+                    ops.push(QueryOp::Via(def, workers));
                 }
                 "sort_by" => {
                     let field = str_arg(c);

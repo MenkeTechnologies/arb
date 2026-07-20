@@ -464,6 +464,7 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("calc", "Query", "Reduce to a scalar from an arithmetic expression over the line count (x).", "in; count; calc x * 100"),
     ("where", "Query", "Keep lines whose numeric value / field predicate holds (fusevm or Rust eval).", "in.json; where lat < 5"),
     ("map", "Query", "Replace each line with an expression's value (field-aware; x = line-as-number).", "in; map x * 2"),
+    ("via", "Query", "Fan the stream across a supervised pool of actor NAME in parallel (via NAME * N; reply is the output line).", "in; via sq * 8"),
     ("sort_by", "Query", "Stable-sort JSON records by FIELD (numeric if all parse, else lexicographic).", "in.json; sort_by ts"),
     ("unique_by", "Query", "Keep the first record per distinct FIELD value, preserving input order.", "in.json; unique_by id"),
     ("count_by", "Query", "Group JSON records by FIELD and count; value->count sorted by count desc.", "in.json; count_by level"),
@@ -573,6 +574,9 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("out", "Directive", "Apply a query pipeline to the stream and write it to stdout (modify a pipe).", "out { where match(.q) }"),
     ("grid", "Directive", "Place a widget in the layout grid (-row/-col, -span/-rowspan/-colspan).", "grid .cpu -row 0 -col 0 -span 2"),
     ("configure", "Directive", "Merge new -opts into an already-declared widget (build-time; later keys win).", ".cpu configure -max 200"),
+    ("actor", "Directive", "Declare a message-handling actor with a single scalar state and one handler per message.", "actor sq(state) { on job(x) { reply x * x } }"),
+    ("on", "Directive", "A message handler inside an actor body: on MSG(params) { stmts; reply EXPR }.", "on job(x) { reply x * 2 }"),
+    ("reply", "Directive", "Inside a handler, send an expression's value back to an ask/via caller.", "reply state + x"),
     // ── Action ──
     ("quit", "Action", "Quit the TUI.", "bind C-q quit"),
     ("beep", "Action", "Ring the terminal bell (0x07 after the next draw).", "expect /panic/ beep"),
