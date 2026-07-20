@@ -135,6 +135,33 @@ specs.
 .B \-\-dap
 Speak the Debug Adapter Protocol over stdio: step the stream, set regex
 breakpoints, inspect the paused line / stats / controls.
+.SS Introspection
+Each dump resolves the spec source from the
+.B FILE
+argument,
+.BR \-e \ SRC ,
+or
+.BR \-p \ NAME ,
+prints the requested stage, and exits without reading stdin.
+.TP
+.B \-\-dump\-tokens
+Print the Tcl\-flavored lexer token stream, one
+.I offset\[u2192]Tok
+per line.
+.TP
+.B \-\-dump\-ast
+Print the parsed command\-tree AST for the spec.
+.TP
+.B \-\-dump\-bytecode
+Print the built spec's compiled query pipelines \[em] the
+.B out { \[u2026] }
+pipeline and each widget's
+.B source
+pipeline as their op vectors.
+.TP
+.B \-\-disasm
+Print a flat, numbered disassembly of every compiled pipeline (the listing view of
+.BR \-\-dump\-bytecode ).
 .TP
 .B \-\-json
 With an

@@ -45,6 +45,10 @@ _arb() {
     '--port=[Port for --serve (0 = pick a free port)]:port:' \
     '--lsp[Run the Language Server over stdio (diagnostics/completion/hover)]' \
     '--dap[Run the Debug Adapter over stdio (step the stream, regex breakpoints)]' \
+    '--dump-tokens[Print the lexer token stream for the spec and exit]' \
+    '--dump-ast[Print the parsed AST for the spec and exit]' \
+    '--dump-bytecode[Print the compiled pipeline op vectors for the spec and exit]' \
+    '--disasm[Print a disassembly of the compiled pipelines and exit]' \
     '--json[With an out { } pipeline, emit JSON instead of plain lines]' \
     '--fzf[fzf mode: filter + select one line, printed to stdout on Enter]' \
     '--run=[Run '\''PROD | _ | CONS'\'': arb spawns them, stderr -> pane]:pipeline:' \

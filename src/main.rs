@@ -188,6 +188,30 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m Run the DAP over stdio (step the stream, regex breakpoints)"
     )]
     dap: bool,
+    /// Print the Tcl-flavored lexer token stream for the spec and exit.
+    #[arg(
+        long = "dump-tokens",
+        help = "\x1b[32m//\x1b[0m Print the lexer token stream for the spec and exit"
+    )]
+    dump_tokens: bool,
+    /// Print the parsed command-tree AST for the spec and exit.
+    #[arg(
+        long = "dump-ast",
+        help = "\x1b[32m//\x1b[0m Print the parsed AST for the spec and exit"
+    )]
+    dump_ast: bool,
+    /// Print the built spec's compiled query-pipeline op vectors and exit.
+    #[arg(
+        long = "dump-bytecode",
+        help = "\x1b[32m//\x1b[0m Print the compiled pipeline op vectors for the spec and exit"
+    )]
+    dump_bytecode: bool,
+    /// Print a numbered disassembly of the built spec's compiled pipelines and exit.
+    #[arg(
+        long = "disasm",
+        help = "\x1b[32m//\x1b[0m Print a disassembly of the compiled pipelines and exit"
+    )]
+    disasm: bool,
     /// With an `out { … }` pipeline, emit results as JSON (array / number /
     /// object) instead of plain lines — pipe to `jq` or programs.
     #[arg(
@@ -398,6 +422,21 @@ fn main() -> io::Result<()> {
     if cli.dap {
         arb::dap::run();
         return Ok(());
+    }
+
+    // Introspection dumps: resolve the spec source (FILE / -e / -p), run it
+    // through the requested front-end stage, print, and exit — no stream read.
+    if cli.dump_tokens {
+        return finish_dump(dump_tokens(&cli));
+    }
+    if cli.dump_ast {
+        return finish_dump(dump_ast(&cli));
+    }
+    if cli.dump_bytecode {
+        return finish_dump(dump_bytecode(&cli));
+    }
+    if cli.disasm {
+        return finish_dump(disasm(&cli));
     }
 
     if cli.list {
@@ -1054,6 +1093,104 @@ fn install_cmd(file: &str, as_name: Option<&str>) -> io::Result<()> {
             eprintln!("arb: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Resolve the spec SOURCE for the introspection dumps: `-p NAME` -> `import NAME`,
+/// `-e SRC` -> the literal, a `FILE` positional -> its contents. Errors if none is
+/// given (a dump has nothing to inspect without a spec).
+fn dump_src(cli: &Cli) -> Result<String, String> {
+    if let Some(p) = &cli.preset {
+        Ok(format!("import {p}"))
+    } else if let Some(e) = &cli.eval {
+        Ok(e.clone())
+    } else if let Some(path) = &cli.spec {
+        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
+    } else {
+        Err("dump needs a spec — a FILE argument, -e SRC, or -p NAME".into())
+    }
+}
+
+/// Report a dump's outcome the arb way: on error, `arb: <reason>` to stderr and
+/// exit 1; on success, exit 0. The dump-flag twin of the pervasive `arb: {e}`
+/// pattern, adapting the `Result<(), String>` dump fns to `main`'s `io::Result`.
+fn finish_dump(r: Result<(), String>) -> io::Result<()> {
+    if let Err(e) = r {
+        eprintln!("arb: {e}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `--dump-tokens`: print the Tcl-flavored lexer token stream, one
+/// `offset<TAB>Tok` per line (offset = the token's start char position in the
+/// source — the same anchor the LSP uses for diagnostics).
+fn dump_tokens(cli: &Cli) -> Result<(), String> {
+    let src = dump_src(cli)?;
+    for (tok, off) in arb::lexer::lex(&src).map_err(|e| e.to_string())? {
+        println!("{off}\t{tok:?}");
+    }
+    Ok(())
+}
+
+/// `--dump-ast`: print the parsed command tree (the spec AST — a `Vec<Command>`).
+fn dump_ast(cli: &Cli) -> Result<(), String> {
+    let src = dump_src(cli)?;
+    let cmds = arb::parser::parse(&src).map_err(|e| e.to_string())?;
+    println!("{cmds:#?}");
+    Ok(())
+}
+
+/// `--dump-bytecode`: build the spec and print its compiled query pipelines — the
+/// `out { … }` pipeline and each widget's `source` pipeline as their `QueryOp` op
+/// vectors. This is arb's compiled form; there is no separate fusevm program (only
+/// the expression layer inside `where`/`map` lowers to fusevm), so the op vectors
+/// are the bytecode the runtime evaluates. The pretty-printed twin of `--disasm`.
+fn dump_bytecode(cli: &Cli) -> Result<(), String> {
+    let spec = build_dump_spec(cli)?;
+    if let Some(ops) = &spec.out {
+        println!("== out ==\n{ops:#?}");
+    }
+    for w in &spec.widgets {
+        match &w.source {
+            Some(s) => println!("== {} ({}) ==\n{:#?}", w.path, w.kind.label(), s.pipeline),
+            None => println!("== {} ({}) ==\n(no source pipeline)", w.path, w.kind.label()),
+        }
+    }
+    Ok(())
+}
+
+/// `--disasm`: build the spec and print a flat, numbered disassembly of every
+/// compiled pipeline (`out` + each widget `source`), one `NNNN  Op` per line — the
+/// listing view of the same `QueryOp` op vectors `--dump-bytecode` pretty-prints.
+fn disasm(cli: &Cli) -> Result<(), String> {
+    let spec = build_dump_spec(cli)?;
+    if let Some(ops) = &spec.out {
+        println!("; arb pipeline — out");
+        disasm_ops(ops);
+    }
+    for w in &spec.widgets {
+        println!("; arb pipeline — {} ({})", w.path, w.kind.label());
+        match &w.source {
+            Some(s) => disasm_ops(&s.pipeline),
+            None => println!("  (no source pipeline)"),
+        }
+    }
+    Ok(())
+}
+
+/// Parse + build the spec from the resolved dump source (shared by the two
+/// bytecode-level dumps), stringifying either stage's error.
+fn build_dump_spec(cli: &Cli) -> Result<Spec, String> {
+    let src = dump_src(cli)?;
+    let cmds = parser::parse(&src).map_err(|e| e.to_string())?;
+    spec::build(&cmds).map_err(|e| e.to_string())
+}
+
+/// Print one compiled pipeline as a numbered op listing.
+fn disasm_ops(ops: &[QueryOp]) {
+    for (i, op) in ops.iter().enumerate() {
+        println!("{i:04}  {op:?}");
     }
 }
 
