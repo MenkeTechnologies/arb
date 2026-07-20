@@ -115,52 +115,67 @@
           <pre><code class="lang-arb">chart .c  ·  source .c { in; field 2 }</code></pre>
         </article>
         <article class="doc-entry" id="doc-widgets-9">
-          <h3><a class="doc-anchor" href="#doc-widgets-9">#</a> <code>table</code></h3>
+          <h3><a class="doc-anchor" href="#doc-widgets-9">#</a> <code>linegauge</code></h3>
+          <p>Thin one-line progress bar (value/max) for tight cells — a compact gauge.</p>
+          <pre><code class="lang-arb">linegauge .load -max 8  ·  source .load { in; count }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-10">
+          <h3><a class="doc-anchor" href="#doc-widgets-10">#</a> <code>scatter</code></h3>
+          <p>Braille scatter plot of the numeric series (higher resolution than spark).</p>
+          <pre><code class="lang-arb">scatter .lat  ·  source .lat { in; field 2 }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-11">
+          <h3><a class="doc-anchor" href="#doc-widgets-11">#</a> <code>table</code></h3>
           <p>Columnar table of records; -cols sets headers, newest rows that fit are shown.</p>
           <pre><code class="lang-arb">table .rows -cols "a,b,c"  ·  source .rows { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-10">
-          <h3><a class="doc-anchor" href="#doc-widgets-10">#</a> <code>tabs</code></h3>
+        <article class="doc-entry" id="doc-widgets-12">
+          <h3><a class="doc-anchor" href="#doc-widgets-12">#</a> <code>tabs</code></h3>
           <p>Tab bar from -tabs {a b}; first tab selected (labelled selector, no per-tab body).</p>
           <pre><code class="lang-arb">tabs .t -tabs {a b c}</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-11">
-          <h3><a class="doc-anchor" href="#doc-widgets-11">#</a> <code>block</code></h3>
+        <article class="doc-entry" id="doc-widgets-13">
+          <h3><a class="doc-anchor" href="#doc-widgets-13">#</a> <code>block</code></h3>
           <p>Bordered container box rendering its bound stream content as a list.</p>
           <pre><code class="lang-arb">block .b -title Logs  ·  source .b { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-12">
-          <h3><a class="doc-anchor" href="#doc-widgets-12">#</a> <code>frame</code></h3>
+        <article class="doc-entry" id="doc-widgets-14">
+          <h3><a class="doc-anchor" href="#doc-widgets-14">#</a> <code>frame</code></h3>
           <p>Framed container rendering its bound stream content as a list.</p>
           <pre><code class="lang-arb">frame .f  ·  source .f { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-13">
-          <h3><a class="doc-anchor" href="#doc-widgets-13">#</a> <code>input</code></h3>
+        <article class="doc-entry" id="doc-widgets-15">
+          <h3><a class="doc-anchor" href="#doc-widgets-15">#</a> <code>input</code></h3>
           <p>Editable text field; its value is spliced into pipelines via apply .name.</p>
           <pre><code class="lang-arb">input .q  ·  out { apply .q }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-14">
-          <h3><a class="doc-anchor" href="#doc-widgets-14">#</a> <code>select</code></h3>
+        <article class="doc-entry" id="doc-widgets-16">
+          <h3><a class="doc-anchor" href="#doc-widgets-16">#</a> <code>select</code></h3>
           <p>Interactive fuzzy-select over the stream; type to filter, Tab marks, Enter emits.</p>
           <pre><code class="lang-arb">select .k -prompt pick  ·  source .k { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-15">
-          <h3><a class="doc-anchor" href="#doc-widgets-15">#</a> <code>filter</code></h3>
+        <article class="doc-entry" id="doc-widgets-17">
+          <h3><a class="doc-anchor" href="#doc-widgets-17">#</a> <code>sel</code></h3>
+          <p>In-dashboard selection list over its own source; the highlighted row is published as .&lt;path&gt;.sel.</p>
+          <pre><code class="lang-arb">sel .ps  ·  source .ps { in }  ·  out { where match(.ps.sel) }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-18">
+          <h3><a class="doc-anchor" href="#doc-widgets-18">#</a> <code>filter</code></h3>
           <p>Labelled filter control; its value drives where match(.name) / apply.</p>
           <pre><code class="lang-arb">filter .q  ·  out { where match(.q) }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-16">
-          <h3><a class="doc-anchor" href="#doc-widgets-16">#</a> <code>facet</code></h3>
+        <article class="doc-entry" id="doc-widgets-19">
+          <h3><a class="doc-anchor" href="#doc-widgets-19">#</a> <code>facet</code></h3>
           <p>Multi-select of values (-opts or distinct -field); drives where &lt;field&gt; in .name.</p>
           <pre><code class="lang-arb">facet .lv -field level  ·  out { where level in .lv }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-17">
-          <h3><a class="doc-anchor" href="#doc-widgets-17">#</a> <code>slider</code></h3>
+        <article class="doc-entry" id="doc-widgets-20">
+          <h3><a class="doc-anchor" href="#doc-widgets-20">#</a> <code>slider</code></h3>
           <p>Numeric control (-min/-max/-step) driving where &lt;field&gt; &lt; .name; arrows adjust.</p>
           <pre><code class="lang-arb">slider .th -field lat -max 5  ·  out { where lat &lt; .th }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-18">
-          <h3><a class="doc-anchor" href="#doc-widgets-18">#</a> <code>check</code></h3>
+        <article class="doc-entry" id="doc-widgets-21">
+          <h3><a class="doc-anchor" href="#doc-widgets-21">#</a> <code>check</code></h3>
           <p>Boolean toggle (-label); its value is the string "1" or "0".</p>
           <pre><code class="lang-arb">check .on -label live</code></pre>
         </article>

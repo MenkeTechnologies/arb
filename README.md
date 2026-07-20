@@ -461,10 +461,11 @@ The expression layer — `where PRED` (filter), `map EXPR` (per-line transform),
 field-aware references, compound predicates via `and`/`or`/`not`, and set/range
 membership `in [a, b, c]` / `in lo..hi` (`where ms > 1000 and status in [500,
 502, 503]`, `where code in 500..599`, `map bytes / 1024`, `where not healthy`, `map x != 0 ? 100 / x : 0` ternary).
-Results render into `text`/`tail`/`list`/`gauge`/`bars`/`histo`/`spark`/`chart`/
-`table` widgets (`table` splits whitespace columns with optional `-cols "a,b,c"`
-headers; `spark` draws a unicode sparkline and `chart` a line plot of a numeric
-series), arranged by `grid` — `grid .w -row R -col C` places a widget, and
+Results render into `text`/`tail`/`list`/`gauge`/`linegauge`/`bars`/`histo`/
+`spark`/`scatter`/`chart`/`table` widgets (`table` splits whitespace columns with
+optional `-cols "a,b,c"` headers; `spark` draws a unicode sparkline, `chart` a
+line plot, `scatter` a braille scatter of a numeric series, `linegauge` a thin
+one-line bar), arranged by `grid` — `grid .w -row R -col C` places a widget, and
 `-span N` (or `-rowspan`/`-colspan`) lets one span several cells, so a main
 `chart` can be wide while small gauges take a single cell. Any widget takes
 `-label "…"` to set a human header (instead of the dot-path) and `-color NAME`
@@ -542,11 +543,13 @@ the terminal or the browser) is complete:
 - **Language** — the Tcl-flavored reader, the declarative widget / `source` /
   `out` interpreter, `.x <- in` binds, `fn`/lambda expressions, and `calc` /
   `where` predicates that lower to `fusevm` bytecode and run on the VM.
-- **Widgets** — `text`, `tail`, `list`, `gauge`, `bars`, `histo`, `spark`,
-  `chart`, `table`, `tabs`, `block`, `frame` render in the TUI; `input`/`filter`
-  fields, a `slider`, a `check` toggle, a `facet` multi-select, and `select` (an
-  fzf-style fuzzy picker) are interactive controls. Auto-layout by default,
-  `grid` (with `-span`/`-rowspan`/`-colspan`) to override, per-widget `-color`.
+- **Widgets** — `text`, `tail`, `list`, `gauge`, `linegauge`, `bars`, `histo`,
+  `spark`, `scatter`, `chart`, `table`, `tabs`, `block`, `frame` render in the
+  TUI; `input`/`filter` fields, a `slider`, a `check` toggle, a `facet`
+  multi-select, `select` (an fzf-style fuzzy picker), and `sel` (an in-dashboard
+  selection list whose highlighted row is published as `.<path>.sel`) are
+  interactive controls. Auto-layout by default, `grid` (with
+  `-span`/`-rowspan`/`-colspan`) to override, per-widget `-color`.
 - **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
   [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
 - **Megafilter/map** — `out { … }` shapes the downstream passthrough, driven by

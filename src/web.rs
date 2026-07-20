@@ -75,6 +75,15 @@ fn body_text(w: &Widget) -> String {
             Some(m) => format!("{} (max={})", w.kind.label(), m),
             None => w.kind.label().to_string(),
         },
+        WidgetKind::LineGauge => match opt("max") {
+            Some(m) => format!("linegauge (max={})", m),
+            None => "linegauge".to_string(),
+        },
+        WidgetKind::Scatter => match opt("mode") {
+            Some(m) => format!("scatter (mode={})", m),
+            None => "scatter".to_string(),
+        },
+        WidgetKind::Sel => "sel".to_string(),
         WidgetKind::Chart => match opt("height") {
             Some(h) => format!("chart (height={})", h),
             None => "chart".to_string(),

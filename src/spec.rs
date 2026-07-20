@@ -27,6 +27,17 @@ pub enum WidgetKind {
     Tabs,
     Block,
     Frame,
+    /// A thin single-line progress bar (ratatui `LineGauge`) — a compact `gauge`
+    /// for tight grid cells. Same scalar source + `-max` as `gauge`.
+    LineGauge,
+    /// A braille scatter/line plot (ratatui `Canvas`) of a numeric series — a
+    /// higher-resolution `chart` drawn with braille dots. `-mode line|points`.
+    Scatter,
+    /// An in-dashboard selection list over its own `source` (per-widget), with a
+    /// moveable cursor. Its highlighted row is published as the control value
+    /// `.<path>.sel`, readable from `where`/`apply`/`tell`/`ask` (SPEC §14). E.g.
+    /// `ps aux | arb` with `sel .ps { in }` exposes `.ps.sel` = the current row.
+    Sel,
     /// An editable text field. Its live value is bound into pipelines via
     /// `apply .name` (parse the value as a query pipeline) — the megafilter/map.
     Input,
@@ -64,6 +75,9 @@ impl WidgetKind {
             "tabs" => WidgetKind::Tabs,
             "block" => WidgetKind::Block,
             "frame" => WidgetKind::Frame,
+            "linegauge" => WidgetKind::LineGauge,
+            "scatter" => WidgetKind::Scatter,
+            "sel" => WidgetKind::Sel,
             "input" => WidgetKind::Input,
             "select" => WidgetKind::Select,
             "filter" => WidgetKind::Filter,
@@ -88,6 +102,9 @@ impl WidgetKind {
             WidgetKind::Tabs => "tabs",
             WidgetKind::Block => "block",
             WidgetKind::Frame => "frame",
+            WidgetKind::LineGauge => "linegauge",
+            WidgetKind::Scatter => "scatter",
+            WidgetKind::Sel => "sel",
             WidgetKind::Input => "input",
             WidgetKind::Select => "select",
             WidgetKind::Filter => "filter",
@@ -107,6 +124,7 @@ impl WidgetKind {
                 | WidgetKind::Facet
                 | WidgetKind::Slider
                 | WidgetKind::Check
+                | WidgetKind::Sel
         )
     }
 }

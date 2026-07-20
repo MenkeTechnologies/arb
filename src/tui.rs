@@ -23,9 +23,10 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::canvas::{Canvas, Points};
 use ratatui::widgets::{
-    Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem,
-    ListState, Paragraph, Row, Table, Tabs,
+    Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, LineGauge, List,
+    ListItem, ListState, Paragraph, Row, Table, Tabs,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -394,12 +395,13 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         match buf[i + 2] {
                             b'A' if fzf => c.cursor = c.cursor.saturating_sub(1),
                             b'B' if fzf => c.cursor = c.cursor.saturating_add(1),
-                            b'A' if fk == ControlKind::Facet => {
+                            // Facet and Sel both move a row cursor with Up/Down.
+                            b'A' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
                                 let f = c.focus;
                                 c.control_meta[f].cursor =
                                     c.control_meta[f].cursor.saturating_sub(1);
                             }
-                            b'B' if fk == ControlKind::Facet => {
+                            b'B' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
                                 let f = c.focus;
                                 c.control_meta[f].cursor =
                                     c.control_meta[f].cursor.saturating_add(1);
@@ -878,6 +880,19 @@ pub fn run(
                 .collect();
             (tail, label.clone())
         });
+        // Publish each `sel` widget's highlighted row into its `.<path>.sel`
+        // control before the snapshot, so downstream widgets/actions resolve
+        // against the live selection this frame. Snapshot the stream lines first
+        // (state lock), release it, THEN take the controls lock — never both at
+        // once (reader/key deadlock discipline).
+        {
+            let lines: Vec<String> = {
+                let st = state.lock().unwrap();
+                st.lines.iter().cloned().collect()
+            };
+            let mut c = controls.lock().unwrap();
+            update_sel_controls(spec, &lines, &mut c);
+        }
         // Snapshot live `input .name` values (form mode) so bound `apply .name`
         // pipelines resolve against what the user has typed, and the focused
         // field renders highlighted.
@@ -1420,8 +1435,14 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
                         c.inputs[mi].1 = match kind {
                             ControlKind::Slider => crate::query::fmt_scalar(c.control_meta[mi].min),
                             ControlKind::Check => "0".to_string(),
-                            ControlKind::Text | ControlKind::Facet => String::new(),
+                            ControlKind::Text | ControlKind::Facet | ControlKind::Sel => {
+                                String::new()
+                            }
                         };
+                        // A reset `sel` also returns its cursor to the top row.
+                        if kind == ControlKind::Sel {
+                            c.control_meta[mi].cursor = 0;
+                        }
                     }
                 } else if button == MouseButton::Left {
                     match t.kind {
@@ -1452,6 +1473,14 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
                             c.cursor = fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row);
                             if dbl {
                                 c.submit = true; // double-click picks the row, like Enter
+                            }
+                        }
+                        WidgetKind::Sel if down => {
+                            // Click a row to move the selection cursor to it.
+                            if let Some(mi) = mi {
+                                if let Some(idx) = facet_row_to_index(t.rect.y, ev.row) {
+                                    c.control_meta[mi].cursor = idx;
+                                }
                             }
                         }
                         WidgetKind::Tabs if down => {
@@ -1499,6 +1528,9 @@ pub enum ControlKind {
     Check,
     /// `facet`: a comma-set selected from `opts`, Up/Down move, Space toggles.
     Facet,
+    /// `sel`: a single-select list over the widget's own `source`, Up/Down move
+    /// the cursor; the highlighted row is the value, published as `.<path>.sel`.
+    Sel,
 }
 
 /// Per-control metadata parallel to `Controls.inputs`, for key handling + render.
@@ -1518,6 +1550,7 @@ pub fn control_kind(k: WidgetKind) -> ControlKind {
         WidgetKind::Slider => ControlKind::Slider,
         WidgetKind::Check => ControlKind::Check,
         WidgetKind::Facet => ControlKind::Facet,
+        WidgetKind::Sel => ControlKind::Sel,
         _ => ControlKind::Text, // input, filter
     }
 }
@@ -1588,6 +1621,43 @@ pub fn facet_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
         }
     }
     seen
+}
+
+/// The candidate rows of a `sel` widget: its `source` pipeline evaluated over the
+/// stream (or the raw stream when it has none). The highlighted row is the value.
+pub fn sel_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
+    match &w.source {
+        Some(s) => match crate::query::eval(&s.pipeline, raw, 0.0) {
+            crate::query::QueryResult::Lines(ls) => ls,
+            crate::query::QueryResult::Scalar(v) => vec![crate::query::fmt_scalar(v)],
+            crate::query::QueryResult::Pairs(p) => {
+                p.iter().map(|(k, v)| format!("{k}\t{v}")).collect()
+            }
+        },
+        None => raw.to_vec(),
+    }
+}
+
+/// Before each frame, publish every `sel` widget's highlighted row into its
+/// `.<path>.sel` control, clamping the cursor to the live candidate count — so a
+/// `where`/`apply`/`tell` that reads `.<path>.sel` sees the current selection.
+/// Stream lines are snapshotted by the caller (never holds the state + controls
+/// locks together — the reader/key deadlock discipline).
+pub fn update_sel_controls(spec: &Spec, raw: &[String], c: &mut Controls) {
+    for w in spec.widgets.iter().filter(|w| w.kind == WidgetKind::Sel) {
+        let key = format!("{}.sel", w.path.trim_start_matches('.'));
+        let Some(idx) = c.inputs.iter().position(|(n, _)| *n == key) else {
+            continue;
+        };
+        let cands = sel_candidates(w, raw);
+        let cursor = if cands.is_empty() {
+            0
+        } else {
+            c.control_meta[idx].cursor.min(cands.len() - 1)
+        };
+        c.control_meta[idx].cursor = cursor;
+        c.inputs[idx].1 = cands.get(cursor).cloned().unwrap_or_default();
+    }
 }
 
 fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool) {
@@ -1694,6 +1764,34 @@ fn render_control(
                         Style::default()
                     };
                     ListItem::new(Line::from(Span::styled(format!("{mark}{c}"), style)))
+                })
+                .collect();
+            f.render_widget(List::new(items).block(block), area);
+        }
+        ControlKind::Sel => {
+            // Single-select list over the widget's own source; the cursor row is
+            // the value (`.<path>.sel`). A `▸` marks it; when focused it reverses.
+            let cands = sel_candidates(w, raw);
+            let inner_h = area.height.saturating_sub(2) as usize;
+            let skip = meta.cursor.saturating_sub(inner_h.saturating_sub(1));
+            let items: Vec<ListItem> = cands
+                .iter()
+                .enumerate()
+                .skip(skip)
+                .take(inner_h)
+                .map(|(i, row)| {
+                    let cur = i == meta.cursor;
+                    let mark = if cur { "▸ " } else { "  " };
+                    let mut style = Style::default();
+                    if cur {
+                        style = style.fg(Color::Cyan);
+                        if focused {
+                            style = style.add_modifier(Modifier::REVERSED);
+                        } else {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                    }
+                    ListItem::new(Line::from(Span::styled(format!("{mark}{row}"), style)))
                 })
                 .collect();
             f.render_widget(List::new(items).block(block), area);
@@ -2137,6 +2235,31 @@ fn render_widget(
                 .label(format!("{val:.0}/{max:.0}"));
             f.render_widget(g, area);
         }
+        WidgetKind::LineGauge => {
+            // A thin one-line progress bar — same scalar source + `-max` as gauge,
+            // for tight cells where a full gauge is too tall.
+            let val = match &result {
+                Some(QueryResult::Scalar(v)) => *v,
+                _ => 0.0,
+            };
+            let max = w
+                .opts
+                .get("max")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(100.0);
+            let ratio = if max > 0.0 {
+                (val / max).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let g = LineGauge::default()
+                .block(block)
+                .filled_style(Style::default().fg(accent))
+                .line_set(symbols::line::THICK)
+                .ratio(ratio)
+                .label(format!("{val:.0}/{max:.0}"));
+            f.render_widget(g, area);
+        }
         WidgetKind::Bars | WidgetKind::Histo => {
             let pairs: Vec<(String, u64)> = match &result {
                 Some(QueryResult::Pairs(p)) => p.clone(),
@@ -2194,6 +2317,42 @@ fn render_widget(
                 .x_axis(Axis::default().bounds([0.0, xmax]))
                 .y_axis(Axis::default().bounds([lo, hi]));
             f.render_widget(chart, area);
+        }
+        WidgetKind::Scatter => {
+            // A braille scatter of a numeric series (higher spatial resolution than
+            // `spark`, no axes chrome). Each value plots at (index, value); the
+            // canvas bounds auto-fit the data.
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(lines),
+            };
+            let coords: Vec<(f64, f64)> = series
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as f64, *v))
+                .collect();
+            let min = series.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = series.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let (lo, hi) = if !min.is_finite() || min == max {
+                (min.min(0.0), max.max(min + 1.0))
+            } else {
+                (min, max)
+            };
+            let xmax = (series.len().saturating_sub(1)).max(1) as f64;
+            let canvas = Canvas::default()
+                .block(block)
+                .marker(symbols::Marker::Braille)
+                .x_bounds([0.0, xmax])
+                .y_bounds([lo, hi])
+                .paint(move |ctx| {
+                    ctx.draw(&Points {
+                        coords: &coords,
+                        color: accent,
+                    });
+                });
+            f.render_widget(canvas, area);
         }
         WidgetKind::Spark => {
             let series: Vec<f64> = match &result {
@@ -3053,5 +3212,43 @@ mod tests {
         );
         // A container shows its bound stream content, not an apology string.
         assert!(render_text("block .b").contains("two"));
+    }
+
+    #[test]
+    fn linegauge_and_scatter_render_without_panic() {
+        // Both new display widgets render into a real backend; their titles carry
+        // the kind label, and neither panics on empty/no-source data.
+        let lg = render_text("linegauge .load -max 8");
+        assert!(lg.contains("linegauge"), "linegauge title missing: {lg}");
+        let sc = render_text("scatter .lat");
+        assert!(sc.contains("scatter"), "scatter title missing: {sc}");
+    }
+
+    #[test]
+    fn sel_publishes_highlighted_row_as_control() {
+        use super::{sel_candidates, update_sel_controls, ControlKind, ControlMeta, Controls};
+        // A `sel` widget over `field 1` yields the first column of each row; the
+        // cursor row is published into the `.ps.sel` control.
+        let spec = build(&parse("sel .ps\nsource .ps { in; fields 1 }").unwrap()).unwrap();
+        let raw = vec!["alice 30".to_string(), "bob 25".to_string(), "carol 40".to_string()];
+        assert_eq!(sel_candidates(&spec.widgets[0], &raw), vec!["alice", "bob", "carol"]);
+
+        let mut c = Controls {
+            inputs: vec![("ps.sel".into(), String::new())],
+            control_meta: vec![ControlMeta {
+                kind: ControlKind::Sel,
+                cursor: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        update_sel_controls(&spec, &raw, &mut c);
+        assert_eq!(c.inputs[0].1, "bob"); // cursor row 1
+
+        // Cursor past the end clamps to the last row, not out-of-bounds.
+        c.control_meta[0].cursor = 99;
+        update_sel_controls(&spec, &raw, &mut c);
+        assert_eq!(c.inputs[0].1, "carol");
+        assert_eq!(c.control_meta[0].cursor, 2);
     }
 }

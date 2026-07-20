@@ -50,7 +50,14 @@ pub fn serve(spec: Spec, state: Arc<Mutex<StreamState>>, port: u16) -> std::io::
             .iter()
             .filter(|w| w.kind.is_control())
             .map(|w| {
-                let name = w.path.trim_start_matches('.').to_string();
+                // A `sel` widget's value lives under `.<path>.sel` (SPEC §14), like
+                // the TUI; web has no cursor nav yet, so it stays empty (a `.sel`
+                // predicate then matches all / drops, never errors).
+                let name = if w.kind == WidgetKind::Sel {
+                    format!("{}.sel", w.path.trim_start_matches('.'))
+                } else {
+                    w.path.trim_start_matches('.').to_string()
+                };
                 let init = match w.kind {
                     WidgetKind::Slider => crate::query::fmt_scalar(crate::spec::parse_scalar(
                         w.opts.get("min").map(String::as_str).unwrap_or("0"),
@@ -356,7 +363,9 @@ fn widget_json(
         .as_ref()
         .map(|s| eval(&resolve_pipeline(&s.pipeline, inputs), raw, elapsed));
     match w.kind {
-        WidgetKind::Gauge => {
+        // `linegauge` shares the gauge's scalar+max data shape on the wire; the
+        // client renders it with the gauge component (a thin bar in the TUI).
+        WidgetKind::Gauge | WidgetKind::LineGauge => {
             let scalar = match &result {
                 Some(QueryResult::Scalar(v)) => *v,
                 _ => 0.0,
@@ -375,7 +384,9 @@ fn widget_json(
                 .unwrap_or(20);
             base(json!({ "pairs": pairs, "top": top }))
         }
-        WidgetKind::Spark => {
+        // `scatter` shares the spark's numeric-series shape; the client draws it
+        // as a series (a braille scatter in the TUI).
+        WidgetKind::Spark | WidgetKind::Scatter => {
             // Raw numeric series — the client renders it with `ZGui.sparkline`.
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),

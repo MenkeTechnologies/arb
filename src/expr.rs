@@ -533,7 +533,7 @@ impl Parser {
             return Err("expected a control ref `.name`".into());
         }
         self.i += 1; // consume '.'
-        let name = self.ident();
+        let name = self.dotted_ident();
         if name.is_empty() {
             return Err("expected a control name after `.`".into());
         }
@@ -710,7 +710,7 @@ impl Parser {
             Some('.') if matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_') =>
             {
                 self.i += 1; // consume the leading `.`
-                Ok(Expr::Control(self.ident()))
+                Ok(Expr::Control(self.dotted_ident()))
             }
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
             Some(c) => Err(format!("calc: unexpected `{c}`")),
@@ -726,6 +726,23 @@ impl Parser {
             self.i += 1;
         }
         self.c[start..self.i].iter().collect()
+    }
+
+    /// A control name that may be dot-segmented (`ps.sel`, `g.cpu`): the leading
+    /// ident, then any `.segment` where the char after the `.` is a letter/`_` (so
+    /// `.5` fractional bounds and `..` ranges are left alone). Enables the
+    /// `.<widget>.sel` selection accessor (SPEC §14) as a live control ref.
+    fn dotted_ident(&mut self) -> String {
+        let mut name = self.ident();
+        while self.i < self.c.len()
+            && self.c[self.i] == '.'
+            && matches!(self.c.get(self.i + 1), Some(c) if c.is_ascii_alphabetic() || *c == '_')
+        {
+            self.i += 1; // consume '.'
+            name.push('.');
+            name.push_str(&self.ident());
+        }
+        name
     }
 
     /// Parse the argument list of a `name(arg, …)` FFI call — the leading `(` is
@@ -769,5 +786,36 @@ impl Parser {
         s.parse::<f64>()
             .map(Expr::Num)
             .map_err(|_| format!("calc: bad number `{s}`"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotted_control_name_parses_whole() {
+        // `.ps.sel` (a widget's selection accessor) is one control ref, not
+        // `.ps` followed by a stray `.sel`.
+        let e = parse(".ps.sel").unwrap();
+        let mut names = Vec::new();
+        control_names(&e, &mut names);
+        assert_eq!(names, vec!["ps.sel".to_string()]);
+    }
+
+    #[test]
+    fn dotted_control_substitutes_and_evals() {
+        // `.k.v * 2` with the control resolved to 21 -> 42.
+        let e = parse(".k.v * 2").unwrap();
+        let num = |n: &str| if n == "k.v" { Some(21.0) } else { None };
+        let strv = |_: &str| None;
+        let sub = substitute_controls(&e, &num, &strv);
+        assert_eq!(eval(&sub, 0.0).unwrap(), 42.0);
+    }
+
+    #[test]
+    fn fractional_bound_still_a_number_not_a_control() {
+        // `.5` stays a number; only `.<letter>` is a control ref.
+        assert!(matches!(parse("x + .5").unwrap(), Expr::Bin(BinOp::Add, _, _)));
     }
 }

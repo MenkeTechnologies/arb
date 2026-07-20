@@ -767,7 +767,14 @@ fn main() -> io::Result<()> {
             // against their live values. `control_meta` carries slider/facet
             // bounds + the facet cursor, parallel to `inputs`.
             for w in spec.widgets.iter().filter(|w| w.kind.is_control()) {
-                let name = w.path.trim_start_matches('.').to_string();
+                // A `sel` widget's value is its highlighted row, exposed under the
+                // `.<path>.sel` accessor (SPEC §14) — so a `.ps` selection list
+                // registers control `ps.sel`. Every other control is `.<path>`.
+                let name = if w.kind == spec::WidgetKind::Sel {
+                    format!("{}.sel", w.path.trim_start_matches('.'))
+                } else {
+                    w.path.trim_start_matches('.').to_string()
+                };
                 let opt_f =
                     |k: &str, d: f64| w.opts.get(k).map(|s| spec::parse_scalar(s)).unwrap_or(d);
                 let kind = tui::control_kind(w.kind);

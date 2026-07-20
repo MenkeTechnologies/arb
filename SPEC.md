@@ -102,7 +102,8 @@ so it behaves as if interactive, and keeps a writer to its stdin so a **`send
 "text"`** action (a bind/expect action, like `set`/`beep`/`exec`) can drive it —
 Expect-style automation, e.g. `expect { /password:/ send "hunter2\n" }`. The
 `send` write happens in the TUI (headless falls back to a plain pipe). The
-`.ps.sel` selection widget (§14) is still ⬜ (it needs per-widget named sources).
+`sel` selection widget (§9) exposes a widget's highlighted row as `.<path>.sel`
+for a `send`/`where`/`tell` to consume.
 
 ## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 
@@ -245,7 +246,9 @@ are ignored by every mode except `--test` (they don't render a widget).
 text .t -label L          tail .t -label L        table .t -cols "a,b,c"
 list .t                   gauge .t -label L -max N spark .t
 bars .t -label L          histo .t                chart .t
+linegauge .t -max N       scatter .t              # thin bar / braille scatter
 select .s -prompt P -header H     input .i -placeholder P    # interactive
+sel .ps                   # per-widget selection list -> .ps.sel (§14)
 tabs .t -tabs {a b}       block .t -title T -border  frame .f
 .t configure -max 200     # reconfigure (merge opts into a declared widget)
 ```
@@ -254,7 +257,12 @@ Any widget takes `-color NAME` (green/red/yellow/orange/magenta/blue/white/gray,
 default cyan) to tint its border and accent — same color in the TUI and web.
 `select` is an interactive fuzzy picker (fzf as a one-widget spec; `source`
 projects the candidate display, `search` derives a separate match key); `input`
-is a live field whose value drives `apply`/`bind`/`out`.
+is a live field whose value drives `apply`/`bind`/`out`. `linegauge` is a compact
+one-line `gauge`; `scatter` is a braille scatter plot of a numeric series (higher
+resolution than `spark`). `sel` is an in-dashboard selection list over its own
+`source` — Up/Down (or a click) move a cursor and its highlighted row is
+published as the control value `.<path>.sel`, readable from
+`where`/`apply`/`tell`/`send` (the per-widget-named-source selection accessor).
 
 ## 10. Layout (auto by default)
 
@@ -340,9 +348,13 @@ carries **Shift/Alt/Ctrl** modifier bits (`mouse_shift`/`mouse_alt`/`mouse_ctrl`
 Everything is decoded from the raw tty byte stream and hit-tested against the
 rendered widget rects. To copy text, hold **Shift** and drag for your terminal's
 native char-precise selection (arb captures the mouse for its widgets).
-⬜ Planned:
-`spawn` + a widget's selection (`.ps.sel`); OSC-52 whole-widget copy is
-deferred (line-granular, terminal-gated — Shift+drag is the better copy path).
+**Selection accessor** — a `sel` widget (a per-widget selection list over its own
+`source`) publishes its highlighted row as the control value `.<path>.sel`, so a
+`ps aux | arb` dashboard with `sel .ps` + `source .ps { in }` exposes `.ps.sel` =
+the current process row. Move the cursor with Up/Down (or click a row); the value
+updates live and is readable anywhere a control is — `where match(.ps.sel)`,
+`apply`, `tell w job(.ps.sel)`, or a `send` to a PTY child. ⬜ OSC-52 whole-widget
+copy is deferred (line-granular, terminal-gated — Shift+drag is the better path).
 
 ## 15. Actors — Akka-style concurrency
 
@@ -565,7 +577,7 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 1. ✅ Core widgets + auto-layout + `source`/query basics.
 2. ✅ Presets/imports + stdlib (logs/http/json/table/top/metrics) + module namespacing `import X as Y` (prefixes widget paths, `apply`, control refs, `set`/`flash` targets).
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
-4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source, `spawn -pty CMD` + the `send "text"` action (Expect-style automation of a PTY child). *(`.ps.sel` selection widget: ⬜)*
+4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source, `spawn -pty CMD` + the `send "text"` action (Expect-style automation of a PTY child). The `sel` selection widget publishes a widget's highlighted row as `.<path>.sel` for `where`/`apply`/`tell`/`send` to consume (§9).
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ✅ Actors — Akka-style message-passing (§15): `actor NAME(state) { on MSG(p) { … reply EXPR } }` declarations compiled to `ActorDef`; a real runtime of one `mpsc`-mailbox OS thread per actor with *spawn* / *send* (tell) / *ask* (await reply) / supervised round-robin *pool* (respawns a dead worker); handler bodies run arb expressions (fusevm) over `state` + params + locals. Two surfaces: the `via NAME * N` pipeline op fans the stream across a pool in parallel (rayon), order preserved; and the session-ref surface — top-level `spawn NAME = ACTOR(init)` / `pool NAME = ACTOR * N` bindings, a `supervise NAME { on crash { restart \| stop } }` crash policy, and the `tell REF MSG(args)` / `ask .CTRL REF MSG(args)` bind/expect actions that drive them (interactive TUI).
 7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*
