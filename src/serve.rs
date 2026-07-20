@@ -384,9 +384,9 @@ fn widget_json(
                 .unwrap_or(20);
             base(json!({ "pairs": pairs, "top": top }))
         }
-        // `scatter` shares the spark's numeric-series shape; the client draws it
-        // as a series (a braille scatter in the TUI).
-        WidgetKind::Spark | WidgetKind::Scatter => {
+        // `scatter`/`sparkline` share the spark's numeric-series shape; the client
+        // draws them as a series (braille scatter / block-bar sparkline in the TUI).
+        WidgetKind::Spark | WidgetKind::Scatter | WidgetKind::Sparkline => {
             // Raw numeric series — the client renders it with `ZGui.sparkline`.
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),

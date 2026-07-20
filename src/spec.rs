@@ -33,6 +33,16 @@ pub enum WidgetKind {
     /// A braille scatter/line plot (ratatui `Canvas`) of a numeric series — a
     /// higher-resolution `chart` drawn with braille dots. `-mode line|points`.
     Scatter,
+    /// A block-bar sparkline (ratatui `Sparkline`) of the numeric series — the
+    /// classic fixed-height bar sparkline (distinct from `spark`'s braille line).
+    Sparkline,
+    /// A braille world map (ratatui `Canvas` + `Map`) plotting `lon lat` points
+    /// parsed from the stream — geo scatter (IP geolocation, GPS traces). `-res
+    /// high|low`.
+    Map,
+    /// A month calendar (ratatui `Monthly`) for the current month, highlighting
+    /// days that appear as `YYYY-MM-DD` in the stream (activity by day).
+    Calendar,
     /// An in-dashboard selection list over its own `source` (per-widget), with a
     /// moveable cursor. Its highlighted row is published as the control value
     /// `.<path>.sel`, readable from `where`/`apply`/`tell`/`ask` (SPEC §14). E.g.
@@ -77,6 +87,9 @@ impl WidgetKind {
             "frame" => WidgetKind::Frame,
             "linegauge" => WidgetKind::LineGauge,
             "scatter" => WidgetKind::Scatter,
+            "sparkline" => WidgetKind::Sparkline,
+            "map" => WidgetKind::Map,
+            "calendar" => WidgetKind::Calendar,
             "sel" => WidgetKind::Sel,
             "input" => WidgetKind::Input,
             "select" => WidgetKind::Select,
@@ -104,6 +117,9 @@ impl WidgetKind {
             WidgetKind::Frame => "frame",
             WidgetKind::LineGauge => "linegauge",
             WidgetKind::Scatter => "scatter",
+            WidgetKind::Sparkline => "sparkline",
+            WidgetKind::Map => "map",
+            WidgetKind::Calendar => "calendar",
             WidgetKind::Sel => "sel",
             WidgetKind::Input => "input",
             WidgetKind::Select => "select",

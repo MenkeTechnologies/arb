@@ -83,6 +83,12 @@ fn body_text(w: &Widget) -> String {
             Some(m) => format!("scatter (mode={})", m),
             None => "scatter".to_string(),
         },
+        WidgetKind::Sparkline => "sparkline".to_string(),
+        WidgetKind::Map => match opt("res") {
+            Some(r) => format!("map (res={})", r),
+            None => "map".to_string(),
+        },
+        WidgetKind::Calendar => "calendar".to_string(),
         WidgetKind::Sel => "sel".to_string(),
         WidgetKind::Chart => match opt("height") {
             Some(h) => format!("chart (height={})", h),

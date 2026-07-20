@@ -23,10 +23,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::canvas::{Canvas, Points};
+use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Points};
+use ratatui::widgets::calendar::{CalendarEventStore, Monthly};
 use ratatui::widgets::{
     Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, LineGauge, List,
-    ListItem, ListState, Paragraph, Row, Table, Tabs,
+    ListItem, ListState, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline,
+    Table, Tabs,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -1623,6 +1625,36 @@ pub fn facet_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
     seen
 }
 
+/// Extract `YYYY-MM-DD` dates appearing anywhere in the stream lines, for the
+/// `calendar` widget to highlight days with activity. Scans each line for an
+/// 8–10 char ISO date token; malformed dates are skipped.
+fn stream_event_dates(lines: &[String]) -> Vec<time::Date> {
+    let mut out = Vec::new();
+    for l in lines {
+        for tok in l.split(|c: char| !(c.is_ascii_digit() || c == '-')) {
+            let parts: Vec<&str> = tok.split('-').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let (Ok(y), Ok(m), Ok(d)) = (
+                parts[0].parse::<i32>(),
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+            ) else {
+                continue;
+            };
+            if let Ok(month) = time::Month::try_from(m) {
+                if let Ok(date) = time::Date::from_calendar_date(y, month, d) {
+                    if !out.contains(&date) {
+                        out.push(date);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The candidate rows of a `sel` widget: its `source` pipeline evaluated over the
 /// stream (or the raw stream when it has none). The highlighted row is the value.
 pub fn sel_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
@@ -2212,6 +2244,7 @@ fn render_widget(
                 .map(|l| ListItem::new(ansi_line(l)))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
+            render_scrollbar(f, area, owned.len(), cap, skip, accent);
         }
         WidgetKind::Gauge => {
             let val = match &result {
@@ -2354,6 +2387,83 @@ fn render_widget(
                 });
             f.render_widget(canvas, area);
         }
+        WidgetKind::Sparkline => {
+            // The classic block-bar sparkline (ratatui `Sparkline`) — fixed-height
+            // bars scaled to the series max. Distinct from `spark`'s braille line.
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(lines),
+            };
+            // Newest points that fit the width; non-finite/negative clamp to 0.
+            let cap = inner_w.max(1);
+            let start = series.len().saturating_sub(cap);
+            let data: Vec<u64> = series[start..]
+                .iter()
+                .map(|v| if v.is_finite() && *v > 0.0 { *v as u64 } else { 0 })
+                .collect();
+            let sp = Sparkline::default()
+                .block(block)
+                .style(Style::default().fg(accent))
+                .data(&data);
+            f.render_widget(sp, area);
+        }
+        WidgetKind::Map => {
+            // A braille world map (ratatui `Canvas` + `Map`) with `lon lat` points
+            // from the stream — the first two numeric fields of each line. `-res
+            // high|low` picks the coastline resolution.
+            let res = match w.opts.get("res").map(String::as_str) {
+                Some("low") => MapResolution::Low,
+                _ => MapResolution::High,
+            };
+            let pts: Vec<(f64, f64)> = lines
+                .iter()
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    let lon = it.next()?.parse::<f64>().ok()?;
+                    let lat = it.next()?.parse::<f64>().ok()?;
+                    (lon.abs() <= 180.0 && lat.abs() <= 90.0).then_some((lon, lat))
+                })
+                .collect();
+            let canvas = Canvas::default()
+                .block(block)
+                .marker(symbols::Marker::Braille)
+                .x_bounds([-180.0, 180.0])
+                .y_bounds([-90.0, 90.0])
+                .paint(move |ctx| {
+                    ctx.draw(&Map {
+                        resolution: res,
+                        color: Color::DarkGray,
+                    });
+                    ctx.layer();
+                    ctx.draw(&Points {
+                        coords: &pts,
+                        color: accent,
+                    });
+                });
+            f.render_widget(canvas, area);
+        }
+        WidgetKind::Calendar => {
+            // The current month (ratatui `Monthly`); days that appear as
+            // `YYYY-MM-DD` anywhere in a stream line are highlighted (activity).
+            let today = time::OffsetDateTime::now_utc().date();
+            let mut events = CalendarEventStore::default();
+            events.add(
+                today,
+                Style::default().fg(Color::Black).bg(accent),
+            );
+            for d in stream_event_dates(lines) {
+                if d != today {
+                    events.add(d, Style::default().fg(accent).add_modifier(Modifier::BOLD));
+                }
+            }
+            let cal = Monthly::new(today, events)
+                .block(block)
+                .show_month_header(Style::default().fg(accent))
+                .show_weekdays_header(Style::default().fg(Color::DarkGray));
+            f.render_widget(cal, area);
+        }
         WidgetKind::Spark => {
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
@@ -2457,8 +2567,25 @@ fn render_widget(
                 .map(|l| ListItem::new(ansi_line(l)))
                 .collect();
             f.render_widget(List::new(items).block(block), area);
+            render_scrollbar(f, area, owned.len(), inner_h, skip, accent);
         }
     }
+}
+
+/// Draw a vertical scrollbar (ratatui `Scrollbar`) on the right border of a
+/// scrollable list widget — only when the content overflows the viewport. `pos`
+/// is the topmost visible row; the thumb tracks it. A no-op when everything fits.
+fn render_scrollbar(f: &mut Frame, area: Rect, content: usize, visible: usize, pos: usize, accent: Color) {
+    if content <= visible || area.height < 3 {
+        return;
+    }
+    let mut state = ScrollbarState::new(content.saturating_sub(visible)).position(pos);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .thumb_style(Style::default().fg(accent))
+        .track_style(Style::default().fg(Color::DarkGray));
+    f.render_stateful_widget(bar, area, &mut state);
 }
 
 #[cfg(test)]
@@ -3222,6 +3349,33 @@ mod tests {
         assert!(lg.contains("linegauge"), "linegauge title missing: {lg}");
         let sc = render_text("scatter .lat");
         assert!(sc.contains("scatter"), "scatter title missing: {sc}");
+    }
+
+    #[test]
+    fn sparkline_map_calendar_render_without_panic() {
+        // Each ratatui-widget wrapper renders without panicking on plain data.
+        // (Canvas/Monthly draw into the buffer; the block title carries the kind.)
+        assert!(render_text("sparkline .s").contains("sparkline"));
+        // Map + calendar draw shapes that don't leave the kind label in the top
+        // border cells, so just assert the render completes (non-empty buffer).
+        assert!(!render_text("map .m").is_empty());
+        assert!(!render_text("calendar .c").is_empty());
+    }
+
+    #[test]
+    fn stream_event_dates_parses_iso_dates() {
+        use super::stream_event_dates;
+        let lines = vec![
+            "2026-07-19 login ok".to_string(),
+            "no date here".to_string(),
+            "[2026-07-20] event".to_string(),
+            "2026-13-40 bad".to_string(), // invalid month/day -> skipped
+            "2026-07-19 dup".to_string(), // duplicate -> deduped
+        ];
+        let dates = stream_event_dates(&lines);
+        assert_eq!(dates.len(), 2);
+        assert!(dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 19).unwrap()));
+        assert!(dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 20).unwrap()));
     }
 
     #[test]

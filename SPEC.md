@@ -246,7 +246,8 @@ are ignored by every mode except `--test` (they don't render a widget).
 text .t -label L          tail .t -label L        table .t -cols "a,b,c"
 list .t                   gauge .t -label L -max N spark .t
 bars .t -label L          histo .t                chart .t
-linegauge .t -max N       scatter .t              # thin bar / braille scatter
+linegauge .t -max N       scatter .t              sparkline .t   # bars / scatter
+map .t -res high           calendar .t             # world map / month calendar
 select .s -prompt P -header H     input .i -placeholder P    # interactive
 sel .ps                   # per-widget selection list -> .ps.sel (§14)
 tabs .t -tabs {a b}       block .t -title T -border  frame .f
@@ -257,12 +258,21 @@ Any widget takes `-color NAME` (green/red/yellow/orange/magenta/blue/white/gray,
 default cyan) to tint its border and accent — same color in the TUI and web.
 `select` is an interactive fuzzy picker (fzf as a one-widget spec; `source`
 projects the candidate display, `search` derives a separate match key); `input`
-is a live field whose value drives `apply`/`bind`/`out`. `linegauge` is a compact
-one-line `gauge`; `scatter` is a braille scatter plot of a numeric series (higher
-resolution than `spark`). `sel` is an in-dashboard selection list over its own
-`source` — Up/Down (or a click) move a cursor and its highlighted row is
-published as the control value `.<path>.sel`, readable from
+is a live field whose value drives `apply`/`bind`/`out`. The chart family:
+`linegauge` (a compact one-line `gauge`), `scatter` (braille scatter of a numeric
+series), `sparkline` (a block-bar sparkline, the fixed-height counterpart to
+`spark`'s braille line), `map` (a braille world map plotting `lon lat` points from
+the stream — geo scatter), and `calendar` (a month grid highlighting days that
+appear as `YYYY-MM-DD` in the stream). Scrollable list widgets (`tail`/`list`/
+`block`/`frame`) draw a scrollbar when content overflows. `sel` is an in-dashboard
+selection list over its own `source` — Up/Down (or a click) move a cursor and its
+highlighted row is published as the control value `.<path>.sel`, readable from
 `where`/`apply`/`tell`/`send` (the per-widget-named-source selection accessor).
+
+arb wires the full ratatui data-widget set — `Paragraph`, `List`, `Table`,
+`Tabs`, `Gauge`, `LineGauge`, `BarChart`, `Sparkline`, `Chart`, `Canvas`
+(scatter/map), `Calendar`, `Scrollbar`, `Block` — leaving only the non-data
+utilities (`Clear`, `RatatuiLogo`) unused.
 
 ## 10. Layout (auto by default)
 
