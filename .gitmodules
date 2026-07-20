@@ -1,3 +1,4 @@
 [submodule "lib/zgui-core"]
 	path = lib/zgui-core
-	url = https://github.com/MenkeTechnologies/zgui-core.git
+	url = https://github.com/MenkeTechnologies/zgui-core-foss.git
+	branch = main
