@@ -1892,7 +1892,7 @@ pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
 
 /// Build a styled list line for fzf mode: a mark gutter (`+` for a Tab-marked
 /// line) followed by the text with fuzzy-matched characters highlighted.
-fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'static> {
+fn fzf_line(line: &str, filter: &str, width: usize, marked: bool, accent: Color) -> Line<'static> {
     let text: String = line.chars().take(width.saturating_sub(2)).collect();
     let gutter = if marked {
         Span::styled(
@@ -1909,9 +1909,8 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool) -> Line<'stati
     }
     let pos: std::collections::HashSet<usize> =
         match_positions(&text, filter).into_iter().collect();
-    let hl = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
+    // Matched characters glow in the theme accent (was a fixed yellow).
+    let hl = Style::default().fg(accent).add_modifier(Modifier::BOLD);
     let mut spans = vec![gutter];
     let mut cur = String::new();
     let mut cur_hl = false;
@@ -2032,7 +2031,8 @@ fn render_fzf(
     };
     // fzf-style prompt: accent prompt string, the query with a cursor bar, then an
     // accent matched/total(marked) counter and dim key hints (theme-aware).
-    let cyan = Style::default().fg(theme_accent(theme));
+    let accent = theme_accent(theme);
+    let cyan = Style::default().fg(accent);
     let prompt_line = Line::from(vec![
         Span::styled(prompt.to_string(), cyan.add_modifier(Modifier::BOLD)),
         Span::raw(format!("{filter}\u{258f}")),
@@ -2073,6 +2073,7 @@ fn render_fzf(
                 filter,
                 inner_w,
                 mark_set.contains(orig.as_ref()),
+                accent,
             ))
         })
         .collect();
@@ -2080,11 +2081,14 @@ fn render_fzf(
     if n > 0 {
         state.select(Some(sel - start));
     }
-    // Cyan pointer + a subtle highlight bar on the cursor line, fzf-style.
+    // Accent pointer + cursor line: the selected row's text and the `▶` pointer
+    // take the theme accent, over a subtle highlight bar — so the theme is visible
+    // even before you type a query.
     let list = List::new(items)
         .highlight_symbol("\u{25b6} ")
         .highlight_style(
             Style::default()
+                .fg(accent)
                 .bg(Color::Rgb(38, 38, 46))
                 .add_modifier(Modifier::BOLD),
         );
