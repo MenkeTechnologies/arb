@@ -143,10 +143,16 @@ pub struct Controls {
     /// key cycles it through the 31 built-ins at runtime (persisted to `~/.arb`);
     /// render reads this, not `spec.theme`, so a cycle takes effect immediately.
     pub theme: Option<crate::theme::Palette>,
-    /// Index into `theme::THEMES` of the current theme, for cycling with `c`.
+    /// Index into `theme::THEMES` of the current theme.
     pub theme_idx: usize,
     /// Whether the `Ctrl-G` global help overlay is showing.
     pub help_open: bool,
+    /// Whether the `Ctrl-T` theme-chooser popup is open (ported from iftoprs).
+    pub theme_picker_open: bool,
+    /// The highlighted row in the theme chooser (live-previews as it moves).
+    pub theme_picker_sel: usize,
+    /// The theme index to revert to if the chooser is cancelled with Esc.
+    pub theme_picker_revert: usize,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -399,6 +405,34 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         i += 1;
                         continue;
                     }
+                    // Theme chooser (Ctrl-T popup): while open it captures all keys
+                    // — arrows/j/k navigate + live-preview, Enter saves, Esc/q
+                    // cancels, Ctrl-C still quits. Everything else is swallowed.
+                    if c.theme_picker_open {
+                        if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
+                            match buf[i + 2] {
+                                b'A' => theme_picker_move(&mut c, -1),
+                                b'B' => theme_picker_move(&mut c, 1),
+                                _ => {}
+                            }
+                            i += 3;
+                            continue;
+                        }
+                        match b {
+                            b'k' | 0x10 => theme_picker_move(&mut c, -1), // k / Ctrl-P
+                            b'j' | 0x0e => theme_picker_move(&mut c, 1),  // j / Ctrl-N
+                            0x0d => theme_picker_accept(&mut c),          // Enter
+                            0x1b | b'q' => theme_picker_cancel(&mut c),   // Esc / q
+                            0x14 => theme_picker_cancel(&mut c),          // Ctrl-T toggles closed
+                            0x03 => {
+                                c.quit = true;
+                                break 'read;
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                        continue;
+                    }
                     // Arrow keys: ESC [ A/B/C/D. fzf moves the cursor; a form slider
                     // adjusts on Left/Right, a facet moves its cursor on Up/Down.
                     if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
@@ -509,12 +543,12 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                                 c.inputs[f].1 = toggle_set_member(&c.inputs[f].1, &item);
                             }
                         }
-                        // Ctrl-T cycles the color theme in EVERY mode. A bare `c`
-                        // (iftop's key) can't be used — the megafilter, the fzf
-                        // filter, and `input` controls all consume printable bytes
-                        // as text; a control byte never types, so it's safe here,
-                        // in fzf, and in a form alike.
-                        0x14 => cycle_theme(&mut c, true),
+                        // Ctrl-T opens the theme chooser popup (works in EVERY
+                        // mode). A bare `c` (iftop's key) can't be used — the
+                        // megafilter, the fzf filter, and `input` controls all
+                        // consume printable bytes as text; a control byte never
+                        // types, so it's safe here, in fzf, and in a form alike.
+                        0x14 => open_theme_picker(&mut c),
                         // Ctrl-G toggles the global help overlay (works everywhere).
                         0x07 => c.help_open = !c.help_open,
                         0x20..=0x7e => {
@@ -876,7 +910,9 @@ pub fn run(
                 break Ok(());
             }
             let marks = c.marks.clone();
-            let fzf_theme = c.theme; // live theme (Ctrl-T cycles it)
+            let fzf_theme = c.theme; // live theme (Ctrl-T chooser previews it)
+            let fzf_help = c.help_open;
+            let fzf_picker = c.theme_picker_open.then_some(c.theme_picker_sel);
             drop(c);
             // Snapshot the `--preview` pane (command output for the cursor line).
             let prev_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
@@ -903,6 +939,13 @@ pub fn run(
                     fzf_theme,
                     &mut hitmap,
                 );
+                // Global overlays draw on top of the picker too.
+                if fzf_help {
+                    draw_help_overlay(f, spec, fzf_theme);
+                }
+                if let Some(sel) = fzf_picker {
+                    draw_theme_picker(f, sel, fzf_theme);
+                }
             });
             // Publish the fzf list hit target so a click moves the cursor.
             {
@@ -951,8 +994,9 @@ pub fn run(
         let mut c = controls.lock().unwrap();
         let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
         let focus_name = c.inputs.get(c.focus).map(|(n, _)| n.clone());
-        let theme = c.theme; // live theme (Ctrl-T cycles it)
+        let theme = c.theme; // live theme (Ctrl-T chooser previews it)
         let help_open = c.help_open; // Ctrl-G help overlay
+        let theme_picker = c.theme_picker_open.then_some(c.theme_picker_sel);
         // Control metadata keyed by name (slider/facet/check bounds + facet cursor).
         let cmeta: HashMap<String, ControlMeta> = c
             .inputs
@@ -1003,6 +1047,7 @@ pub fn run(
                 &scroll_snap,
                 theme,
                 help_open,
+                theme_picker,
             );
         });
         drop(st);
@@ -1054,6 +1099,7 @@ fn render(
     scroll: &HashMap<String, usize>,
     theme: Option<crate::theme::Palette>,
     help: bool,
+    theme_picker: Option<usize>,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -1189,9 +1235,12 @@ fn render(
             .unwrap_or(0);
         render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc, theme);
     }
-    // The Ctrl-G global help overlay draws on top of everything.
+    // The Ctrl-G help overlay and the Ctrl-T theme chooser draw on top.
     if help {
         draw_help_overlay(f, spec, theme);
+    }
+    if let Some(sel) = theme_picker {
+        draw_theme_picker(f, sel, theme);
     }
 }
 
@@ -1236,6 +1285,54 @@ fn draw_help_overlay(f: &mut Frame, spec: &Spec, theme: Option<crate::theme::Pal
         .border_style(Style::default().fg(accent))
         .title(" help ");
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The `Ctrl-T` theme chooser popup (ported from iftoprs): a boxed, scrollable
+/// list of the 31 themes — each with a 6-cell palette swatch, a `▸` on the active
+/// theme and a highlight bar on the cursor row. The dashboard behind previews the
+/// highlighted theme live; `sel` is the cursor, `theme` the (previewed) palette.
+fn draw_theme_picker(f: &mut Frame, sel: usize, theme: Option<crate::theme::Palette>) {
+    let accent = theme_accent(theme);
+    let themes = crate::theme::THEMES;
+    let area_full = f.area();
+    let w = 40u16.min(area_full.width.saturating_sub(4));
+    let h = (themes.len() as u16 + 4).min(area_full.height.saturating_sub(2));
+    let area = Rect {
+        x: (area_full.width.saturating_sub(w)) / 2,
+        y: (area_full.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(" theme  (↑↓ preview · Enter save · Esc cancel) ");
+    let inner_h = area.height.saturating_sub(2) as usize;
+    // Scroll so the cursor row stays visible.
+    let start = sel.saturating_sub(inner_h.saturating_sub(1));
+    let rows: Vec<Line> = themes
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_h)
+        .map(|(i, (name, pal))| {
+            let cursor = i == sel;
+            let mark = if cursor { "▸ " } else { "  " };
+            let name_style = if cursor {
+                Style::default().fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(format!("{mark}{name:<14}"), name_style)];
+            // 6-cell palette swatch (each cell a 256-color background block).
+            for &c in pal.iter() {
+                spans.push(Span::styled("  ", Style::default().bg(Color::Indexed(c))));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(rows).block(block), area);
 }
 
 /// A readable label for a raw control-key byte (`0x15` -> `Ctrl-U`, etc.).
@@ -2370,21 +2467,44 @@ fn theme_accent(theme: Option<crate::theme::Palette>) -> Color {
     theme.map(|p| p.accent()).unwrap_or(Color::Cyan)
 }
 
-/// Cycle the live theme to the next/previous of the 31 built-ins, persist it as
-/// the global default in `~/.arb/config.toml`, and flash the name — the `c`/`C`
-/// runtime theme switch (htop/iftop-style). Best-effort persist (a read-only
-/// home just doesn't save).
-fn cycle_theme(c: &mut Controls, forward: bool) {
+/// Set the live theme to `idx` of the 31 built-ins (used for the chooser's live
+/// preview — the dashboard behind the popup recolors as the cursor moves).
+fn set_live_theme(c: &mut Controls, idx: usize) {
     let n = crate::theme::THEMES.len();
-    c.theme_idx = if forward {
-        (c.theme_idx + 1) % n
-    } else {
-        (c.theme_idx + n - 1) % n
-    };
-    let (name, pal) = crate::theme::THEMES[c.theme_idx];
-    c.theme = Some(crate::theme::Palette { c: pal });
+    c.theme_idx = idx % n;
+    c.theme = Some(crate::theme::Palette {
+        c: crate::theme::THEMES[c.theme_idx].1,
+    });
+}
+
+/// Open the `Ctrl-T` theme chooser, remembering the current theme to revert to on
+/// cancel (ported from iftoprs' theme picker).
+fn open_theme_picker(c: &mut Controls) {
+    c.theme_picker_open = true;
+    c.theme_picker_sel = c.theme_idx;
+    c.theme_picker_revert = c.theme_idx;
+}
+
+/// Move the chooser cursor by `delta` (wrapping) and live-preview that theme.
+fn theme_picker_move(c: &mut Controls, delta: isize) {
+    let n = crate::theme::THEMES.len() as isize;
+    c.theme_picker_sel = (((c.theme_picker_sel as isize + delta) % n + n) % n) as usize;
+    set_live_theme(c, c.theme_picker_sel);
+}
+
+/// Accept the highlighted theme: persist it to `~/.arb`, flash the name, close.
+fn theme_picker_accept(c: &mut Controls) {
+    set_live_theme(c, c.theme_picker_sel);
+    let name = crate::theme::THEMES[c.theme_idx].0;
     let _ = crate::theme::set_config_default(name);
     c.alert = Some((format!("theme: {name}"), Instant::now() + Duration::from_secs(2)));
+    c.theme_picker_open = false;
+}
+
+/// Cancel the chooser: revert to the theme active when it was opened, close.
+fn theme_picker_cancel(c: &mut Controls) {
+    set_live_theme(c, c.theme_picker_revert);
+    c.theme_picker_open = false;
 }
 
 /// The default palette slot for a widget with no explicit `-color`, chosen by
