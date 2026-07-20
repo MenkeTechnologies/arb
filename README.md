@@ -470,7 +470,7 @@ a braille scatter, `map` a world map of `lon lat` points, `calendar` a month gri
 places a widget, and
 `-span N` (or `-rowspan`/`-colspan`) lets one span several cells, so a main
 `chart` can be wide while small gauges take a single cell. Track sizes are
-Tk-`grid`-style: `rows "1 2 1"` / `cols "20 * 2*"` give each row/column a fixed
+Tk-`grid`-style: `rows "1 2 1"` / `cols "20c * 2*"` give each row/column a fixed
 cell count (`20`), a percentage (`30%`), or a proportional weight (`*` = 1, `2*`
 = 2×); `gap N` spaces the cells; `layout horizontal` auto-tiles in a row instead
 of a column. Any widget takes
@@ -573,7 +573,7 @@ the terminal or the browser) is complete:
   selection list whose highlighted row is published as `.<path>.sel`) are
   interactive controls.
 - **Layout** — auto-tile (`layout horizontal`/`vertical`) or a proportional
-  `grid`: `rows "1 2 1"` / `cols "20 * 2*"` (fixed / percentage / weighted
+  `grid`: `rows "1 2 1"` / `cols "20c * 2*"` (fixed / percentage / weighted
   tracks), `gap N`, `-span`/`-rowspan`/`-colspan` to merge cells.
 - **Themes** — an always-on color-theme system of 31 palettes ported from the
   sibling `iftoprs`/`htoprs` apps (plus `theme custom c1..c6`); default

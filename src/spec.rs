@@ -646,9 +646,10 @@ pub enum Flow {
     Horizontal,
 }
 
-/// Parse a track spec (`"20 * 2* 30%"`) into a track list. A token ending in `%`
-/// is a percentage, one ending in `*` is a proportional weight (`*` = 1), and a
-/// bare integer is a fixed cell count. Empty/invalid tokens are an error.
+/// Parse a track spec (`"1 2 1"` / `"20c * 2*"`) into a track list. A **bare
+/// integer is a proportional weight** (`1 2 1` = a 1:2:1 split — the common case);
+/// `N*` / `*` is the same explicit weight; `N%` is a percentage of the axis; and
+/// `Nc` is a fixed cell count. Empty/invalid tokens are an error.
 pub fn parse_tracks(spec: &str) -> Result<Vec<Track>, String> {
     let mut out = Vec::new();
     for tok in spec.split_whitespace() {
@@ -658,20 +659,23 @@ pub fn parse_tracks(spec: &str) -> Result<Vec<Track>, String> {
                     .map_err(|_| format!("track: bad percentage `{tok}`"))?
                     .min(100),
             )
-        } else if let Some(w) = tok.strip_suffix('*') {
+        } else if let Some(cells) = tok.strip_suffix('c') {
+            Track::Length(
+                cells
+                    .parse::<u16>()
+                    .map_err(|_| format!("track: bad cell count `{tok}`"))?,
+            )
+        } else {
+            // Bare `N`, `N*`, or `*` — a proportional weight (`*` = 1).
+            let w = tok.strip_suffix('*').unwrap_or(tok);
             let weight = if w.is_empty() {
                 1
             } else {
                 w.parse::<u16>()
-                    .map_err(|_| format!("track: bad weight `{tok}`"))?
+                    .map_err(|_| format!("track: bad weight `{tok}` (use N, N%, N*, or Nc)"))?
                     .max(1)
             };
             Track::Fill(weight)
-        } else {
-            Track::Length(
-                tok.parse::<u16>()
-                    .map_err(|_| format!("track: bad length `{tok}` (use N, N%, or N*)"))?,
-            )
         };
         out.push(track);
     }

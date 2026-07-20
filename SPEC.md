@@ -287,11 +287,11 @@ grid .b -row 1 -col 0
 
 # Proportional tracks (Tk `grid`-style, ratatui Constraints under the hood):
 rows "1 2 1"                            # 3 rows; the middle is 2× tall (weights)
-cols "20 * 2*"                          # col 0 fixed 20 cells, col 1 weight 1, col 2 weight 2
+cols "20c * 2*"                          # col 0 fixed 20 cells, col 1 weight 1, col 2 weight 2
 gap  1                                  # 1 blank cell between every row/column
 ```
 
-A **track** is `N` (a fixed cell count → `Length`), `N%` (a percentage of the
+A **track** is `N` (a proportional weight → `Fill`; the common case), `Nc` (a fixed cell count → `Length`), `N%` (a percentage of the
 axis → `Percentage`), or `N*` / `*` (a proportional weight → `Fill`; bare `*` is
 weight 1). `rows`/`cols` size the grid's tracks (unset = equal weights); a shorter
 spec sizes the leading tracks and the rest fill. `gap N` inserts blank cells

@@ -3280,7 +3280,7 @@ mod tests {
     fn parse_tracks_lengths_percents_weights() {
         use crate::spec::{parse_tracks, Track};
         assert_eq!(
-            parse_tracks("20 * 2* 30%").unwrap(),
+            parse_tracks("20c * 2* 30%").unwrap(),
             vec![Track::Length(20), Track::Fill(1), Track::Fill(2), Track::Percentage(30)]
         );
         assert!(parse_tracks("").is_err());
@@ -3301,10 +3301,22 @@ mod tests {
     }
 
     #[test]
-    fn cols_fixed_length_then_fill() {
-        // `cols "20 *"` → first column a fixed 20 cells, second fills the rest.
+    fn bare_integers_are_weights() {
+        // `cols "1 2 1"` is a 1:2:1 proportional split (bare ints = weights), so
+        // the middle column is 2× the outer ones. Width 80 -> 20 / 40 / 20.
         let r = rects_of(
-            "gauge .a\ngauge .b\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ncols \"20 *\"",
+            "gauge .a\ngauge .b\ngauge .c\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ngrid .c -row 0 -col 2\ncols \"1 2 1\"",
+            80,
+            20,
+        );
+        assert_eq!((r[0].width, r[1].width, r[2].width), (20, 40, 20));
+    }
+
+    #[test]
+    fn cols_fixed_length_then_fill() {
+        // `cols "20c *"` → first column a fixed 20 cells, second fills the rest.
+        let r = rects_of(
+            "gauge .a\ngauge .b\ngrid .a -row 0 -col 0\ngrid .b -row 0 -col 1\ncols \"20c *\"",
             80,
             20,
         );
