@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="arb — visualize and modify Unix pipelines. Pipe a stream in and arb spawns a dynamic TUI (ratatui now, served web later) from a declarative Tcl/Tk-flavored spec: a jq/xpath/css/yq superset, an interactive megafilter/map, Expect reactions, Akka-style actors, and a package manager for sharing dashboards. An original language on the fusevm bytecode VM + Cranelift JIT. MIT.">
+  <meta name="description" content="arb — visualize and modify Unix pipelines. Pipe a stream in and arb spawns a dynamic TUI (ratatui) or a served zgui web dashboard from a declarative Tcl/Tk-flavored spec: a jq/xpath/css/yq superset, an interactive megafilter/map, Expect reactions, Akka-style actors, a package manager for sharing dashboards, and LSP/DAP editor tooling. An original language on the fusevm bytecode VM + Cranelift JIT. MIT.">
   <title>arb — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -121,7 +121,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/arb" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line" id="arbBuildLine">arb v0.0.6 · pipe → dynamic TUI/web · original language targeting fusevm + Cranelift JIT · jq/xpath/css/yq superset · Tcl/Tk-flavored DSL · MIT · M0–M2: live-tail + spec interpreter + query pipeline (expanding)</p>
+          <p class="docs-build-line" id="arbBuildLine">arb v0.0.6 · pipe → dynamic TUI/web · original language on fusevm + Cranelift JIT · jq/xpath/css/yq superset · Tcl/Tk-flavored DSL · MIT · M0–M8 shipped: query engine, controls, web target, actors, package manager, LSP/DAP</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -144,7 +144,7 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ARB REFERENCE</h2>
-      <p class="tutorial-subtitle">Pipe a Unix stream into <code>arb</code> and it spawns a dynamic TUI (ratatui today, a served <code>zgui</code> web page later) built from a declarative, Tcl/Tk-flavored spec. arb is a <code>jq</code>/<code>xpath</code>/<code>css</code>/<code>yq</code> superset, an interactive megafilter/map over the live passthrough, and an original language that targets the <code>fusevm</code> bytecode VM + three-tier Cranelift JIT — the same engine behind <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>. <strong>Early — Milestones 0–2 ship the zero-config live-tail, the Tcl-flavored spec interpreter with multi-widget render, and the JSON-aware source query pipeline (still expanding).</strong></p>
+      <p class="tutorial-subtitle">Pipe a Unix stream into <code>arb</code> and it spawns a dynamic TUI (ratatui) or a served <code>zgui</code> web dashboard, built from a declarative, Tcl/Tk-flavored spec. arb is a <code>jq</code>/<code>xpath</code>/<code>css</code>/<code>yq</code> superset, an interactive megafilter/map over the live passthrough, and an original language that runs on the <code>fusevm</code> bytecode VM + three-tier Cranelift JIT — the same engine behind <code>zshrs</code>, <code>stryke</code>, <code>rubyrs</code>, and <code>elisp</code>. <strong>Milestones 0–8 ship: the zero-config live-tail, the spec interpreter with multi-widget render, the jq/xpath/css/yq query pipeline, interactive controls, Expect reactions, the served web target, Akka-style actors, the package manager, and LSP/DAP editor tooling.</strong></p>
 
       <section class="tutorial-section">
         <h2>What it is</h2>
@@ -159,7 +159,7 @@
 
       <section class="tutorial-section">
         <h2>Try it</h2>
-        <p>With no spec, arb synthesizes a full-screen <code>tail</code> of stdin — the zero-config path from M0. With a spec (a <code>.arb</code> file or an <code>-e</code> one-liner) the M1/M2 interpreter reads the declarative subset — widgets, <code>source</code> query pipelines, and <code>.x &lt;- in</code> binds — and renders it. With no controlling terminal on stdout (piped onward / redirected / CI) arb prints the parsed spec and each source's evaluated result instead of a TUI.</p>
+        <p>With no spec, arb synthesizes a full-screen <code>tail</code> of stdin — the zero-config path. With a spec (a <code>.arb</code> file or an <code>-e</code> one-liner) the interpreter reads the declarative language — widgets, <code>source</code>/<code>out</code> query pipelines, controls, reactions, and <code>.x &lt;- in</code> binds — and renders it. With no controlling terminal on stdout (piped onward / redirected / CI) arb prints the parsed spec and each source's evaluated result instead of a TUI.</p>
 <pre>cargo install --path .
 
 # zero-config: a live tail with count + rate; q / Esc / Ctrl-C quits
@@ -209,7 +209,7 @@ out {
 
       <section class="tutorial-section">
         <h2>Milestones</h2>
-        <p>arb landed in stages; the table reflects the current tree. The query engine, expression layer, interactive controls, reactions, web target, package manager, and the actor system are built; native/cdylib packages remain planned. The full grammar is in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>.</p>
+        <p>arb landed in stages; the table reflects the current tree. The query engine, expression layer, interactive controls, reactions, web target, actor system, package manager, and LSP/DAP editor tooling are all built; native/cdylib packages and multi-version registry resolution remain planned. The full grammar is in <a href="https://github.com/MenkeTechnologies/arb/blob/main/SPEC.md">SPEC.md</a>.</p>
         <table class="reflection-table">
           <thead><tr><th>Milestone</th><th>State</th><th>Scope</th></tr></thead>
           <tbody>
@@ -222,7 +222,7 @@ out {
             <tr><td>M5 — Web target</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>arb --serve</code>: a std-only HTTP server renders the same spec as a live browser dashboard, pushing widget data over a hand-rolled WebSocket (no dependency) with a polling fallback (<code>src/serve.rs</code>).</td></tr>
             <tr><td>M6 — Actors</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Akka-style message-passing: <code>actor NAME(state) { on MSG(p) { … reply EXPR } }</code> declarations; one <code>mpsc</code>-mailbox OS thread per actor with tell/ask/supervised-pool semantics; handler bodies run arb expressions (fusevm) over <code>state</code> + params + locals; a <code>via NAME * N</code> pipeline op fans the stream across a pool in parallel; and session refs (<code>spawn NAME = ACTOR(init)</code> / <code>pool NAME = ACTOR * N</code> + <code>supervise</code> crash policy) are driven by <code>tell</code>/<code>ask</code> bind/expect actions in the TUI (<code>src/actor.rs</code>).</td></tr>
             <tr><td>M7 — Package manager</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Install / uninstall / list shareable dashboard specs (<code>arb --install</code>/<code>--uninstall</code>/<code>--installed</code>); install validates before adding. A remote registry plugs into the same resolver next.</td></tr>
-            <tr><td>M8 — LSP / DAP</td><td><span class="status-pill status-planned">Planned</span></td><td>Editor tooling over stdio JSON-RPC (shape reused from siblings).</td></tr>
+            <tr><td>M8 — LSP / DAP</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>arb --lsp</code> is a full stdio server: diagnostics (real source ranges, UTF-16 columns), <code>documentSymbol</code>/<code>hover</code>/<code>completion</code>/<code>signatureHelp</code>, <code>definition</code>/<code>references</code>/<code>rename</code> over widget paths, <code>foldingRange</code>, formatting, <code>semanticTokens</code>. <code>arb --dap</code> is a steppable debugger over the stream model — each line is a step, breakpoints are regex predicates, the stack is the query stages, <code>evaluate</code> runs the real expression evaluator (<code>src/lsp.rs</code>, <code>src/dap.rs</code>).</td></tr>
           </tbody>
         </table>
       </section>
@@ -236,12 +236,13 @@ src/ast.rs       syntax tree                    (present)
 src/spec.rs      command tree -> Spec interp    (present)
 src/expr.rs      expression -> fusevm::Chunk     (present)
 src/query.rs     source query pipeline          (present)
+src/actor.rs     actor system + via fan-out     (present)
 src/stream.rs    live stream state              (present)
 src/tui.rs       ratatui backend                (present)
 src/serve.rs     HTTP + WebSocket web target    (present)
 src/repl.rs      reedline REPL                  (present)
 src/web.rs       static HTML export             (present)
-src/lsp.rs src/dap.rs   stdio JSON-RPC          (planned)</pre>
+src/lsp.rs src/dap.rs   stdio JSON-RPC          (present)</pre>
         <p>Transfers from siblings are <strong>mechanics only</strong> — fusevm embedding, the rkyv cache, the LSP/DAP stdio shape, the package-manager ABI. The language design (lexer / parser / AST / compiler / semantics) is arb-original.</p>
       </section>
 

@@ -56,7 +56,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/arb" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">arb v0.0.6 · pipe → dynamic TUI/web · original language targeting fusevm + Cranelift JIT · jq/xpath/css/yq superset · MIT · M0–M2: live-tail + spec interpreter + query pipeline (expanding)</p>
+          <p class="docs-build-line">arb v0.0.6 · pipe → dynamic TUI/web · original language on fusevm + Cranelift JIT · jq/xpath/css/yq superset · MIT · M0–M8 shipped: query engine, controls, web target, actors, package manager, LSP/DAP</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -78,11 +78,11 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ENGINEERING REPORT</h2>
-      <p class="tutorial-subtitle">arb is an original language for <strong>visualizing and modifying Unix pipelines</strong> — pipe a stream in and it spawns a dynamic TUI (ratatui) or, later, a served web page (zgui) from a declarative spec. It targets the <code>fusevm</code> bytecode VM and its three-tier Cranelift JIT. This report describes the positioning, the target architecture, and the current state of the tree. The statements below are facts about the design and the manifest, not aspirational metrics.</p>
+      <p class="tutorial-subtitle">arb is an original language for <strong>visualizing and modifying Unix pipelines</strong> — pipe a stream in and it spawns a dynamic TUI (ratatui) or a served web dashboard (zgui) from a declarative spec. It runs on the <code>fusevm</code> bytecode VM and its three-tier Cranelift JIT. This report describes the positioning, the architecture, and the current state of the tree. The statements below are facts about the design and the manifest, not aspirational metrics.</p>
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">Pipeline</div><div class="stat-label">fusevm language host</div></div>
-        <div class="stat-card"><div class="stat-val">M2</div><div class="stat-label">interp + query (expanding)</div></div>
+        <div class="stat-card"><div class="stat-val">M0–M8</div><div class="stat-label">milestones shipped</div></div>
         <div class="stat-card"><div class="stat-val">v0.0.6</div><div class="stat-label">version</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -127,7 +127,7 @@
 
       <section class="tutorial-section">
         <h2>Milestones</h2>
-        <p>arb landed in stages; the table reflects the current tree. The query engine, expression layer, interactive controls, reactions, web target, package manager, and the actor system are built; native/cdylib packages remain planned.</p>
+        <p>arb landed in stages; the table reflects the current tree. The query engine, expression layer, interactive controls, reactions, web target, actor system, package manager, and LSP/DAP editor tooling are all built; native/cdylib packages and multi-version registry resolution remain planned.</p>
         <table class="file-table">
           <thead><tr><th>Milestone</th><th>State</th><th>Scope</th></tr></thead>
           <tbody>
@@ -140,7 +140,7 @@
             <tr><td>M5 · web target</td><td>Implemented</td><td><code>arb --serve</code>: a std-only HTTP server renders the same spec as a live browser dashboard, WebSocket push with a polling fallback (<code>src/serve.rs</code>).</td></tr>
             <tr><td>M6 · actors</td><td>Implemented</td><td>Akka-style message-passing: <code>actor</code> declarations + one <code>mpsc</code>-mailbox OS thread per actor (tell/ask/supervised pool), handler bodies on fusevm, a <code>via NAME * N</code> parallel stream fan-out, and session refs (<code>spawn</code>/<code>pool</code>/<code>supervise</code>) driven by <code>tell</code>/<code>ask</code> actions (<code>src/actor.rs</code>).</td></tr>
             <tr><td>M7 · package manager</td><td>Implemented</td><td>Install / uninstall / list shareable dashboard specs (<code>--install</code>/<code>--uninstall</code>/<code>--installed</code>); install validates first. A remote registry plugs into the same resolver next.</td></tr>
-            <tr><td>M8 · LSP / DAP</td><td>Planned</td><td>Editor tooling over stdio JSON-RPC.</td></tr>
+            <tr><td>M8 · LSP / DAP</td><td>Implemented</td><td><code>arb --lsp</code>: a full stdio server — diagnostics (real ranges, UTF-16 cols), <code>documentSymbol</code>/<code>hover</code>/<code>completion</code>/<code>signatureHelp</code>, <code>definition</code>/<code>references</code>/<code>rename</code>, <code>foldingRange</code>, formatting, <code>semanticTokens</code>. <code>arb --dap</code>: a steppable debugger over the stream (line = step, regex breakpoints, query stages = stack, <code>evaluate</code> runs the real expression eval) (<code>src/lsp.rs</code>, <code>src/dap.rs</code>).</td></tr>
           </tbody>
         </table>
       </section>
@@ -149,7 +149,7 @@
 
       <section class="tutorial-section">
         <h2>Module layout</h2>
-        <p>A lib + bin: the front-end is unit-testable without a terminal (168 tests). The <em>present</em> rows are in the tree today; <code>lsp.rs</code>/<code>dap.rs</code> remain planned.</p>
+        <p>A lib + bin: the front-end is unit-testable without a terminal (396 tests). Every row is in the tree today.</p>
         <table class="file-table">
           <thead><tr><th>File</th><th>State</th><th>Role</th></tr></thead>
           <tbody>
@@ -160,12 +160,13 @@
             <tr><td>src/spec.rs</td><td>present</td><td>Command tree → <code>Spec</code> (widgets, <code>source</code>/<code>search</code>/<code>out</code> pipelines, <code>bind</code>/<code>expect</code>, presets, package manager).</td></tr>
             <tr><td>src/expr.rs</td><td>present</td><td>Expression layer → <code>fusevm::Chunk</code>, run on the VM (original lowering).</td></tr>
             <tr><td>src/query.rs</td><td>present</td><td>Source query pipeline — the ~90-verb jq/xpath/css/yq surface over every format.</td></tr>
+            <tr><td>src/actor.rs</td><td>present</td><td>Actor system — <code>actor</code>/<code>on</code>/<code>reply</code> + <code>mpsc</code>-mailbox threads (spawn/tell/ask/pool/supervise), the <code>via</code> parallel stream fan-out, and session refs.</td></tr>
             <tr><td>src/stream.rs</td><td>present</td><td>Live stream state feeding the widgets.</td></tr>
             <tr><td>src/tui.rs</td><td>present</td><td>ratatui backend (widgets, fzf select, key handler).</td></tr>
             <tr><td>src/serve.rs</td><td>present</td><td>Web target: std HTTP server + hand-rolled WebSocket push.</td></tr>
             <tr><td>src/web.rs</td><td>present</td><td>Static HTML dashboard export.</td></tr>
             <tr><td>src/repl.rs</td><td>present</td><td>reedline REPL (<code>arb --repl</code>).</td></tr>
-            <tr><td>src/lsp.rs / src/dap.rs</td><td>planned</td><td>stdio JSON-RPC (shape reused from siblings).</td></tr>
+            <tr><td>src/lsp.rs / src/dap.rs</td><td>present</td><td>stdio JSON-RPC: <code>arb --lsp</code> (full server) and <code>arb --dap</code> (steppable stream debugger).</td></tr>
           </tbody>
         </table>
       </section>
