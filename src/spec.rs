@@ -43,6 +43,28 @@ pub enum WidgetKind {
     /// A month calendar (ratatui `Monthly`) for the current month, highlighting
     /// days that appear as `YYYY-MM-DD` in the stream (activity by day).
     Calendar,
+    /// A level-colored log tail: like `tail`, but each line is tinted by its log
+    /// level (ERROR/WARN/INFO/DEBUG) detected in the text — theme-aware.
+    LogView,
+    /// A heatmap grid (GitHub-contribution-style): the numeric series laid out as
+    /// colored cells, each cell's shade scaled from the value across the palette.
+    Heatmap,
+    /// A treemap (slice-and-dice): `tally`/`count_by` pairs as proportional
+    /// labeled rectangles filling the pane, colored across the palette.
+    Treemap,
+    /// A Gantt/timeline: `label start end` lines drawn as horizontal bars on a
+    /// shared time axis (min start → max end).
+    Gantt,
+    /// A diff-colored view: each line tinted by its leading char — `+` add (green),
+    /// `-` remove (red), `@` hunk (accent) — for `git diff`/patch streams.
+    Diff,
+    /// The ratatui logo (braille wordmark), centered — a decorative splash.
+    Logo,
+    /// A blank spacer (ratatui `Clear`) — occupies a grid cell without drawing, to
+    /// open space in a layout.
+    Blank,
+    /// A horizontal (or `-dir vertical`) divider rule in the theme accent.
+    Rule,
     /// An in-dashboard selection list over its own `source` (per-widget), with a
     /// moveable cursor. Its highlighted row is published as the control value
     /// `.<path>.sel`, readable from `where`/`apply`/`tell`/`ask` (SPEC §14). E.g.
@@ -90,6 +112,14 @@ impl WidgetKind {
             "sparkline" => WidgetKind::Sparkline,
             "map" => WidgetKind::Map,
             "calendar" => WidgetKind::Calendar,
+            "logview" => WidgetKind::LogView,
+            "heatmap" => WidgetKind::Heatmap,
+            "treemap" => WidgetKind::Treemap,
+            "gantt" => WidgetKind::Gantt,
+            "diff" => WidgetKind::Diff,
+            "logo" => WidgetKind::Logo,
+            "clear" | "blank" | "spacer" => WidgetKind::Blank,
+            "rule" | "divider" => WidgetKind::Rule,
             "sel" => WidgetKind::Sel,
             "input" => WidgetKind::Input,
             "select" => WidgetKind::Select,
@@ -120,6 +150,14 @@ impl WidgetKind {
             WidgetKind::Sparkline => "sparkline",
             WidgetKind::Map => "map",
             WidgetKind::Calendar => "calendar",
+            WidgetKind::LogView => "logview",
+            WidgetKind::Heatmap => "heatmap",
+            WidgetKind::Treemap => "treemap",
+            WidgetKind::Gantt => "gantt",
+            WidgetKind::Diff => "diff",
+            WidgetKind::Logo => "logo",
+            WidgetKind::Blank => "clear",
+            WidgetKind::Rule => "rule",
             WidgetKind::Sel => "sel",
             WidgetKind::Input => "input",
             WidgetKind::Select => "select",

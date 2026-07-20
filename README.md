@@ -562,11 +562,13 @@ the terminal or the browser) is complete:
 - **Language** — the Tcl-flavored reader, the declarative widget / `source` /
   `out` interpreter, `.x <- in` binds, `fn`/lambda expressions, and `calc` /
   `where` predicates that lower to `fusevm` bytecode and run on the VM.
-- **Widgets** — `text`, `tail`, `list`, `gauge`, `linegauge`, `bars`, `histo`,
-  `spark`, `sparkline`, `scatter`, `chart`, `map`, `calendar`, `table`, `tabs`,
-  `block`, `frame` render in the TUI (the full ratatui data-widget set — Canvas
-  scatter/world-map, Monthly calendar, Sparkline, and a scrollbar on overflowing
-  lists); `input`/`filter` fields, a `slider`, a `check` toggle, a `facet`
+- **Widgets** — 25 render kinds: `text`, `tail`, `list`, `gauge`, `linegauge`,
+  `bars`, `histo`, `spark`, `sparkline`, `scatter`, `chart`, `map`, `calendar`,
+  `table`, `tabs`, `block`, `frame` (the full ratatui set — Canvas scatter/
+  world-map, Monthly calendar, Sparkline, RatatuiLogo, Clear, scrollbar-on-
+  overflow), plus composites: `logview` (level-colored tail), `heatmap`,
+  `treemap`, `gantt`, `diff`, `logo`, `clear` (spacer), `rule` (divider);
+  `input`/`filter` fields, a `slider`, a `check` toggle, a `facet`
   multi-select, `select` (an fzf-style fuzzy picker), and `sel` (an in-dashboard
   selection list whose highlighted row is published as `.<path>.sel`) are
   interactive controls.

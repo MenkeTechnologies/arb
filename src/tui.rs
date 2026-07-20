@@ -26,9 +26,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Points};
 use ratatui::widgets::calendar::{CalendarEventStore, Monthly};
 use ratatui::widgets::{
-    Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, LineGauge, List,
-    ListItem, ListState, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline,
-    Table, Tabs,
+    Axis, BarChart, Block, Borders, Cell, Chart, Clear, Dataset, Gauge, GraphType, LineGauge, List,
+    ListItem, ListState, Paragraph, RatatuiLogo, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Sparkline, Table, Tabs,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -2824,6 +2824,168 @@ fn render_widget(
                 .show_weekdays_header(Style::default().fg(Color::DarkGray));
             f.render_widget(cal, area);
         }
+        WidgetKind::LogView => {
+            // A `tail` whose rows are tinted by detected log level.
+            let owned = result_lines(&result, lines);
+            let inner_h = area.height.saturating_sub(2) as usize;
+            let cap = widget_limit(w).map_or(inner_h, |n| inner_h.min(n));
+            let skip = scroll_skip(owned.len(), cap, scroll);
+            let items: Vec<ListItem> = owned
+                .iter()
+                .skip(skip)
+                .take(cap)
+                .map(|l| {
+                    ListItem::new(Line::from(Span::styled(
+                        clip(l, inner_w),
+                        log_level_style(l, theme),
+                    )))
+                })
+                .collect();
+            f.render_widget(List::new(items).block(block), area);
+            render_scrollbar(f, area, owned.len(), cap, skip, accent);
+        }
+        WidgetKind::Diff => {
+            // Each line tinted by its leading diff char (+/-/@).
+            let owned = result_lines(&result, lines);
+            let inner_h = area.height.saturating_sub(2) as usize;
+            let skip = scroll_skip(owned.len(), inner_h, scroll);
+            let items: Vec<ListItem> = owned
+                .iter()
+                .skip(skip)
+                .take(inner_h)
+                .map(|l| {
+                    let style = match l.chars().next() {
+                        Some('+') => Style::default().fg(Color::Green),
+                        Some('-') => Style::default().fg(Color::Red),
+                        Some('@') => Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                        _ => Style::default().fg(Color::DarkGray),
+                    };
+                    ListItem::new(Line::from(Span::styled(clip(l, inner_w), style)))
+                })
+                .collect();
+            f.render_widget(List::new(items).block(block), area);
+            render_scrollbar(f, area, owned.len(), inner_h, skip, accent);
+        }
+        WidgetKind::Heatmap => {
+            // The numeric series as a grid of shade-scaled cells (each 2 wide).
+            let series: Vec<f64> = match &result {
+                Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
+                Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
+                Some(QueryResult::Scalar(v)) => vec![*v],
+                None => crate::query::numeric_series(lines),
+            };
+            let (min, max) = series.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+                (a.min(v), b.max(v))
+            });
+            let span = (max - min).max(f64::MIN_POSITIVE);
+            let cols = (inner_w / 2).max(1);
+            let rows: Vec<Line> = series
+                .chunks(cols)
+                .map(|chunk| {
+                    Line::from(
+                        chunk
+                            .iter()
+                            .map(|&v| {
+                                let t = if min.is_finite() { (v - min) / span } else { 0.0 };
+                                Span::styled("  ", Style::default().bg(heat_color(t, theme)))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            f.render_widget(Paragraph::new(rows).block(block), area);
+        }
+        WidgetKind::Treemap => {
+            // Slice-and-dice treemap of tally/count pairs (proportional labeled
+            // rects, colored across the palette).
+            let pairs: Vec<(String, u64)> = match &result {
+                Some(QueryResult::Pairs(p)) => p.clone(),
+                _ => Vec::new(),
+            };
+            f.render_widget(block, area);
+            let inner = Rect {
+                x: area.x + 1,
+                y: area.y + 1,
+                width: area.width.saturating_sub(2),
+                height: area.height.saturating_sub(2),
+            };
+            for (i, (rect, (label, val))) in treemap_rects(inner, &pairs).into_iter().zip(pairs.iter()).enumerate() {
+                let col = slot_by_index(i, theme, accent);
+                let body = format!("{label} {val}");
+                f.render_widget(
+                    Paragraph::new(clip(&body, rect.width.saturating_sub(1) as usize))
+                        .style(Style::default().bg(col).fg(Color::Black)),
+                    rect,
+                );
+            }
+        }
+        WidgetKind::Gantt => {
+            // `label start end` lines as bars on a shared time axis.
+            let owned = result_lines(&result, lines);
+            let bars: Vec<(String, f64, f64)> = owned
+                .iter()
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    let label = it.next()?.to_string();
+                    let s = it.next()?.parse::<f64>().ok()?;
+                    let e = it.next()?.parse::<f64>().ok()?;
+                    Some((label, s, e.max(s)))
+                })
+                .collect();
+            let lo = bars.iter().map(|(_, s, _)| *s).fold(f64::INFINITY, f64::min);
+            let hi = bars.iter().map(|(_, _, e)| *e).fold(f64::NEG_INFINITY, f64::max);
+            let span = (hi - lo).max(f64::MIN_POSITIVE);
+            let label_w = 12usize.min(inner_w / 2);
+            let track = inner_w.saturating_sub(label_w + 1);
+            let inner_h = area.height.saturating_sub(2) as usize;
+            let rows: Vec<Line> = bars
+                .iter()
+                .take(inner_h)
+                .enumerate()
+                .map(|(i, (label, s, e))| {
+                    let off = if lo.is_finite() {
+                        (((s - lo) / span) * track as f64) as usize
+                    } else {
+                        0
+                    };
+                    let len = ((((e - s) / span) * track as f64) as usize).max(1);
+                    let bar = " ".repeat(off) + &"█".repeat(len.min(track.saturating_sub(off)));
+                    Line::from(vec![
+                        Span::styled(format!("{:<label_w$} ", clip(label, label_w)), Style::default().fg(Color::Gray)),
+                        Span::styled(bar, Style::default().fg(slot_by_index(i, theme, accent))),
+                    ])
+                })
+                .collect();
+            f.render_widget(Paragraph::new(rows).block(block), area);
+        }
+        WidgetKind::Logo => {
+            f.render_widget(block, area);
+            // Center the braille wordmark in the inner area.
+            let logo_area = Rect {
+                x: area.x + 1,
+                y: area.y + area.height / 2,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            f.render_widget(RatatuiLogo::default(), logo_area);
+        }
+        WidgetKind::Blank => {
+            // A spacer: clear the cell, draw nothing.
+            f.render_widget(Clear, area);
+        }
+        WidgetKind::Rule => {
+            // A divider line in the accent (horizontal, or `-dir vertical`).
+            let vertical = w.opts.get("dir").map(String::as_str) == Some("vertical");
+            let body = if vertical {
+                "│\n".repeat(area.height as usize)
+            } else {
+                "─".repeat(area.width as usize)
+            };
+            f.render_widget(
+                Paragraph::new(body).style(Style::default().fg(accent)),
+                area,
+            );
+        }
         WidgetKind::Spark => {
             let series: Vec<f64> = match &result {
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
@@ -2946,6 +3108,90 @@ fn render_scrollbar(f: &mut Frame, area: Rect, content: usize, visible: usize, p
         .thumb_style(Style::default().fg(accent))
         .track_style(Style::default().fg(Color::DarkGray));
     f.render_stateful_widget(bar, area, &mut state);
+}
+
+/// Flatten a widget's evaluated result to display lines (the shared body of the
+/// list-family render arms).
+fn result_lines(result: &Option<QueryResult>, lines: &[String]) -> Vec<String> {
+    match result {
+        Some(QueryResult::Lines(ls)) => ls.clone(),
+        Some(QueryResult::Scalar(v)) => vec![crate::query::fmt_scalar(*v)],
+        Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
+        None => lines.to_vec(),
+    }
+}
+
+/// The style for a `logview` row, by the log level detected in the line. Error /
+/// warn stay semantic (red / yellow — meaning wins); info / debug follow the
+/// theme (accent / dim), and everything else is the theme's primary text color.
+fn log_level_style(line: &str, theme: Option<crate::theme::Palette>) -> Style {
+    let u = line.to_ascii_uppercase();
+    let has = |p: &str| u.contains(p);
+    if has("ERROR") || has("FATAL") || has("CRIT") || has("PANIC") || has("[E]") {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else if has("WARN") {
+        Style::default().fg(Color::Yellow)
+    } else if has("DEBUG") || has("TRACE") {
+        Style::default().fg(theme.map(|p| p.dim()).unwrap_or(Color::DarkGray))
+    } else if has("INFO") {
+        Style::default().fg(theme.map(|p| p.accent()).unwrap_or(Color::Cyan))
+    } else {
+        theme
+            .map(|p| Style::default().fg(p.primary()))
+            .unwrap_or_default()
+    }
+}
+
+/// A `heatmap` cell color for a normalized value `t` in `[0, 1]`: a 5-step ramp
+/// from the theme's `bg` up to its `accent` when themed, else a fixed
+/// blue→cyan→green→yellow→red heat scale.
+fn heat_color(t: f64, theme: Option<crate::theme::Palette>) -> Color {
+    let idx = ((t.clamp(0.0, 1.0) * 4.0).round() as usize).min(4);
+    let ramp: [u8; 5] = match theme {
+        Some(p) => [p.c[5], p.c[4], p.c[3], p.c[2], p.c[1]], // bg,dim,mid,alt,accent
+        None => [17, 39, 46, 226, 196],
+    };
+    Color::Indexed(ramp[idx])
+}
+
+/// A distinct palette slot per index (for multi-colored `treemap`/`gantt` rows):
+/// cycles accent → alt → mid → primary → dim; the plain accent with no theme.
+fn slot_by_index(i: usize, theme: Option<crate::theme::Palette>, accent: Color) -> Color {
+    match theme {
+        Some(p) => [p.accent(), p.alt(), p.mid(), p.primary(), p.dim()][i % 5],
+        None => accent,
+    }
+}
+
+/// Slice-and-dice treemap layout: assign each `(label, value)` a rectangle whose
+/// area is proportional to its value, alternating the split axis to keep rects
+/// from getting too thin. Returns one `Rect` per pair, in order.
+fn treemap_rects(area: Rect, pairs: &[(String, u64)]) -> Vec<Rect> {
+    let total: u64 = pairs.iter().map(|(_, v)| *v).sum();
+    if total == 0 || pairs.is_empty() || area.width == 0 || area.height == 0 {
+        return pairs.iter().map(|_| area).collect();
+    }
+    let mut out = Vec::with_capacity(pairs.len());
+    let mut rem = area;
+    let mut rem_total = total;
+    for (idx, (_, v)) in pairs.iter().enumerate() {
+        if idx + 1 == pairs.len() {
+            out.push(rem);
+            break;
+        }
+        let frac = *v as f64 / rem_total.max(1) as f64;
+        if rem.width >= rem.height {
+            let cw = ((rem.width as f64 * frac).round() as u16).clamp(1, rem.width);
+            out.push(Rect { width: cw, ..rem });
+            rem = Rect { x: rem.x + cw, width: rem.width - cw, ..rem };
+        } else {
+            let ch = ((rem.height as f64 * frac).round() as u16).clamp(1, rem.height);
+            out.push(Rect { height: ch, ..rem });
+            rem = Rect { y: rem.y + ch, height: rem.height - ch, ..rem };
+        }
+        rem_total = rem_total.saturating_sub(*v);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -3834,6 +4080,52 @@ mod tests {
         assert!(lg.contains("linegauge"), "linegauge title missing: {lg}");
         let sc = render_text("scatter .lat");
         assert!(sc.contains("scatter"), "scatter title missing: {sc}");
+    }
+
+    #[test]
+    fn logview_heatmap_treemap_gantt_diff_render_without_panic() {
+        // The bordered new widgets carry their kind in the title; render into a
+        // real backend and none panic on plain/empty data.
+        for (src, kind) in [
+            ("logview .l", "logview"),
+            ("heatmap .h", "heatmap"),
+            ("treemap .t", "treemap"),
+            ("gantt .g", "gantt"),
+            ("diff .d", "diff"),
+        ] {
+            let text = render_text(src);
+            assert!(text.contains(kind), "{kind} title missing: {text}");
+        }
+        // logo/clear/rule render without a titled border; just no panic + output.
+        assert!(!render_text("logo .b").is_empty());
+        assert!(!render_text("clear .s").is_empty());
+        assert!(!render_text("rule .r").is_empty());
+    }
+
+    #[test]
+    fn treemap_rects_are_proportional() {
+        use super::treemap_rects;
+        use ratatui::layout::Rect;
+        let area = Rect { x: 0, y: 0, width: 100, height: 10 };
+        // Two equal values -> two rects covering the area, roughly equal.
+        let rects = treemap_rects(area, &[("a".into(), 1), ("b".into(), 1)]);
+        assert_eq!(rects.len(), 2);
+        // First split is along the long axis (width 100 >= height 10) => ~50/50.
+        assert!((rects[0].width as i32 - 50).abs() <= 1, "got {}", rects[0].width);
+        // Every rect stays inside the area.
+        for r in &rects {
+            assert!(r.x + r.width <= area.width && r.y + r.height <= area.height);
+        }
+    }
+
+    #[test]
+    fn log_level_style_colors_by_level() {
+        use super::log_level_style;
+        use ratatui::style::Color;
+        assert_eq!(log_level_style("2026 ERROR boom", None).fg, Some(Color::Red));
+        assert_eq!(log_level_style("2026 WARN slow", None).fg, Some(Color::Yellow));
+        assert_eq!(log_level_style("2026 INFO ok", None).fg, Some(Color::Cyan));
+        assert_eq!(log_level_style("2026 DEBUG x", None).fg, Some(Color::DarkGray));
     }
 
     #[test]

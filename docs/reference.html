@@ -140,57 +140,97 @@
           <pre><code class="lang-arb">calendar .cal  ·  source .cal { in }</code></pre>
         </article>
         <article class="doc-entry" id="doc-widgets-14">
-          <h3><a class="doc-anchor" href="#doc-widgets-14">#</a> <code>table</code></h3>
+          <h3><a class="doc-anchor" href="#doc-widgets-14">#</a> <code>logview</code></h3>
+          <p>Log tail tinted by detected level (ERROR/WARN/INFO/DEBUG); theme-aware.</p>
+          <pre><code class="lang-arb">logview .log  ·  source .log { in }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-15">
+          <h3><a class="doc-anchor" href="#doc-widgets-15">#</a> <code>heatmap</code></h3>
+          <p>Numeric series as a grid of shade-scaled cells (GitHub-contribution style).</p>
+          <pre><code class="lang-arb">heatmap .h  ·  source .h { in; field lat }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-16">
+          <h3><a class="doc-anchor" href="#doc-widgets-16">#</a> <code>treemap</code></h3>
+          <p>Tally/count pairs as proportional labeled rectangles across the palette.</p>
+          <pre><code class="lang-arb">treemap .t  ·  source .t { in; field svc; tally }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-17">
+          <h3><a class="doc-anchor" href="#doc-widgets-17">#</a> <code>gantt</code></h3>
+          <p>`label start end` lines as horizontal bars on a shared time axis.</p>
+          <pre><code class="lang-arb">gantt .g  ·  source .g { in }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-18">
+          <h3><a class="doc-anchor" href="#doc-widgets-18">#</a> <code>diff</code></h3>
+          <p>Lines tinted by leading char: + add (green), - remove (red), @ hunk.</p>
+          <pre><code class="lang-arb">diff .d  ·  source .d { in }</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-19">
+          <h3><a class="doc-anchor" href="#doc-widgets-19">#</a> <code>logo</code></h3>
+          <p>The ratatui braille wordmark, centered — a decorative splash.</p>
+          <pre><code class="lang-arb">logo .brand</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-20">
+          <h3><a class="doc-anchor" href="#doc-widgets-20">#</a> <code>clear</code></h3>
+          <p>A blank spacer (occupies a grid cell without drawing) to open space.</p>
+          <pre><code class="lang-arb">clear .gap</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-21">
+          <h3><a class="doc-anchor" href="#doc-widgets-21">#</a> <code>rule</code></h3>
+          <p>A divider line in the theme accent (horizontal, or -dir vertical).</p>
+          <pre><code class="lang-arb">rule .sep</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-widgets-22">
+          <h3><a class="doc-anchor" href="#doc-widgets-22">#</a> <code>table</code></h3>
           <p>Columnar table of records; -cols sets headers, newest rows that fit are shown.</p>
           <pre><code class="lang-arb">table .rows -cols "a,b,c"  ·  source .rows { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-15">
-          <h3><a class="doc-anchor" href="#doc-widgets-15">#</a> <code>tabs</code></h3>
+        <article class="doc-entry" id="doc-widgets-23">
+          <h3><a class="doc-anchor" href="#doc-widgets-23">#</a> <code>tabs</code></h3>
           <p>Tab bar from -tabs {a b}; first tab selected (labelled selector, no per-tab body).</p>
           <pre><code class="lang-arb">tabs .t -tabs {a b c}</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-16">
-          <h3><a class="doc-anchor" href="#doc-widgets-16">#</a> <code>block</code></h3>
+        <article class="doc-entry" id="doc-widgets-24">
+          <h3><a class="doc-anchor" href="#doc-widgets-24">#</a> <code>block</code></h3>
           <p>Bordered container box rendering its bound stream content as a list.</p>
           <pre><code class="lang-arb">block .b -title Logs  ·  source .b { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-17">
-          <h3><a class="doc-anchor" href="#doc-widgets-17">#</a> <code>frame</code></h3>
+        <article class="doc-entry" id="doc-widgets-25">
+          <h3><a class="doc-anchor" href="#doc-widgets-25">#</a> <code>frame</code></h3>
           <p>Framed container rendering its bound stream content as a list.</p>
           <pre><code class="lang-arb">frame .f  ·  source .f { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-18">
-          <h3><a class="doc-anchor" href="#doc-widgets-18">#</a> <code>input</code></h3>
+        <article class="doc-entry" id="doc-widgets-26">
+          <h3><a class="doc-anchor" href="#doc-widgets-26">#</a> <code>input</code></h3>
           <p>Editable text field; its value is spliced into pipelines via apply .name.</p>
           <pre><code class="lang-arb">input .q  ·  out { apply .q }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-19">
-          <h3><a class="doc-anchor" href="#doc-widgets-19">#</a> <code>select</code></h3>
+        <article class="doc-entry" id="doc-widgets-27">
+          <h3><a class="doc-anchor" href="#doc-widgets-27">#</a> <code>select</code></h3>
           <p>Interactive fuzzy-select over the stream; type to filter, Tab marks, Enter emits.</p>
           <pre><code class="lang-arb">select .k -prompt pick  ·  source .k { in }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-20">
-          <h3><a class="doc-anchor" href="#doc-widgets-20">#</a> <code>sel</code></h3>
+        <article class="doc-entry" id="doc-widgets-28">
+          <h3><a class="doc-anchor" href="#doc-widgets-28">#</a> <code>sel</code></h3>
           <p>In-dashboard selection list over its own source; the highlighted row is published as .&lt;path&gt;.sel.</p>
           <pre><code class="lang-arb">sel .ps  ·  source .ps { in }  ·  out { where match(.ps.sel) }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-21">
-          <h3><a class="doc-anchor" href="#doc-widgets-21">#</a> <code>filter</code></h3>
+        <article class="doc-entry" id="doc-widgets-29">
+          <h3><a class="doc-anchor" href="#doc-widgets-29">#</a> <code>filter</code></h3>
           <p>Labelled filter control; its value drives where match(.name) / apply.</p>
           <pre><code class="lang-arb">filter .q  ·  out { where match(.q) }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-22">
-          <h3><a class="doc-anchor" href="#doc-widgets-22">#</a> <code>facet</code></h3>
+        <article class="doc-entry" id="doc-widgets-30">
+          <h3><a class="doc-anchor" href="#doc-widgets-30">#</a> <code>facet</code></h3>
           <p>Multi-select of values (-opts or distinct -field); drives where &lt;field&gt; in .name.</p>
           <pre><code class="lang-arb">facet .lv -field level  ·  out { where level in .lv }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-23">
-          <h3><a class="doc-anchor" href="#doc-widgets-23">#</a> <code>slider</code></h3>
+        <article class="doc-entry" id="doc-widgets-31">
+          <h3><a class="doc-anchor" href="#doc-widgets-31">#</a> <code>slider</code></h3>
           <p>Numeric control (-min/-max/-step) driving where &lt;field&gt; &lt; .name; arrows adjust.</p>
           <pre><code class="lang-arb">slider .th -field lat -max 5  ·  out { where lat &lt; .th }</code></pre>
         </article>
-        <article class="doc-entry" id="doc-widgets-24">
-          <h3><a class="doc-anchor" href="#doc-widgets-24">#</a> <code>check</code></h3>
+        <article class="doc-entry" id="doc-widgets-32">
+          <h3><a class="doc-anchor" href="#doc-widgets-32">#</a> <code>check</code></h3>
           <p>Boolean toggle (-label); its value is the string "1" or "0".</p>
           <pre><code class="lang-arb">check .on -label live</code></pre>
         </article>

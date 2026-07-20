@@ -248,6 +248,9 @@ list .t                   gauge .t -label L -max N spark .t
 bars .t -label L          histo .t                chart .t
 linegauge .t -max N       scatter .t              sparkline .t   # bars / scatter
 map .t -res high           calendar .t             # world map / month calendar
+logview .t                 heatmap .t              treemap .t     # log / grid / rects
+gantt .t                   diff .t                 # time spans / +- coloring
+logo .t                    clear .t                rule .t        # splash / spacer / divider
 select .s -prompt P -header H     input .i -placeholder P    # interactive
 sel .ps                   # per-widget selection list -> .ps.sel (§14)
 tabs .t -tabs {a b}       block .t -title T -border  frame .f
