@@ -578,6 +578,9 @@ the terminal or the browser) is complete:
   `neon-sprawl`, global default in `~/.arb/config.toml` (`arb --set-theme`),
   per-run `--theme`, `arb --list-themes`. A themed dashboard recolors from the
   palette (per-widget slots by kind); `-color <slot>` / `-color green` per widget.
+  **`Ctrl-T`** cycles the theme live in any mode (saved to `~/.arb`); **`Ctrl-G`**
+  shows a help overlay of the global keys — control keys, since a bare letter is
+  eaten by the filter / text inputs.
 - **Actors** — `actor NAME(state) { on MSG(p) { … reply EXPR } }` over an
   `mpsc`-mailbox thread-per-actor runtime; a `via NAME * N` pipeline op fans the
   stream across a supervised pool in parallel, and session refs

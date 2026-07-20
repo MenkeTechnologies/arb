@@ -886,6 +886,10 @@ fn main() -> io::Result<()> {
                 }
             }
             // Key bindings (`bind C-<letter> …`) drive the same input values.
+            // Seed the live theme from the resolved spec/config theme; Ctrl-T
+            // cycles it from here and persists the choice to ~/.arb.
+            c.theme = spec.theme;
+            c.theme_idx = spec.theme.map(arb::theme::index_of).unwrap_or(0);
             c.binds = spec.binds.clone();
             // Mouse reactions (`bind <Click> …`).
             c.mouse_binds = spec.mouse_binds.clone();

@@ -493,7 +493,11 @@ presets, which set no `-color` — is themed out of the box. Resolution preceden
 `[ui] theme` global default → the baked `neon-sprawl`. Set the global default with
 **`arb --set-theme NAME`** (persists to the config), preview all 31 with
 `arb --list-themes`, and opt out to the classic cyan look with `theme off` (or
-`--theme off`). The served web dashboard keeps zgui-core's own colorscheme picker.
+`--theme off`). At runtime, **`Ctrl-T`** cycles the theme live in every mode
+(dashboard, form, and the fzf picker) and saves the choice to `~/.arb` — a
+control key, because a bare letter would be swallowed by the megafilter / a text
+input. **`Ctrl-G`** toggles a help overlay of the global keys plus the spec's
+`bind`s. The served web dashboard keeps zgui-core's own colorscheme picker.
 
 Ships today as `arb --serve --port N`: a std-only HTTP server renders the same
 spec as a live browser dashboard, pushing widget data over a WebSocket (hand-rolled

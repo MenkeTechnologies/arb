@@ -129,6 +129,12 @@ pub fn default_name() -> &'static str {
     THEMES[0].0
 }
 
+/// Index of a palette in [`THEMES`] (for the `c`/Ctrl-T cycle start point); `0`
+/// for a custom palette that matches no built-in.
+pub fn index_of(p: Palette) -> usize {
+    THEMES.iter().position(|&(_, c)| c == p.c).unwrap_or(0)
+}
+
 /// `~/.arb/config.toml` (honoring `HOME`; `ARB_LIB`-style relocation isn't used
 /// for config).
 fn config_path() -> Option<std::path::PathBuf> {
@@ -156,6 +162,9 @@ pub fn config_default() -> Option<Palette> {
 /// theme` (used by `arb --set-theme NAME`). Rewrites an existing `theme =` line
 /// in place or appends a `[ui]` section; validates the name first.
 pub fn set_config_default(name: &str) -> Result<(), String> {
+    if std::env::var_os("ARB_NO_CONFIG").is_some() {
+        return Ok(()); // config writes disabled (tests / opt-out)
+    }
     let canon = THEMES
         .iter()
         .find(|(n, _)| norm(n) == norm(name))

@@ -139,6 +139,14 @@ pub struct Controls {
     /// The actor session (SPEC §15): `spawn`/`pool` refs, driven by `tell`/`ask`
     /// bind actions. Empty unless the spec declares session refs.
     pub session: crate::actor::Session,
+    /// Live color theme, initialized from the resolved spec/config theme. The `c`
+    /// key cycles it through the 31 built-ins at runtime (persisted to `~/.arb`);
+    /// render reads this, not `spec.theme`, so a cycle takes effect immediately.
+    pub theme: Option<crate::theme::Palette>,
+    /// Index into `theme::THEMES` of the current theme, for cycling with `c`.
+    pub theme_idx: usize,
+    /// Whether the `Ctrl-G` global help overlay is showing.
+    pub help_open: bool,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -453,7 +461,10 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                             c.focus = (c.focus + 1) % nlen;
                         }
                         0x1b => {
-                            if form {
+                            if c.help_open {
+                                // Esc closes the help overlay first, before quit/clear.
+                                c.help_open = false;
+                            } else if form {
                                 let f = c.focus;
                                 c.inputs[f].1.clear();
                             } else if fzf || c.filter.is_empty() {
@@ -498,6 +509,14 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                                 c.inputs[f].1 = toggle_set_member(&c.inputs[f].1, &item);
                             }
                         }
+                        // Ctrl-T cycles the color theme in EVERY mode. A bare `c`
+                        // (iftop's key) can't be used — the megafilter, the fzf
+                        // filter, and `input` controls all consume printable bytes
+                        // as text; a control byte never types, so it's safe here,
+                        // in fzf, and in a form alike.
+                        0x14 => cycle_theme(&mut c, true),
+                        // Ctrl-G toggles the global help overlay (works everywhere).
+                        0x07 => c.help_open = !c.help_open,
                         0x20..=0x7e => {
                             if form && fk == ControlKind::Text {
                                 let f = c.focus;
@@ -857,6 +876,7 @@ pub fn run(
                 break Ok(());
             }
             let marks = c.marks.clone();
+            let fzf_theme = c.theme; // live theme (Ctrl-T cycles it)
             drop(c);
             // Snapshot the `--preview` pane (command output for the cursor line).
             let prev_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
@@ -880,7 +900,7 @@ pub fn run(
                     prev_ref,
                     &fzf_prompt,
                     &fzf_header,
-                    spec.theme,
+                    fzf_theme,
                     &mut hitmap,
                 );
             });
@@ -931,6 +951,8 @@ pub fn run(
         let mut c = controls.lock().unwrap();
         let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
         let focus_name = c.inputs.get(c.focus).map(|(n, _)| n.clone());
+        let theme = c.theme; // live theme (Ctrl-T cycles it)
+        let help_open = c.help_open; // Ctrl-G help overlay
         // Control metadata keyed by name (slider/facet/check bounds + facet cursor).
         let cmeta: HashMap<String, ControlMeta> = c
             .inputs
@@ -979,6 +1001,8 @@ pub fn run(
                 &control_names,
                 &tab_sel_snap,
                 &scroll_snap,
+                theme,
+                help_open,
             );
         });
         drop(st);
@@ -1028,6 +1052,8 @@ fn render(
     control_names: &[String],
     tab_sel: &HashMap<String, usize>,
     scroll: &HashMap<String, usize>,
+    theme: Option<crate::theme::Palette>,
+    help: bool,
 ) {
     // Bottom: an optional stderr strip (spawned producer errors) above the filter bar.
     let err_h = match err {
@@ -1072,7 +1098,7 @@ fn render(
         );
     } else {
         let hint = if filter.is_empty() {
-            "  type to filter  ·  Bksp edit  ·  Esc clear  ·  Ctrl-C quit".to_string()
+            "  type to filter  ·  Ctrl-T theme  ·  Ctrl-G help  ·  Ctrl-C quit".to_string()
         } else {
             format!("  filter: {filter}▏   {matched}/{} lines", st.lines.len())
         };
@@ -1140,7 +1166,7 @@ fn render(
                 ..Default::default()
             };
             let meta = cmeta.get(name).unwrap_or(&default_meta);
-            render_control(f, rects[i], w, val, meta, &raw, focus == Some(name), spec.theme);
+            render_control(f, rects[i], w, val, meta, &raw, focus == Some(name), theme);
             continue;
         }
         // Resolve `apply .name` placeholders against the live input values before
@@ -1161,7 +1187,63 @@ fn render(
             .get(w.path.trim_start_matches('.'))
             .copied()
             .unwrap_or(0);
-        render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc, spec.theme);
+        render_widget(f, rects[i], w, st, &raw, result, flash, tsel, wsc, theme);
+    }
+    // The Ctrl-G global help overlay draws on top of everything.
+    if help {
+        draw_help_overlay(f, spec, theme);
+    }
+}
+
+/// A centered, theme-accented help overlay (toggled by Ctrl-G) listing the
+/// global command keys plus the spec's own `bind` keys.
+fn draw_help_overlay(f: &mut Frame, spec: &Spec, theme: Option<crate::theme::Palette>) {
+    let accent = theme_accent(theme);
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "arb — keys",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("  Ctrl-T    cycle color theme (saved to ~/.arb)"),
+        Line::from("  Ctrl-G    toggle this help"),
+        Line::from("  Ctrl-C    quit    ·    Esc  clear / close"),
+        Line::from("  ↑ ↓       move a facet/sel/fzf cursor"),
+        Line::from("  Tab       cycle inputs · mark an fzf row"),
+        Line::from("  wheel     scroll back a tail/list/table"),
+    ];
+    if !spec.binds.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  spec binds:",
+            Style::default().fg(accent),
+        )));
+        for b in &spec.binds {
+            lines.push(Line::from(format!("  {}", key_label(b.key))));
+        }
+    }
+    let w = 52u16.min(f.area().width.saturating_sub(4));
+    let h = (lines.len() as u16 + 2).min(f.area().height.saturating_sub(2));
+    let area = Rect {
+        x: (f.area().width.saturating_sub(w)) / 2,
+        y: (f.area().height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(" help ");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// A readable label for a raw control-key byte (`0x15` -> `Ctrl-U`, etc.).
+fn key_label(key: u8) -> String {
+    match key {
+        b if (1..=26).contains(&b) => format!("Ctrl-{}", (b'A' + b - 1) as char),
+        0x1b => "Esc".into(),
+        b => format!("0x{b:02x}"),
     }
 }
 
@@ -2053,7 +2135,7 @@ fn render_fzf(
             Style::default().fg(dim),
         ),
         Span::styled(
-            "   Enter select · Tab mark · \u{2191}\u{2193} move · Ctrl-C abort",
+            "   Enter select · Tab mark · \u{2191}\u{2193} move · Ctrl-T theme · Ctrl-C abort",
             Style::default().fg(dim),
         ),
     ]);
@@ -2286,6 +2368,23 @@ fn resolve_accent(name: Option<&str>, theme: Option<crate::theme::Palette>) -> C
 /// prompt) — the theme accent when set, else cyan.
 fn theme_accent(theme: Option<crate::theme::Palette>) -> Color {
     theme.map(|p| p.accent()).unwrap_or(Color::Cyan)
+}
+
+/// Cycle the live theme to the next/previous of the 31 built-ins, persist it as
+/// the global default in `~/.arb/config.toml`, and flash the name — the `c`/`C`
+/// runtime theme switch (htop/iftop-style). Best-effort persist (a read-only
+/// home just doesn't save).
+fn cycle_theme(c: &mut Controls, forward: bool) {
+    let n = crate::theme::THEMES.len();
+    c.theme_idx = if forward {
+        (c.theme_idx + 1) % n
+    } else {
+        (c.theme_idx + n - 1) % n
+    };
+    let (name, pal) = crate::theme::THEMES[c.theme_idx];
+    c.theme = Some(crate::theme::Palette { c: pal });
+    let _ = crate::theme::set_config_default(name);
+    c.alert = Some((format!("theme: {name}"), Instant::now() + Duration::from_secs(2)));
 }
 
 /// The default palette slot for a widget with no explicit `-color`, chosen by
@@ -3568,6 +3667,15 @@ mod tests {
         assert_eq!(resolve_accent(Some("green"), th), super::hex_color("#00e676"));
         // No theme, no color -> classic cyan default (backward compatible).
         assert_eq!(resolve_accent(None, None), super::hex_color(crate::spec::color_hex(None)));
+    }
+
+    #[test]
+    fn key_label_formats_control_bytes() {
+        use super::key_label;
+        assert_eq!(key_label(0x14), "Ctrl-T");
+        assert_eq!(key_label(0x07), "Ctrl-G");
+        assert_eq!(key_label(0x15), "Ctrl-U");
+        assert_eq!(key_label(0x1b), "Esc");
     }
 
     #[test]
