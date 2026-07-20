@@ -24,7 +24,7 @@ megafilter/map over the live passthrough, and an original language on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM + three-tier
 Cranelift JIT — the same engine behind `zshrs`, `stryke`, `rubylang`, and `elisp`.
 
-### [`Read the Docs`](https://menketechnologies.github.io/arb/) &middot; [`Engineering Report`](https://menketechnologies.github.io/arb/report.html) &middot; [`Language Spec`](SPEC.md)
+### [`Read the Docs`](https://menketechnologies.github.io/arb/) &middot; [`Engineering Report`](https://menketechnologies.github.io/arb/report.html) &middot; [`Reference`](https://menketechnologies.github.io/arb/reference.html) &middot; [`Language Spec`](SPEC.md)
 
 ---
 
@@ -674,6 +674,8 @@ forward-compatible, and unbuilt features are absent, not stubbed.
 
 - **[Read the Docs](https://menketechnologies.github.io/arb/)** — the HUD
   documentation site.
+- **[Reference](https://menketechnologies.github.io/arb/reference.html)** — every
+  widget, control, and query builtin, generated from `src/lsp.rs`.
 - **[Engineering Report](https://menketechnologies.github.io/arb/report.html)**
   — architecture, world-first positioning, milestones, dependency posture.
 - **[`SPEC.md`](SPEC.md)** — the full language spec: grammar, widgets, query,
