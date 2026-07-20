@@ -485,9 +485,13 @@ storageshower HUD schemes shared with the sibling `iftoprs`/`htoprs` apps —
 `neon-noir`, `blade-runner`, `night-city`, `megacorp`, … ; `arb --list-themes`
 prints them with swatches), or `theme custom c1..c6` for your own 6-index
 256-color palette. With a theme active, each widget's default accent is the
-theme accent and `-color accent|primary|alt|mid|dim|bg` resolves through it;
-`-color green`/`red`/… stay fixed overrides, and `--theme NAME` overrides the
-spec (`find / | arb --fzf --theme neon-noir`).
+theme accent and `-color accent|primary|alt|mid|dim|bg` resolves through it (a
+themeless widget picks a slot by kind, so a dashboard is multi-colored like the
+iftop/htop HUD); `-color green`/`red`/… stay fixed overrides. **A theme is always
+on** (default `neon-sprawl`), so the stdlib presets are themed out of the box;
+`arb --set-theme NAME` persists a global default to `~/.arb/config.toml`,
+`--theme NAME` overrides per run (`find / | arb --fzf --theme neon-noir`), and
+`theme off` / `--theme off` gives the classic cyan look.
 
 ### Testing pipelines in the language itself
 

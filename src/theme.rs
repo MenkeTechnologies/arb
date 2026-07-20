@@ -117,6 +117,84 @@ pub fn custom(c: [u8; 6]) -> Palette {
     Palette { c }
 }
 
+/// The default palette when a spec sets no `theme` — `neon-sprawl`, matching the
+/// `#[default]` of the sibling `iftoprs`/`htoprs` apps. `theme off` opts out to
+/// the classic cyan look (`Spec.theme = None`).
+pub fn default_palette() -> Palette {
+    Palette { c: THEMES[0].1 }
+}
+
+/// The baked default theme's kebab name (`neon-sprawl`).
+pub fn default_name() -> &'static str {
+    THEMES[0].0
+}
+
+/// `~/.arb/config.toml` (honoring `HOME`; `ARB_LIB`-style relocation isn't used
+/// for config).
+fn config_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".arb/config.toml"))
+}
+
+/// The user's global default theme name from `~/.arb/config.toml` `[ui] theme`
+/// (or a top-level `theme`), if set to a valid theme. `None` when unset/invalid
+/// or `ARB_NO_CONFIG` is set — the caller then falls back to [`default_palette`].
+pub fn config_default() -> Option<Palette> {
+    if std::env::var_os("ARB_NO_CONFIG").is_some() {
+        return None;
+    }
+    let text = std::fs::read_to_string(config_path()?).ok()?;
+    let v: toml::Value = text.parse().ok()?;
+    let name = v
+        .get("ui")
+        .and_then(|u| u.get("theme"))
+        .and_then(|t| t.as_str())
+        .or_else(|| v.get("theme").and_then(|t| t.as_str()))?;
+    by_name(name)
+}
+
+/// Persist `name` as the global default theme in `~/.arb/config.toml` `[ui]
+/// theme` (used by `arb --set-theme NAME`). Rewrites an existing `theme =` line
+/// in place or appends a `[ui]` section; validates the name first.
+pub fn set_config_default(name: &str) -> Result<(), String> {
+    let canon = THEMES
+        .iter()
+        .find(|(n, _)| norm(n) == norm(name))
+        .map(|&(n, _)| n)
+        .ok_or_else(|| format!("unknown theme `{name}` (see `arb --list-themes`)"))?;
+    let path = config_path().ok_or("no HOME for ~/.arb/config.toml")?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let out = upsert_ui_theme(&existing, canon);
+    std::fs::write(&path, out).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Rewrite the `theme =` line under `[ui]` (or append the section) to `name`.
+fn upsert_ui_theme(existing: &str, name: &str) -> String {
+    let line = format!("theme = \"{name}\"");
+    // Replace an existing active `theme = ...` (commented or not) if present.
+    let mut lines: Vec<String> = existing.lines().map(String::from).collect();
+    if let Some(i) = lines
+        .iter()
+        .position(|l| l.trim_start().trim_start_matches('#').trim_start().starts_with("theme ="))
+    {
+        lines[i] = line;
+        return lines.join("\n") + "\n";
+    }
+    // Insert after an existing `[ui]` header, else append a new section.
+    if let Some(i) = lines.iter().position(|l| l.trim() == "[ui]") {
+        lines.insert(i + 1, line);
+        return lines.join("\n") + "\n";
+    }
+    let mut out = existing.trim_end().to_string();
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&format!("\n[ui]\n{line}\n"));
+    out
+}
+
 /// Every theme's kebab-name, in display order (for `--list-themes` / cycling).
 pub fn names() -> impl Iterator<Item = &'static str> {
     THEMES.iter().map(|&(n, _)| n)
@@ -154,6 +232,28 @@ mod tests {
         assert_eq!(p.bg(), Color::Indexed(53)); // c6
         assert_eq!(p.slot("dim"), Some(Color::Indexed(57))); // c5
         assert_eq!(p.slot("bogus"), None);
+    }
+
+    #[test]
+    fn upsert_ui_theme_appends_or_replaces() {
+        // Empty config -> a new [ui] section.
+        let out = upsert_ui_theme("", "neon-noir");
+        assert!(out.contains("[ui]") && out.contains("theme = \"neon-noir\""));
+        // An existing commented `# theme = ...` line is replaced in place.
+        let cfg = "[ui]\n# theme = \"neon-sprawl\"\n";
+        let out = upsert_ui_theme(cfg, "blade-runner");
+        assert!(out.contains("theme = \"blade-runner\""));
+        assert!(!out.contains("neon-sprawl"));
+        // Existing [repl] section is preserved when appending [ui].
+        let out = upsert_ui_theme("[repl]\nmode = \"vi\"\n", "megacorp");
+        assert!(out.contains("[repl]") && out.contains("mode = \"vi\""));
+        assert!(out.contains("[ui]") && out.contains("megacorp"));
+    }
+
+    #[test]
+    fn default_name_is_neon_sprawl() {
+        assert_eq!(default_name(), "neon-sprawl");
+        assert_eq!(default_palette(), by_name("neon-sprawl").unwrap());
     }
 
     #[test]

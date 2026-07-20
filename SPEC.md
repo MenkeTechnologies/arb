@@ -477,13 +477,23 @@ set refresh 250            # ms redraw throttle
 `megacorp`, `zaibatsu`, `iftopcolor`, … — `arb --list-themes` prints them with
 swatches). Each is a 6-color palette `(primary, accent, alt, mid, dim, bg)` of
 256-color terminal indices; `theme custom c1 c2 c3 c4 c5 c6` supplies your own.
-With a theme active, every widget's default accent is the theme accent, and
-`-color <slot>` (`accent`/`primary`/`alt`/`mid`/`dim`/`bg`) resolves through it —
-so the whole TUI recolors as one system. The fixed semantic names (`-color green`
-/`red`/…) remain theme-independent explicit overrides, and with **no** `theme`
-the palette is the classic cyan default (themes are purely additive). `--theme
-NAME` overrides the spec (e.g. `find / | arb --fzf --theme neon-noir`). The
-served web dashboard keeps zgui-core's own colorscheme picker.
+With a theme active the whole TUI recolors from the palette as one system — a
+widget with no `-color` takes a slot chosen by its kind (value gauges → accent,
+bars → alt, series/plots → mid, text/containers → primary) so a dashboard is
+multi-colored like the iftop/htop HUD rather than monochrome, and the fzf picker
+uses the palette throughout (rows → primary, matches → accent, cursor bar → bg,
+hints → dim). An explicit `-color <slot>` (`accent`/`primary`/`alt`/`mid`/`dim`/
+`bg`) resolves through the palette too. The fixed semantic names (`-color green`
+/`red`/…) remain theme-independent explicit overrides.
+
+**A theme is always active by default** (matching the sibling `iftoprs`/`htoprs`
+apps, which default to `neon-sprawl`), so every dashboard — including the stdlib
+presets, which set no `-color` — is themed out of the box. Resolution precedence:
+`--theme NAME` (per-run) → the spec's own `theme` directive → the `~/.arb/config.toml`
+`[ui] theme` global default → the baked `neon-sprawl`. Set the global default with
+**`arb --set-theme NAME`** (persists to the config), preview all 31 with
+`arb --list-themes`, and opt out to the classic cyan look with `theme off` (or
+`--theme off`). The served web dashboard keeps zgui-core's own colorscheme picker.
 
 Ships today as `arb --serve --port N`: a std-only HTTP server renders the same
 spec as a live browser dashboard, pushing widget data over a WebSocket (hand-rolled

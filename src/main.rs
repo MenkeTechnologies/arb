@@ -112,6 +112,13 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m List the 31 built-in color themes and exit"
     )]
     list_themes: bool,
+    /// Persist a global default theme to ~/.arb/config.toml, then exit.
+    #[arg(
+        long = "set-theme",
+        value_name = "NAME",
+        help = "\x1b[32m//\x1b[0m Save NAME as the global default theme in ~/.arb/config.toml, then exit"
+    )]
+    set_theme: Option<String>,
     /// Save a spec as a named user preset in `~/.arb/lib`, then exit.
     /// Source is the `FILE` argument or `-e SRC`. E.g. `arb --save api dash.arb`.
     #[arg(
@@ -473,6 +480,19 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    if let Some(name) = &cli.set_theme {
+        match arb::theme::set_config_default(name) {
+            Ok(()) => {
+                println!("arb: default theme set to `{name}` (~/.arb/config.toml)");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("arb: --set-theme: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(name) = cli.save.clone() {
         return save_preset(&name, &cli);
     }
@@ -565,16 +585,26 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // `--theme NAME` overrides the spec's theme (or sets one on a zero-config /
-    // fzf spec, so `find / | arb --fzf --theme neon-noir` recolors the picker).
-    if let Some(name) = &cli.theme {
-        match arb::theme::by_name(name) {
+    // Resolve the effective theme. Precedence: `--theme` (or `--theme off`) →
+    // the spec's own `theme` directive / `theme off` → the `~/.arb/config.toml`
+    // global default → the baked `neon-sprawl` default. So every dashboard (and
+    // the stdlib presets, which set no color) is themed out of the box, tunable
+    // globally via `--set-theme` and per-run via `--theme`.
+    match cli.theme.as_deref() {
+        Some("off") | Some("none") => spec.theme = None,
+        Some(name) => match arb::theme::by_name(name) {
             Some(p) => spec.theme = Some(p),
             None => {
                 eprintln!("arb: --theme: unknown theme `{name}` (see `arb --list-themes`)");
                 std::process::exit(1);
             }
+        },
+        // No `--theme`: keep an explicit spec directive / `theme off`, else apply
+        // the global config default (or the baked default) so presets are themed.
+        None if !spec.theme_off && spec.theme.is_none() => {
+            spec.theme = Some(arb::theme::config_default().unwrap_or_else(arb::theme::default_palette));
         }
+        None => {}
     }
 
     // Select mode is the fzf surface expressed as a widget: `--fzf` synthesizes a

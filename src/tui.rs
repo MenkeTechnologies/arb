@@ -1892,8 +1892,18 @@ pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
 
 /// Build a styled list line for fzf mode: a mark gutter (`+` for a Tab-marked
 /// line) followed by the text with fuzzy-matched characters highlighted.
-fn fzf_line(line: &str, filter: &str, width: usize, marked: bool, accent: Color) -> Line<'static> {
+fn fzf_line(
+    line: &str,
+    filter: &str,
+    width: usize,
+    marked: bool,
+    base: Option<Color>,
+    accent: Color,
+) -> Line<'static> {
     let text: String = line.chars().take(width.saturating_sub(2)).collect();
+    // Base row-text style: the theme's primary color, or terminal default.
+    let base_style = base.map(|c| Style::default().fg(c)).unwrap_or_default();
+    let base_span = |s: String| Span::styled(s, base_style);
     let gutter = if marked {
         Span::styled(
             "+ ",
@@ -1905,7 +1915,7 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool, accent: Color)
         Span::raw("  ")
     };
     if filter.is_empty() {
-        return Line::from(vec![gutter, Span::raw(text)]);
+        return Line::from(vec![gutter, base_span(text)]);
     }
     let pos: std::collections::HashSet<usize> =
         match_positions(&text, filter).into_iter().collect();
@@ -1918,11 +1928,7 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool, accent: Color)
         let h = pos.contains(&i);
         if h != cur_hl && !cur.is_empty() {
             let s = std::mem::take(&mut cur);
-            spans.push(if cur_hl {
-                Span::styled(s, hl)
-            } else {
-                Span::raw(s)
-            });
+            spans.push(if cur_hl { Span::styled(s, hl) } else { base_span(s) });
         }
         cur_hl = h;
         cur.push(ch);
@@ -1931,7 +1937,7 @@ fn fzf_line(line: &str, filter: &str, width: usize, marked: bool, accent: Color)
         spans.push(if cur_hl {
             Span::styled(cur, hl)
         } else {
-            Span::raw(cur)
+            base_span(cur)
         });
     }
     Line::from(spans)
@@ -2029,23 +2035,32 @@ fn render_fzf(
     } else {
         format!(" ({})", marks.len())
     };
-    // fzf-style prompt: accent prompt string, the query with a cursor bar, then an
-    // accent matched/total(marked) counter and dim key hints (theme-aware).
+    // The whole picker recolors from the active palette (not just the accent):
+    // row text in `base` (primary), the prompt/matches/cursor in `accent`, the
+    // header/counter/hints in `dim`, and the cursor bar in the palette `bg`. With
+    // no theme these fall back to the classic cyan/default/gray look.
     let accent = theme_accent(theme);
-    let cyan = Style::default().fg(accent);
+    let base = theme.map(|p| p.primary()); // None -> terminal default text
+    let dim = theme.map(|p| p.dim()).unwrap_or(Color::DarkGray);
+    let bar_bg = theme.map(|p| p.bg()).unwrap_or(Color::Rgb(38, 38, 46));
+    let query_style = base.map(|c| Style::default().fg(c)).unwrap_or_default();
+    let acc = Style::default().fg(accent);
     let prompt_line = Line::from(vec![
-        Span::styled(prompt.to_string(), cyan.add_modifier(Modifier::BOLD)),
-        Span::raw(format!("{filter}\u{258f}")),
-        Span::styled(format!("   {}/{total}{marked}", matched.len()), cyan),
+        Span::styled(prompt.to_string(), acc.add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{filter}\u{258f}"), query_style),
+        Span::styled(
+            format!("   {}/{total}{marked}", matched.len()),
+            Style::default().fg(dim),
+        ),
         Span::styled(
             "   Enter select · Tab mark · \u{2191}\u{2193} move · Ctrl-C abort",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(dim),
         ),
     ]);
     f.render_widget(Paragraph::new(prompt_line), chunks[0]);
     if !header.is_empty() {
         f.render_widget(
-            Paragraph::new(header).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(header).style(Style::default().fg(dim)),
             chunks[1],
         );
     }
@@ -2073,6 +2088,7 @@ fn render_fzf(
                 filter,
                 inner_w,
                 mark_set.contains(orig.as_ref()),
+                base,
                 accent,
             ))
         })
@@ -2081,15 +2097,14 @@ fn render_fzf(
     if n > 0 {
         state.select(Some(sel - start));
     }
-    // Accent pointer + cursor line: the selected row's text and the `▶` pointer
-    // take the theme accent, over a subtle highlight bar — so the theme is visible
-    // even before you type a query.
+    // Cursor line: accent text + the `▶` pointer over a bar in the palette `bg`,
+    // so the selected row reads as themed even before you type a query.
     let list = List::new(items)
         .highlight_symbol("\u{25b6} ")
         .highlight_style(
             Style::default()
                 .fg(accent)
-                .bg(Color::Rgb(38, 38, 46))
+                .bg(bar_bg)
                 .add_modifier(Modifier::BOLD),
         );
     f.render_stateful_widget(list, chunks[2], &mut state);
@@ -2273,6 +2288,24 @@ fn theme_accent(theme: Option<crate::theme::Palette>) -> Color {
     theme.map(|p| p.accent()).unwrap_or(Color::Cyan)
 }
 
+/// The default palette slot for a widget with no explicit `-color`, chosen by
+/// kind so a themed dashboard is multi-colored (like the iftop/htop HUD) instead
+/// of monochrome-accent — value gauges in the accent, bars in the alt hue,
+/// series/plots in the mid tone, text/containers in the primary. Used only when a
+/// theme is active; without one every widget stays the classic cyan default.
+fn default_slot_for_kind(kind: WidgetKind, p: crate::theme::Palette) -> Color {
+    use WidgetKind::*;
+    match kind {
+        Gauge | LineGauge => p.accent(),
+        Bars | Histo => p.alt(),
+        Spark | Sparkline | Scatter | Chart | Map => p.mid(),
+        Calendar => p.mid(),
+        Text | Tail | List | Table | Tabs | Block | Frame => p.primary(),
+        // Controls carry their own focus accent elsewhere.
+        _ => p.accent(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_widget(
     f: &mut Frame,
@@ -2304,7 +2337,15 @@ fn render_widget(
     // element (gauge/bar fill, spark, chart line, table header). Default cyan. A
     // live `flash` action temporarily overrides the color.
     let color_name = flash.or_else(|| w.opts.get("color").map(String::as_str));
-    let accent = resolve_accent(color_name, theme);
+    // Explicit `-color` (slot or semantic) resolves as given; with none, a themed
+    // dashboard picks a palette slot by widget kind (multi-color HUD), else cyan.
+    let accent = match color_name {
+        Some(_) => resolve_accent(color_name, theme),
+        None => match theme {
+            Some(p) => default_slot_for_kind(w.kind, p),
+            None => resolve_accent(None, None),
+        },
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
@@ -3527,6 +3568,23 @@ mod tests {
         assert_eq!(resolve_accent(Some("green"), th), super::hex_color("#00e676"));
         // No theme, no color -> classic cyan default (backward compatible).
         assert_eq!(resolve_accent(None, None), super::hex_color(crate::spec::color_hex(None)));
+    }
+
+    #[test]
+    fn default_slot_varies_by_widget_kind() {
+        use super::default_slot_for_kind;
+        use crate::spec::WidgetKind;
+        // neon-noir = [201(primary), 231(accent), 93(alt), 219(mid), 57, 53].
+        let p = crate::theme::by_name("neon-noir").unwrap();
+        assert_eq!(default_slot_for_kind(WidgetKind::Gauge, p), p.accent());
+        assert_eq!(default_slot_for_kind(WidgetKind::Bars, p), p.alt());
+        assert_eq!(default_slot_for_kind(WidgetKind::Chart, p), p.mid());
+        assert_eq!(default_slot_for_kind(WidgetKind::Tail, p), p.primary());
+        // Distinct slots -> a multi-color dashboard, not monochrome.
+        assert_ne!(
+            default_slot_for_kind(WidgetKind::Gauge, p),
+            default_slot_for_kind(WidgetKind::Bars, p)
+        );
     }
 
     #[test]

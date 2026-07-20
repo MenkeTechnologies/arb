@@ -580,9 +580,12 @@ pub struct Spec {
     /// vertical). Ignored once any widget declares a grid cell.
     pub flow: Flow,
     /// `theme NAME` / `theme custom c1..c6` — the active color palette (one of the
-    /// 31 built-ins or a custom 6-index palette). `None` = the classic fixed
-    /// scheme (cyan default + named colors), so themes are purely additive.
+    /// 31 built-ins or a custom 6-index palette). `None` = no directive: `main`
+    /// resolves the default (`--theme` → `~/.arb` config → baked `neon-sprawl`).
     pub theme: Option<crate::theme::Palette>,
+    /// `theme off`/`none` — opt out of theming to the classic cyan scheme; stops
+    /// `main` from applying the config/baked default.
+    pub theme_off: bool,
 }
 
 /// A layout track size (a grid row/column). Maps to a ratatui `Constraint`.
@@ -1163,7 +1166,11 @@ fn build_into(
                     .first()
                     .and_then(Arg::as_str)
                     .ok_or("theme: expected a name (`theme neon-noir`) or `theme custom c1..c6`")?;
-                if first == "custom" {
+                if first == "off" || first == "none" {
+                    // Opt out to the classic cyan scheme; block the default resolver.
+                    spec.theme = None;
+                    spec.theme_off = true;
+                } else if first == "custom" {
                     let idx: Vec<u8> = c.args[1..]
                         .iter()
                         .filter_map(Arg::as_str)

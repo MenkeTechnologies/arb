@@ -89,6 +89,14 @@ const DEFAULT_CONFIG_TOML: &str = r#"# arb runtime config — auto-generated on 
 # Tab + Shift+Tab cycle the completion menu in either mode.
 # Override per-session with `ARB_REPL_MODE=vi arb --repl`.
 # mode = "emacs"
+
+[ui]
+# Global default color theme for the TUI — one of the 31 built-ins
+# (`arb --list-themes`). Applies to every dashboard and stdlib preset
+# that doesn't set its own `theme`. Change it with `arb --set-theme NAME`,
+# override per-run with `--theme NAME`, or opt out with `--theme off`.
+# Defaults to neon-sprawl.
+# theme = "neon-sprawl"
 "#;
 
 /// First-run seed: write `~/.arb/config.toml` if it does not exist. No-op when
