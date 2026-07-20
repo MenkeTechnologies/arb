@@ -133,6 +133,9 @@ pub struct Controls {
     /// Writer to a `spawn -pty` child's stdin, so the `send "…"` action can drive
     /// it (Expect). `None` unless the stream source is a PTY.
     pub pty_writer: Option<Box<dyn std::io::Write + Send>>,
+    /// The actor session (SPEC §15): `spawn`/`pool` refs, driven by `tell`/`ask`
+    /// bind actions. Empty unless the spec declares session refs.
+    pub session: crate::actor::Session,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -273,6 +276,34 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
                 use std::io::Write;
                 let _ = w.write_all(text.as_bytes());
                 let _ = w.flush();
+            }
+        }
+        BindAction::ActorTell { refname, call } => {
+            // Parse + evaluate the message call against live control values, then
+            // tell the session ref (fire-and-forget). A bad call/unknown ref is a
+            // silent no-op — the run loop must never block or panic on a keystroke.
+            if let Ok((msg, argexprs)) = crate::actor::parse_call(call) {
+                let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
+                let args = crate::actor::eval_args(&argexprs, &inputs);
+                c.session.tell(refname, &msg, args);
+            }
+        }
+        BindAction::ActorAsk {
+            ctrl,
+            refname,
+            call,
+        } => {
+            // Ask the ref and store the reply into control `ctrl` so a widget
+            // bound to it displays the result.
+            if let Ok((msg, argexprs)) = crate::actor::parse_call(call) {
+                let inputs: HashMap<String, String> = c.inputs.iter().cloned().collect();
+                let args = crate::actor::eval_args(&argexprs, &inputs);
+                if let Some(v) = c.session.ask(refname, &msg, args) {
+                    let text = crate::query::fmt_scalar(v);
+                    if let Some(slot) = c.inputs.iter_mut().find(|(n, _)| n == ctrl) {
+                        slot.1 = text;
+                    }
+                }
             }
         }
         BindAction::Seq(actions) => {
@@ -2416,6 +2447,50 @@ mod tests {
         );
         assert!(!fired[0]);
         assert_eq!(c.inputs[0].1, "");
+    }
+
+    #[test]
+    fn actor_tell_then_ask_updates_control() {
+        // End-to-end runtime path: a `tell` mutates a session actor's state, an
+        // `ask` reads it back and writes the reply into a control input — exactly
+        // what a `bind C-t tell w add(5)` / `bind C-a ask .out w add(10)` fires.
+        use super::{apply_bind_action, Controls};
+        use crate::spec::BindAction;
+        let cmds = crate::parser::parse(
+            "actor acc(state) { on add(n) { state = state + n; reply state } }",
+        )
+        .unwrap();
+        let mut defs = std::collections::BTreeMap::new();
+        let d = std::sync::Arc::new(crate::actor::parse_actor(&cmds[0].args).unwrap());
+        defs.insert("acc".to_string(), d);
+        let decls = vec![crate::actor::RefDecl {
+            name: "w".into(),
+            actor: "acc".into(),
+            init: 100.0,
+            pool: None,
+            restart: true,
+        }];
+        let mut c = Controls {
+            inputs: vec![("out".into(), String::new())],
+            session: crate::actor::Session::build(&defs, &decls).unwrap(),
+            ..Default::default()
+        };
+        apply_bind_action(
+            &mut c,
+            &BindAction::ActorTell {
+                refname: "w".into(),
+                call: "add(5)".into(),
+            },
+        ); // state 100 -> 105
+        apply_bind_action(
+            &mut c,
+            &BindAction::ActorAsk {
+                ctrl: "out".into(),
+                refname: "w".into(),
+                call: "add(10)".into(),
+            },
+        ); // state 105 -> 115, written to `.out`
+        assert_eq!(c.inputs[0].1, "115");
     }
 
     #[test]

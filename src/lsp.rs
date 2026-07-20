@@ -577,6 +577,9 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("actor", "Directive", "Declare a message-handling actor with a single scalar state and one handler per message.", "actor sq(state) { on job(x) { reply x * x } }"),
     ("on", "Directive", "A message handler inside an actor body: on MSG(params) { stmts; reply EXPR }.", "on job(x) { reply x * 2 }"),
     ("reply", "Directive", "Inside a handler, send an expression's value back to an ask/via caller.", "reply state + x"),
+    ("spawn", "Directive", "Bind a session actor: spawn NAME = ACTOR(init); tell/ask drive it (distinct from the spawn CMD source).", "spawn w = worker(0)"),
+    ("pool", "Directive", "Bind a supervised session pool: pool NAME = ACTOR * N (a dead worker is respawned).", "pool p = worker * 8"),
+    ("supervise", "Directive", "Set a ref's crash policy: supervise NAME { on crash { restart | stop } } (default restart).", "supervise p { on crash { restart } }"),
     // ── Action ──
     ("quit", "Action", "Quit the TUI.", "bind C-q quit"),
     ("beep", "Action", "Ring the terminal bell (0x07 after the next draw).", "expect /panic/ beep"),
@@ -584,6 +587,8 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("exec", "Action", "Run a shell command, fire-and-forget; never waits or blocks the loop.", "expect /down/ exec \"notify-send arb\""),
     ("flash", "Action", "Tint a widget's border/accent for a few seconds (-color, default yellow).", "expect /5\\d\\d/ flash .log red"),
     ("set", "Action", "Set an input .name widget's value; with out { apply .name } reshapes the live pipe.", "bind C-a set .q ERROR"),
+    ("tell", "Action", "Post a message to a session actor/pool, fire-and-forget: tell REF MSG(args).", "bind C-t tell w job(5)"),
+    ("ask", "Action", "Ask a session actor/pool and store the reply into control .CTRL: ask .CTRL REF MSG(args).", "bind C-a ask .out p job(.th)"),
 ];
 
 /// The language corpus, exposed for the offline docs generator (`gen-docs`).

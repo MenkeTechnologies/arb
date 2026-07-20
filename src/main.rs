@@ -798,6 +798,18 @@ fn main() -> io::Result<()> {
                     cursor: 0,
                 });
             }
+            // Actor session (§15): spawn every `spawn`/`pool` ref once, held for
+            // the session so `tell`/`ask` bind actions can drive them. Names are
+            // validated at build, so this only fails on an internal mismatch.
+            if !spec.actor_refs.is_empty() {
+                match arb::actor::Session::build(&spec.actors, &spec.actor_refs) {
+                    Ok(session) => c.session = session,
+                    Err(e) => {
+                        eprintln!("arb: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             // Key bindings (`bind C-<letter> …`) drive the same input values.
             c.binds = spec.binds.clone();
             // Mouse reactions (`bind <Click> …`).

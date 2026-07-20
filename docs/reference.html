@@ -817,6 +817,21 @@
           <p>Inside a handler, send an expression's value back to an ask/via caller.</p>
           <pre><code class="lang-arb">reply state + x</code></pre>
         </article>
+        <article class="doc-entry" id="doc-directives-14">
+          <h3><a class="doc-anchor" href="#doc-directives-14">#</a> <code>spawn</code></h3>
+          <p>Bind a session actor: spawn NAME = ACTOR(init); tell/ask drive it (distinct from the spawn CMD source).</p>
+          <pre><code class="lang-arb">spawn w = worker(0)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-15">
+          <h3><a class="doc-anchor" href="#doc-directives-15">#</a> <code>pool</code></h3>
+          <p>Bind a supervised session pool: pool NAME = ACTOR * N (a dead worker is respawned).</p>
+          <pre><code class="lang-arb">pool p = worker * 8</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-directives-16">
+          <h3><a class="doc-anchor" href="#doc-directives-16">#</a> <code>supervise</code></h3>
+          <p>Set a ref's crash policy: supervise NAME { on crash { restart | stop } } (default restart).</p>
+          <pre><code class="lang-arb">supervise p { on crash { restart } }</code></pre>
+        </article>
       </section>
 
       <section class="tutorial-section" id="ch-bind-expect-actions">
@@ -850,6 +865,16 @@
           <h3><a class="doc-anchor" href="#doc-bind-expect-actions-6">#</a> <code>set</code></h3>
           <p>Set an input .name widget's value; with out { apply .name } reshapes the live pipe.</p>
           <pre><code class="lang-arb">bind C-a set .q ERROR</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-bind-expect-actions-7">
+          <h3><a class="doc-anchor" href="#doc-bind-expect-actions-7">#</a> <code>tell</code></h3>
+          <p>Post a message to a session actor/pool, fire-and-forget: tell REF MSG(args).</p>
+          <pre><code class="lang-arb">bind C-t tell w job(5)</code></pre>
+        </article>
+        <article class="doc-entry" id="doc-bind-expect-actions-8">
+          <h3><a class="doc-anchor" href="#doc-bind-expect-actions-8">#</a> <code>ask</code></h3>
+          <p>Ask a session actor/pool and store the reply into control .CTRL: ask .CTRL REF MSG(args).</p>
+          <pre><code class="lang-arb">bind C-a ask .out p job(.th)</code></pre>
         </article>
       </section>
 

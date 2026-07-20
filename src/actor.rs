@@ -465,6 +465,196 @@ pub fn run_via(def: &Arc<ActorDef>, workers: usize, lines: &[String]) -> Vec<Str
         .collect()
 }
 
+// ---- imperative session: spawn / pool / tell / ask / supervise -------------
+
+/// A top-level actor binding: `spawn NAME = ACTOR(init)` or
+/// `pool NAME = ACTOR * N`, optionally re-tuned by `supervise NAME { … }`.
+#[derive(Debug, Clone)]
+pub struct RefDecl {
+    /// The binding name used by `tell`/`ask` (`w`, `p`).
+    pub name: String,
+    /// The `actor NAME(state) { … }` this ref runs.
+    pub actor: String,
+    /// Initial `state`, evaluated at build time (`spawn w = worker(3)` -> 3).
+    pub init: f64,
+    /// `Some(N)` for a `pool … * N`; `None` for a single actor.
+    pub pool: Option<usize>,
+    /// Supervision policy: respawn a dead worker (default), or fail-stop when a
+    /// `supervise NAME { on crash { stop } }` clause turned it off.
+    pub restart: bool,
+}
+
+/// A named ref inside a live [`Session`]: one actor, or a supervised pool.
+enum Target {
+    One(ActorRef),
+    Pool {
+        workers: Vec<ActorRef>,
+        next: usize,
+        def: Arc<ActorDef>,
+        init: f64,
+        restart: bool,
+    },
+}
+
+/// The interactive actor runtime for a spec: owns the [`ActorSystem`] and every
+/// `spawn`/`pool` binding, so `tell`/`ask` bind actions can drive them across the
+/// session (SPEC §15). Single-threaded access from the TUI loop (`&mut self`).
+#[derive(Default)]
+pub struct Session {
+    // Field order is load-bearing: `refs` (which holds the mailbox senders) MUST
+    // drop before `sys` (whose Drop joins the threads). Struct fields drop in
+    // declaration order, so refs first closes the senders, letting each `recv`
+    // return Err and the thread exit — otherwise `sys`'s join would hang forever.
+    refs: HashMap<String, Target>,
+    sys: ActorSystem,
+}
+
+impl Session {
+    /// Spawn every declared ref against the actor registry. A ref naming an
+    /// unknown actor is an error (surfaced at build, not silently dropped).
+    pub fn build(
+        defs: &std::collections::BTreeMap<String, Arc<ActorDef>>,
+        decls: &[RefDecl],
+    ) -> Result<Session, String> {
+        let mut s = Session::default();
+        for d in decls {
+            let def = defs
+                .get(&d.actor)
+                .ok_or_else(|| format!("spawn: no actor named `{}`", d.actor))?
+                .clone();
+            let target = match d.pool {
+                Some(n) => {
+                    let n = n.max(1);
+                    Target::Pool {
+                        workers: (0..n).map(|_| s.sys.spawn(def.clone(), d.init)).collect(),
+                        next: 0,
+                        def,
+                        init: d.init,
+                        restart: d.restart,
+                    }
+                }
+                None => Target::One(s.sys.spawn(def, d.init)),
+            };
+            s.refs.insert(d.name.clone(), target);
+        }
+        Ok(s)
+    }
+
+    /// Whether the session has any refs (an all-`via` spec has none).
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty()
+    }
+
+    /// Pick the next live worker for a ref, respawning a dead one when the ref is
+    /// supervised. Returns a cloned mailbox handle (cheap) to send on.
+    fn worker(&mut self, name: &str) -> Option<ActorRef> {
+        match self.refs.get_mut(name)? {
+            Target::One(r) => Some(r.clone()),
+            Target::Pool {
+                workers,
+                next,
+                def,
+                init,
+                restart,
+            } => {
+                if workers.is_empty() {
+                    return None;
+                }
+                let i = *next % workers.len();
+                *next = i + 1;
+                // A supervised pool respawns a worker whose thread has died before
+                // dispatching to it; an unsupervised (fail-stop) pool does not.
+                if *restart {
+                    let probe = mpsc::channel::<f64>().0;
+                    let dead = workers[i]
+                        .tx
+                        .send(Message {
+                            name: String::new(),
+                            args: Vec::new(),
+                            reply: Some(probe),
+                        })
+                        .is_err();
+                    if dead {
+                        workers[i] = self.sys.spawn(def.clone(), *init);
+                    }
+                }
+                Some(workers[i].clone())
+            }
+        }
+    }
+
+    /// *Tell* a ref (fire-and-forget). Unknown ref -> ignored.
+    pub fn tell(&mut self, name: &str, msg: &str, args: Vec<f64>) {
+        if let Some(w) = self.worker(name) {
+            w.send(msg, args);
+        }
+    }
+
+    /// *Ask* a ref and block for the reply. Unknown/dead ref -> `None`.
+    pub fn ask(&mut self, name: &str, msg: &str, args: Vec<f64>) -> Option<f64> {
+        self.worker(name).and_then(|w| w.ask(msg, args))
+    }
+}
+
+/// Parse a message call `MSG(a, b, …)` (or bare `MSG`) into its name and the
+/// argument expressions. Commas split only at paren depth 0, so an arithmetic
+/// arg like `(a + b) * 2` stays intact.
+pub fn parse_call(s: &str) -> Result<(String, Vec<Expr>), String> {
+    let s = s.trim();
+    let open = match s.find('(') {
+        None => return Ok((s.to_string(), Vec::new())),
+        Some(i) => i,
+    };
+    let name = s[..open].trim().to_string();
+    if name.is_empty() {
+        return Err("message call: missing name".into());
+    }
+    let inner = s
+        .strip_suffix(')')
+        .and_then(|s| s.get(open + 1..))
+        .ok_or("message call: unbalanced `()`")?;
+    let mut args = Vec::new();
+    let (mut depth, mut start) = (0isize, 0usize);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                push_arg(&inner[start..i], &mut args)?;
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !inner.trim().is_empty() {
+        push_arg(&inner[start..], &mut args)?;
+    }
+    Ok((name, args))
+}
+
+fn push_arg(raw: &str, out: &mut Vec<Expr>) -> Result<(), String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("message call: empty argument".into());
+    }
+    out.push(expr::parse(t)?);
+    Ok(())
+}
+
+/// Evaluate a message call's argument expressions against live control values —
+/// a `.name` control resolves to its current numeric input (unset -> NaN).
+pub fn eval_args(exprs: &[Expr], inputs: &HashMap<String, String>) -> Vec<f64> {
+    let num = |n: &str| -> Option<f64> { inputs.get(n).and_then(|v| v.trim().parse::<f64>().ok()) };
+    let strv = |n: &str| -> Option<String> { inputs.get(n).cloned() };
+    exprs
+        .iter()
+        .map(|e| {
+            let sub = expr::substitute_controls(e, &num, &strv);
+            expr::eval(&sub, 0.0).unwrap_or(f64::NAN)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +753,141 @@ mod tests {
         let d = def("actor acc(state) { on job(x) { state = state + x; reply state } }");
         let lines: Vec<String> = vec!["10".into(), "5".into(), "100".into()];
         assert_eq!(run_via(&d, 1, &lines), vec!["10", "15", "115"]);
+    }
+
+    fn reg(src: &str) -> std::collections::BTreeMap<String, Arc<ActorDef>> {
+        let mut m = std::collections::BTreeMap::new();
+        let d = def(src);
+        m.insert(d.name.clone(), d);
+        m
+    }
+
+    #[test]
+    fn session_spawn_tell_ask() {
+        let defs = reg("actor acc(state) { on add(n) { state = state + n; reply state } }");
+        let decls = vec![RefDecl {
+            name: "w".into(),
+            actor: "acc".into(),
+            init: 100.0,
+            pool: None,
+            restart: true,
+        }];
+        let mut s = Session::build(&defs, &decls).unwrap();
+        s.tell("w", "add", vec![5.0]); // fire-and-forget: state 100 -> 105
+        assert_eq!(s.ask("w", "add", vec![10.0]), Some(115.0));
+        // Unknown ref is a no-op / None, never a panic.
+        s.tell("ghost", "add", vec![1.0]);
+        assert_eq!(s.ask("ghost", "add", vec![1.0]), None);
+    }
+
+    #[test]
+    fn session_pool_round_robins() {
+        // Each worker starts at its own base; two asks hit two distinct workers.
+        let defs = reg("actor id(state) { on get { reply state } }");
+        let decls = vec![RefDecl {
+            name: "p".into(),
+            actor: "id".into(),
+            init: 7.0,
+            pool: Some(3),
+            restart: true,
+        }];
+        let mut s = Session::build(&defs, &decls).unwrap();
+        assert_eq!(s.ask("p", "get", vec![]), Some(7.0));
+        assert_eq!(s.ask("p", "get", vec![]), Some(7.0));
+    }
+
+    #[test]
+    fn supervised_pool_respawns_but_failstop_does_not() {
+        let defs = reg("actor w(state) { on job(x) { reply x + 1 } }");
+        // A one-worker supervised pool: kill the worker, ask -> respawned answer.
+        let mut sup = Session::build(
+            &defs,
+            &[RefDecl {
+                name: "p".into(),
+                actor: "w".into(),
+                init: 0.0,
+                pool: Some(1),
+                restart: true,
+            }],
+        )
+        .unwrap();
+        kill_pool_worker(&mut sup, "p");
+        assert_eq!(sup.ask("p", "job", vec![41.0]), Some(42.0));
+
+        // A fail-stop pool (restart=false): a dead worker is not respawned.
+        let mut fs = Session::build(
+            &defs,
+            &[RefDecl {
+                name: "p".into(),
+                actor: "w".into(),
+                init: 0.0,
+                pool: Some(1),
+                restart: false,
+            }],
+        )
+        .unwrap();
+        kill_pool_worker(&mut fs, "p");
+        assert_eq!(fs.ask("p", "job", vec![41.0]), None);
+    }
+
+    /// Replace a pool's single worker with a dead mailbox (dropped receiver).
+    fn kill_pool_worker(s: &mut Session, name: &str) {
+        if let Some(Target::Pool { workers, .. }) = s.refs.get_mut(name) {
+            let (tx, rx) = mpsc::channel();
+            drop(rx);
+            workers[0] = ActorRef { tx };
+        }
+    }
+
+    #[test]
+    fn spec_build_parses_refs_actions_and_supervise() {
+        use crate::spec::{self, BindAction};
+        let src = "\
+actor worker(state) { on job(x) { reply x * 2 } }\n\
+spawn w = worker(3)\n\
+pool p = worker * 4\n\
+supervise p { on crash { stop } }\n\
+bind C-t tell w job(5)\n\
+bind C-a ask .out p job(.th)\n";
+        let sp = spec::build(&parse(src).unwrap()).unwrap();
+        assert_eq!(sp.actor_refs.len(), 2);
+        let w = &sp.actor_refs[0];
+        assert_eq!((w.name.as_str(), w.actor.as_str(), w.init, w.pool), ("w", "worker", 3.0, None));
+        let p = &sp.actor_refs[1];
+        assert_eq!((p.name.as_str(), p.pool, p.restart), ("p", Some(4), false)); // stop policy
+        // The two binds carry the actor actions.
+        let tell = sp.binds.iter().find_map(|b| match &b.action {
+            BindAction::ActorTell { refname, call } => Some((refname.clone(), call.clone())),
+            _ => None,
+        });
+        assert_eq!(tell, Some(("w".to_string(), "job(5)".to_string())));
+        let ask = sp.binds.iter().find_map(|b| match &b.action {
+            BindAction::ActorAsk { ctrl, refname, call } => {
+                Some((ctrl.clone(), refname.clone(), call.clone()))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            ask,
+            Some(("out".to_string(), "p".to_string(), "job(.th)".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_call_splits_args_at_depth_zero() {
+        let (msg, args) = parse_call("job(5, (1 + 2) * 3)").unwrap();
+        assert_eq!(msg, "job");
+        assert_eq!(args.len(), 2);
+        let inputs = HashMap::new();
+        assert_eq!(eval_args(&args, &inputs), vec![5.0, 9.0]);
+    }
+
+    #[test]
+    fn eval_args_resolves_controls() {
+        let (_msg, args) = parse_call("job(.th * 2)").unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("th".to_string(), "21".to_string());
+        assert_eq!(eval_args(&args, &inputs), vec![42.0]);
     }
 
     #[test]

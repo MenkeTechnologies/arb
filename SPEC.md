@@ -387,10 +387,42 @@ handler that mutates `state` is partitioned across workers, so with `N > 1` a li
 sees only the state of the worker that handled it (documented non-determinism —
 use `via worker * 1` for a single sequential accumulator).
 
-The runtime lives in `src/actor.rs` (declaration + handler compiler + threads);
-`via` is `QueryOp::Via`, evaluated by `actor::run_via` (rayon fan-out over the
-pool). `heavy(x)`-style user functions are not part of arb's expression grammar —
-handler bodies use arb expressions directly.
+**Session refs + event-driven messaging** — spawn long-lived actors/pools in the
+spec and drive them from key/stream/timer events:
+
+```
+actor worker(state) { on job(x) { state = state + 1; reply x * x } }
+
+spawn w = worker(0)                # a session actor ref
+pool  p = worker * 8              # a supervised session pool
+supervise p { on crash { stop } }  # fail-stop (default is restart = respawn)
+
+input .out                                   # a control widget to show a reply
+bind C-t tell w job(5)                        # tell: fire-and-forget on a keypress
+bind C-a ask .out w job(.th)                  # ask: reply written into `.out`
+expect /error/ tell w job(1)                  # drive an actor from a stream match
+```
+
+| Form | Meaning |
+| --- | --- |
+| `spawn NAME = ACTOR(init)` | a single session actor, initial `state` = `init` |
+| `pool NAME = ACTOR * N` | a supervised N-worker pool (`* N` optional → one per thread) |
+| `supervise NAME { on crash { restart \| stop } }` | crash policy; `restart` (default) respawns a dead worker, `stop` is fail-stop |
+| `tell REF MSG(args)` | action: post a message, fire-and-forget |
+| `ask .CTRL REF MSG(args)` | action: ask, write the reply into control `.CTRL` |
+
+`args` are arb expressions evaluated when the action fires, with live control
+substitution (`.th` → that input's current value). `spawn NAME = …` is
+disambiguated from the `spawn CMD` process source by the `=`. The message tell is
+`tell` (not `send`) because `send` is the Expect PTY action (§14). Session refs
+run only in the interactive TUI; the served web target renders widgets but does
+not fire bind/expect actions.
+
+The runtime lives in `src/actor.rs`: declaration + handler compiler + one
+`mpsc`-mailbox thread per actor (`spawn`/`send`/`ask`/`pool`, plus `Session` for
+the named session refs). `via` is `QueryOp::Via`, evaluated by `actor::run_via`
+(rayon fan-out over the pool). `heavy(x)`-style user functions are not part of
+arb's expression grammar — handler bodies use arb expressions directly.
 
 ## 16. Targets
 
@@ -535,6 +567,6 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 3. ✅ Interactive controls + `out` passthrough shaping (megafilter/map): `input`/`apply`, the `filter`/`facet`/`slider`/`check` control widgets (interactive in both the TUI and the served web dashboard, incl. dynamic `-field` facet candidates), and control-path predicates — numeric `where lat < .th`, string `where match(.q)`, and set `where level in .lv`.
 4. ✅ Expect reactions + events/bind — `expect /re/ ACTION` and the multi-clause `expect { /re/ ACTION; … }` block, `bind C-<key> ACTION` with actions `set`/`quit`/`beep`/`alert`/`flash`/`exec` and `{ … }` block form; Tk named keys `<Enter>`/`<Esc>`/`<Tab>`/`<Key-x>`; `timeout Ns ACTION` idle reactions; `spawn CMD` process input source, `spawn -pty CMD` + the `send "text"` action (Expect-style automation of a PTY child). *(`.ps.sel` selection widget: ⬜)*
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
-6. ✅ Actors — Akka-style message-passing (§15): `actor NAME(state) { on MSG(p) { … reply EXPR } }` declarations compiled to `ActorDef`; a real runtime of one `mpsc`-mailbox OS thread per actor with *spawn* / *send* (tell) / *ask* (await reply) / supervised round-robin *pool* (respawns a dead worker); handler bodies run arb expressions (fusevm) over `state` + params + locals; and the `via NAME * N` pipeline op fans the stream across a pool in parallel (rayon), order preserved. *(imperative top-level `w = spawn`/`send w …` binding syntax: ⬜ — the stream-facing `via` is the shipped surface.)*
+6. ✅ Actors — Akka-style message-passing (§15): `actor NAME(state) { on MSG(p) { … reply EXPR } }` declarations compiled to `ActorDef`; a real runtime of one `mpsc`-mailbox OS thread per actor with *spawn* / *send* (tell) / *ask* (await reply) / supervised round-robin *pool* (respawns a dead worker); handler bodies run arb expressions (fusevm) over `state` + params + locals. Two surfaces: the `via NAME * N` pipeline op fans the stream across a pool in parallel (rayon), order preserved; and the session-ref surface — top-level `spawn NAME = ACTOR(init)` / `pool NAME = ACTOR * N` bindings, a `supervise NAME { on crash { restart \| stop } }` crash policy, and the `tell REF MSG(args)` / `ask .CTRL REF MSG(args)` bind/expect actions that drive them (interactive TUI).
 7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*
 8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). Diagnostics anchor to the offending verb even when nested inside a `source`/`out` body (not the enclosing directive). *(per-token argument precision — squiggle the `/re/` itself, not its verb — ⬜)*

@@ -612,6 +612,12 @@ seq 1 1000000 | arb -e 'actor sq(state) { on job(x) { reply x * x } }
                         out { in; via sq * 8 }'   # squared across 8 workers
 ```
 
+Two surfaces: the `via` pipeline op above (parallel stream fan-out), and
+**session refs** driven by events — `spawn NAME = ACTOR(init)` / `pool NAME =
+ACTOR * N` bindings with a `supervise NAME { on crash { restart | stop } }` crash
+policy, driven by `tell REF MSG(args)` (fire-and-forget) and `ask .CTRL REF
+MSG(args)` (reply → a control widget) bind/expect actions in the interactive TUI.
+
 **Planned** (specified in [`SPEC.md`](SPEC.md), not yet built) — native/cdylib
 packages and multi-version semver resolution for the registry (the git index,
 `arb publish`, install/search/update all ship), and the upstream-**command**

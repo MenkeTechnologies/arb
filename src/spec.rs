@@ -164,6 +164,17 @@ pub enum BindAction {
     /// Write text to a `spawn -pty` child's stdin — the Expect `send`. No-op
     /// unless the stream source is a PTY. Include `\n` to submit a line.
     Send(String),
+    /// `tell REF MSG(args)` — post a message to a session actor/pool, fire-and-
+    /// forget (SPEC §15). `call` is the raw `MSG(args)` text, parsed + evaluated
+    /// (with live control substitution) when the action fires.
+    ActorTell { refname: String, call: String },
+    /// `ask .CTRL REF MSG(args)` — ask a session actor/pool and store the reply
+    /// into control `ctrl` (so a widget bound to it shows the result).
+    ActorAsk {
+        ctrl: String,
+        refname: String,
+        call: String,
+    },
     /// Run several actions in order (block form `{ alert "x"; beep }`).
     Seq(Vec<BindAction>),
 }
@@ -300,10 +311,159 @@ fn parse_action(verb: &str, params: &[Arg]) -> Result<BindAction, String> {
                 .join(" ");
             Ok(BindAction::SetInput { name, value })
         }
+        "tell" => {
+            // `tell REF MSG(args)` — the message tell of the actor system (§15).
+            // `send` stays the Expect PTY action; `tell` avoids the collision.
+            let refname = params
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("tell: expected `tell REF MSG(args)`")?
+                .to_string();
+            let call = params[1..]
+                .iter()
+                .filter_map(Arg::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if call.trim().is_empty() {
+                return Err("tell: missing message (`tell REF MSG(args)`)".into());
+            }
+            // Validate the call shape now so a typo is a build error, not silent.
+            crate::actor::parse_call(&call)?;
+            Ok(BindAction::ActorTell { refname, call })
+        }
+        "ask" => {
+            // `ask .CTRL REF MSG(args)` — ask a ref, store the reply into control CTRL.
+            let ctrl = params
+                .first()
+                .and_then(Arg::as_str)
+                .ok_or("ask: expected `ask .CTRL REF MSG(args)`")?;
+            let ctrl = ctrl.strip_prefix('.').unwrap_or(ctrl).to_string();
+            let refname = params
+                .get(1)
+                .and_then(Arg::as_str)
+                .ok_or("ask: missing ref (`ask .CTRL REF MSG(args)`)")?
+                .to_string();
+            let call = params[2..]
+                .iter()
+                .filter_map(Arg::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if call.trim().is_empty() {
+                return Err("ask: missing message (`ask .CTRL REF MSG(args)`)".into());
+            }
+            crate::actor::parse_call(&call)?;
+            Ok(BindAction::ActorAsk {
+                ctrl,
+                refname,
+                call,
+            })
+        }
         other => Err(format!(
-            "unknown action `{other}` (set | quit | beep | alert | flash | exec)"
+            "unknown action `{other}` (set | quit | beep | alert | flash | exec | tell | ask)"
         )),
     }
+}
+
+/// Parse a `spawn NAME = ACTOR(init)` or `pool NAME = ACTOR * N` binding into a
+/// [`crate::actor::RefDecl`]. `verb` is `spawn`/`pool`; the actor must already be
+/// declared. Both forms share `NAME = RHS`; a `pool` (or `RHS` with `* N`) sets
+/// the pool width.
+fn parse_actor_ref(
+    verb: &str,
+    args: &[Arg],
+    actors: &BTreeMap<String, Arc<ActorDef>>,
+) -> Result<crate::actor::RefDecl, String> {
+    let name = args
+        .first()
+        .and_then(Arg::as_str)
+        .ok_or_else(|| format!("{verb}: expected `{verb} NAME = ACTOR…`"))?
+        .to_string();
+    if args.get(1).and_then(Arg::as_str) != Some("=") {
+        return Err(format!("{verb}: expected `=` (`{verb} NAME = ACTOR…`)"));
+    }
+    // RHS: `ACTOR(init)` and/or `* N`, joined so spaces don't matter.
+    let rhs = args[2..]
+        .iter()
+        .filter_map(Arg::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if rhs.trim().is_empty() {
+        return Err(format!("{verb}: missing actor (`{verb} {name} = ACTOR…`)"));
+    }
+    // Split off a `* N` pool width (from the verb or the RHS).
+    let (head, pool) = match rhs.split_once('*') {
+        Some((h, n)) => {
+            let n = n
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("{verb}: `* {}` is not a pool size", n.trim()))?;
+            (h.trim().to_string(), Some(n.min(1024)))
+        }
+        None => (rhs.trim().to_string(), None),
+    };
+    // `pool NAME = ACTOR` (no explicit `* N`) still means a pool — default width
+    // is filled in at spawn time (one per hardware thread) via `pool: Some(0)`.
+    let pool = match (verb, pool) {
+        (_, Some(n)) => Some(n),
+        ("pool", None) => Some(0),
+        _ => None,
+    };
+    // `head` is `ACTOR(init)` — reuse the actor-call splitter for name + init.
+    let (actor, init_exprs) = crate::actor::parse_call(&head)?;
+    if !actors.contains_key(&actor) {
+        return Err(format!(
+            "{verb}: no actor named `{actor}` in scope (declare `actor {actor}(state) {{ … }}` first)"
+        ));
+    }
+    // Initial state is a constant expression evaluated now (`worker(3)` -> 3).
+    let init = match init_exprs.as_slice() {
+        [] => 0.0,
+        [e] => crate::expr::eval(e, 0.0).unwrap_or(0.0),
+        _ => return Err(format!("{verb}: `{actor}(…)` takes a single init value")),
+    };
+    Ok(crate::actor::RefDecl {
+        name,
+        actor,
+        init,
+        pool,
+        restart: true,
+    })
+}
+
+/// Apply a `supervise NAME { on crash { restart | stop } }` policy to an already-
+/// declared ref: `stop` turns off respawn (fail-stop), `restart` (the default)
+/// leaves it on.
+fn apply_supervise(args: &[Arg], refs: &mut [crate::actor::RefDecl]) -> Result<(), String> {
+    let name = args
+        .first()
+        .and_then(Arg::as_str)
+        .ok_or("supervise: expected `supervise NAME { on crash { restart | stop } }`")?;
+    let body = match args.get(1) {
+        Some(Arg::Block(b)) => b,
+        _ => return Err("supervise: expected `{ on crash { restart | stop } }`".into()),
+    };
+    let decl = refs
+        .iter_mut()
+        .find(|r| r.name == name)
+        .ok_or_else(|| format!("supervise: no ref named `{name}` (spawn/pool it first)"))?;
+    for clause in body {
+        if clause.name != "on" || clause.args.first().and_then(Arg::as_str) != Some("crash") {
+            return Err("supervise: only `on crash { … }` is supported".into());
+        }
+        let policy = match clause.args.get(1) {
+            Some(Arg::Block(b)) => b
+                .first()
+                .map(|c| c.name.as_str())
+                .ok_or("supervise: `on crash { }` needs `restart` or `stop`")?,
+            _ => return Err("supervise: `on crash` needs a `{ restart | stop }` body".into()),
+        };
+        match policy {
+            "restart" => decl.restart = true,
+            "stop" => decl.restart = false,
+            other => return Err(format!("supervise: unknown crash policy `{other}` (restart | stop)")),
+        }
+    }
+    Ok(())
 }
 
 /// Parse a block-form action body (`{ alert "x"; beep; flash .w red }`) into a
@@ -371,6 +531,10 @@ pub struct Spec {
     /// `actor NAME(state) { on MSG { … } }` declarations, by name. A `via NAME`
     /// pipeline op resolves against this registry at build time (SPEC §15).
     pub actors: BTreeMap<String, Arc<ActorDef>>,
+    /// `spawn NAME = ACTOR(init)` / `pool NAME = ACTOR * N` session bindings, in
+    /// declaration order. The TUI spawns these once at startup; `tell`/`ask` bind
+    /// actions drive them (SPEC §15).
+    pub actor_refs: Vec<crate::actor::RefDecl>,
 }
 
 /// One in-language test case: feed `given` lines through the `run` pipeline
@@ -484,6 +648,13 @@ fn prefix_action(a: &mut BindAction, ns: &str) {
     match a {
         BindAction::SetInput { name, .. } => *name = prefix_name(name, ns),
         BindAction::Flash { widget, .. } => *widget = prefix_name(widget, ns),
+        // A module's `tell`/`ask` targets its own (now-namespaced) ref; `ask` also
+        // writes a namespaced control.
+        BindAction::ActorTell { refname, .. } => *refname = prefix_name(refname, ns),
+        BindAction::ActorAsk { ctrl, refname, .. } => {
+            *ctrl = prefix_name(ctrl, ns);
+            *refname = prefix_name(refname, ns);
+        }
         BindAction::Seq(v) => v.iter_mut().for_each(|x| prefix_action(x, ns)),
         _ => {}
     }
@@ -518,6 +689,12 @@ fn prefix_spec(sub: &mut Spec, ns: &str) {
     if let Some(out) = &mut sub.out {
         prefix_pipeline(out, ns);
     }
+    // Session refs: namespace the binding name and the actor it runs, so `.ns.w`
+    // is distinct and its (also-prefixed) actor resolves after merge.
+    for r in &mut sub.actor_refs {
+        r.name = prefix_name(&r.name, ns);
+        r.actor = prefix_name(&r.actor, ns);
+    }
 }
 
 /// Merge a namespaced module Spec into `dst`.
@@ -535,6 +712,8 @@ fn merge_spec(dst: &mut Spec, src: Spec, ns: &str) -> Result<(), String> {
     for (name, def) in src.actors {
         dst.actors.insert(prefix_name(&name, ns), def);
     }
+    // Session refs already namespaced by `prefix_spec`; carry them over.
+    dst.actor_refs.extend(src.actor_refs);
     if let Some(out) = src.out {
         if dst.out.is_some() {
             return Err(format!(
@@ -749,6 +928,21 @@ fn build_into(
                 };
                 let tc = parse_test_case(name, body, &spec.actors)?;
                 spec.tests.push(tc);
+            } else if c.name == "spawn" && c.args.get(1).and_then(Arg::as_str) == Some("=") {
+                // `spawn NAME = ACTOR(init)` — a session actor binding (§15),
+                // distinct from the `spawn CMD` process source (disambiguated by
+                // the `=` second token). `tell`/`ask` drive it.
+                let decl = parse_actor_ref(&c.name, &c.args, &spec.actors)?;
+                spec.actor_refs.push(decl);
+            } else if c.name == "pool" {
+                // `pool NAME = ACTOR * N` — a supervised session pool binding.
+                let decl = parse_actor_ref(&c.name, &c.args, &spec.actors)?;
+                spec.actor_refs.push(decl);
+            } else if c.name == "supervise" {
+                // `supervise NAME { on crash { restart | stop } }` — set a ref's
+                // restart policy. Default is restart (respawn a dead worker); a
+                // `stop` clause makes the pool fail-stop.
+                apply_supervise(&c.args, &mut spec.actor_refs)?;
             } else if c.name == "spawn" {
                 // `spawn CMD…` or `spawn { CMD }`: launch CMD via `sh -c` and use
                 // its stdout as the stream (input source, in place of stdin). A
