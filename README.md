@@ -569,8 +569,21 @@ the terminal or the browser) is complete:
   lists); `input`/`filter` fields, a `slider`, a `check` toggle, a `facet`
   multi-select, `select` (an fzf-style fuzzy picker), and `sel` (an in-dashboard
   selection list whose highlighted row is published as `.<path>.sel`) are
-  interactive controls. Auto-layout by default, `grid` (with
-  `-span`/`-rowspan`/`-colspan`) to override, per-widget `-color`.
+  interactive controls.
+- **Layout** — auto-tile (`layout horizontal`/`vertical`) or a proportional
+  `grid`: `rows "1 2 1"` / `cols "20 * 2*"` (fixed / percentage / weighted
+  tracks), `gap N`, `-span`/`-rowspan`/`-colspan` to merge cells.
+- **Themes** — an always-on color-theme system of 31 palettes ported from the
+  sibling `iftoprs`/`htoprs` apps (plus `theme custom c1..c6`); default
+  `neon-sprawl`, global default in `~/.arb/config.toml` (`arb --set-theme`),
+  per-run `--theme`, `arb --list-themes`. A themed dashboard recolors from the
+  palette (per-widget slots by kind); `-color <slot>` / `-color green` per widget.
+- **Actors** — `actor NAME(state) { on MSG(p) { … reply EXPR } }` over an
+  `mpsc`-mailbox thread-per-actor runtime; a `via NAME * N` pipeline op fans the
+  stream across a supervised pool in parallel, and session refs
+  (`spawn`/`pool`/`supervise`) are driven by `tell`/`ask` bind/expect actions.
+- **Inline Rust FFI** — `rust { pub extern "C" fn … }` blocks compile to a cached
+  cdylib (via `fusevm`) and are callable by name from the expression layer.
 - **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
   [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
 - **Megafilter/map** — `out { … }` shapes the downstream passthrough, driven by
