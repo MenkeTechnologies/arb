@@ -537,6 +537,12 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
 /// the pipeline: the caller tees stdin→stdout live in a separate thread while
 /// this loop draws. The terminal is always restored (raw mode off, alternate
 /// screen left, cursor shown) before returning, even on a draw error.
+/// One fzf candidate: `(display, search_key, original)`, all `Arc<str>` so the
+/// identity projection shares a single allocation across the three handles.
+type FzfCand = (Arc<str>, Arc<str>, Arc<str>);
+/// A scored candidate: `(score, display, search_key, original)`.
+type FzfHit = (i32, Arc<str>, Arc<str>, Arc<str>);
+
 pub fn run(
     spec: &Spec,
     state: Arc<Mutex<StreamState>>,
@@ -599,12 +605,18 @@ pub fn run(
     // key drives fuzzy match, the display renders, the original is emitted. Empty
     // filter appends in stream order; a real filter accumulates scored hits,
     // re-sorted on a short debounce.
-    let mut fzf_cands: Vec<(String, String, String)> = Vec::new(); // (display, key, original)
+    // Lines are shared as `Arc<str>` — for the common identity projection (no
+    // `search`/projection, e.g. `find / | arb --fzf`) display == key == original
+    // is ONE allocation shared by three cheap refcount handles, and the match /
+    // hit / display vecs clone pointers, not strings. Without this a fast producer
+    // allocated the line 6× per frame and pegged the allocator (visible lag).
+    // (display, key, original) and its scored form (score, display, key, original).
+    let mut fzf_cands: Vec<FzfCand> = Vec::new();
     let mut fzf_raw_done = 0usize; // raw stream lines already projected
     let mut fzf_filter = String::from("\u{0}"); // sentinel: forces initial reset
     let mut fzf_processed = 0usize; // candidates already scored
-    let mut fzf_hits: Vec<(i32, String, String, String)> = Vec::new(); // (score, display, key, original)
-    let mut fzf_matched: Vec<(String, String)> = Vec::new(); // display list (display, original)
+    let mut fzf_hits: Vec<FzfHit> = Vec::new();
+    let mut fzf_matched: Vec<(Arc<str>, Arc<str>)> = Vec::new(); // display list (display, original)
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
     // `expect /re/ …` reactions: total stream lines already checked against the
     // patterns. Tracked by `total` (lines-ever), not a deque index, because the
@@ -721,19 +733,34 @@ pub fn run(
                 // each carrying that raw line as its emit-original. The search key
                 // is derived per raw line (shared across its display rows); with no
                 // `search` pipeline it defaults to the display so match == what you see.
-                for i in fzf_raw_done..st.lines.len() {
+                //
+                // Cap the batch so a firehose producer (`find /`) can't make one
+                // frame do unbounded work while holding the stream lock — the rest
+                // ingests over the next frames, keeping the UI responsive.
+                const MAX_INGEST_PER_FRAME: usize = 50_000;
+                let ingest_end = st.lines.len().min(fzf_raw_done + MAX_INGEST_PER_FRAME);
+                for i in fzf_raw_done..ingest_end {
                     let raw = &st.lines[i];
-                    let key = if search_proj.is_empty() {
+                    // Identity fast-path (no projection, no search key): the whole
+                    // line is display, key and original at once — one allocation.
+                    if proj.is_empty() && search_proj.is_empty() {
+                        let a: Arc<str> = Arc::from(raw.as_str());
+                        fzf_cands.push((a.clone(), a.clone(), a));
+                        continue;
+                    }
+                    let orig: Arc<str> = Arc::from(raw.as_str());
+                    let key: Option<Arc<str>> = if search_proj.is_empty() {
                         None
                     } else {
-                        Some(project_line(&search_proj, raw).join(" "))
+                        Some(Arc::from(project_line(&search_proj, raw).join(" ").as_str()))
                     };
                     for disp in project_line(&proj, raw) {
-                        let k = key.clone().unwrap_or_else(|| disp.clone());
-                        fzf_cands.push((disp, k, raw.clone()));
+                        let d: Arc<str> = Arc::from(disp.as_str());
+                        let k = key.clone().unwrap_or_else(|| d.clone());
+                        fzf_cands.push((d, k, orig.clone()));
                     }
                 }
-                fzf_raw_done = st.lines.len();
+                fzf_raw_done = ingest_end;
                 let n = fzf_cands.len();
                 let empty = filter.is_empty();
                 if filter != fzf_filter {
@@ -802,16 +829,16 @@ pub fn run(
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
             // what would be emitted, not the projected display.
-            c.current = matched.get(sel).map(|(_, o)| o.clone()).unwrap_or_default();
+            c.current = matched.get(sel).map(|(_, o)| o.to_string()).unwrap_or_default();
             if c.toggle {
                 // Tab: toggle the cursor line's original in the mark set, advance.
                 c.toggle = false;
                 if let Some((_, orig)) = matched.get(sel) {
-                    match c.marks.iter().position(|m| m == orig) {
+                    match c.marks.iter().position(|m| m.as_str() == orig.as_ref()) {
                         Some(pos) => {
                             c.marks.remove(pos);
                         }
-                        None => c.marks.push(orig.clone()),
+                        None => c.marks.push(orig.to_string()),
                     }
                 }
                 c.cursor = c.cursor.saturating_add(1);
@@ -821,7 +848,7 @@ pub fn run(
                 c.result = if c.marks.is_empty() {
                     matched
                         .get(sel)
-                        .map(|(_, o)| o.clone())
+                        .map(|(_, o)| o.to_string())
                         .into_iter()
                         .collect()
                 } else {
@@ -1949,7 +1976,7 @@ pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
 #[allow(clippy::too_many_arguments)]
 fn render_fzf(
     f: &mut Frame,
-    matched: &[(String, String)],
+    matched: &[(Arc<str>, Arc<str>)],
     filter: &str,
     sel: usize,
     marks: &[String],
@@ -2040,7 +2067,7 @@ fn render_fzf(
                 disp,
                 filter,
                 inner_w,
-                mark_set.contains(orig.as_str()),
+                mark_set.contains(orig.as_ref()),
             ))
         })
         .collect();
