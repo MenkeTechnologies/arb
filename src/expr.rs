@@ -11,7 +11,7 @@
 //! boolean; `eval_pred` reads the result via `Value::is_truthy` for `where`.
 
 use fusevm::vm::{VMResult, VM};
-use fusevm::{ChunkBuilder, Op};
+use fusevm::{ChunkBuilder, Op, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinOp {
@@ -53,6 +53,12 @@ pub enum Expr {
     Neg(Box<Expr>),
     /// Logical negation: truthy input -> 0, falsy -> 1.
     Not(Box<Expr>),
+    /// `name(arg, …)` — a call to an inline-Rust FFI export registered by a
+    /// `rust { ... }` block. Numeric-only: each arg is evaluated to an f64 and
+    /// marshaled as a `fusevm::Value::float`; the export's return is read back as
+    /// an f64. An unregistered name (or a failed call) evaluates to NaN, so a
+    /// comparison against it is simply false.
+    Call(String, Vec<Expr>),
     /// Membership: `left in [a, b, c]` — truthy iff `left` equals any element
     /// (jq `IN`). Empty list is always falsy.
     InList(Box<Expr>, Vec<Expr>),
@@ -90,6 +96,7 @@ pub fn control_names(e: &Expr, out: &mut Vec<String>) {
         Expr::Control(n) => out.push(n.clone()),
         Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
         Expr::Neg(a) | Expr::Not(a) | Expr::Match(a) | Expr::InSet(_, a) => control_names(a, out),
+        Expr::Call(_, items) => items.iter().for_each(|it| control_names(it, out)),
         Expr::InList(l, items) => {
             control_names(l, out);
             items.iter().for_each(|it| control_names(it, out));
@@ -127,6 +134,9 @@ pub fn control_names_typed(e: &Expr, num: &mut Vec<String>, strv: &mut Vec<Strin
         }
         Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
         Expr::Neg(a) | Expr::Not(a) => control_names_typed(a, num, strv),
+        Expr::Call(_, items) => items
+            .iter()
+            .for_each(|it| control_names_typed(it, num, strv)),
         Expr::InList(l, items) => {
             control_names_typed(l, num, strv);
             items
@@ -157,6 +167,9 @@ pub fn expr_has_str(e: &Expr) -> bool {
         Expr::Match(_) | Expr::InSet(..) | Expr::Str(_) => true,
         Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Control(_) => false,
         Expr::Neg(a) | Expr::Not(a) => expr_has_str(a),
+        // A Call yields an f64; numeric-only args carry no string predicate, but
+        // recurse for consistency with every other compound node.
+        Expr::Call(_, items) => items.iter().any(expr_has_str),
         Expr::InList(l, items) => expr_has_str(l) || items.iter().any(expr_has_str),
         Expr::InRange(l, lo, hi) => expr_has_str(l) || expr_has_str(lo) || expr_has_str(hi),
         Expr::Cond(a, b, c) => expr_has_str(a) || expr_has_str(b) || expr_has_str(c),
@@ -171,6 +184,7 @@ pub fn prefix_controls(e: &mut Expr, ns: &str) {
         Expr::Control(n) => *n = format!("{ns}.{n}"),
         Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => {}
         Expr::Neg(a) | Expr::Not(a) | Expr::Match(a) | Expr::InSet(_, a) => prefix_controls(a, ns),
+        Expr::Call(_, items) => items.iter_mut().for_each(|it| prefix_controls(it, ns)),
         Expr::InList(l, items) => {
             prefix_controls(l, ns);
             items.iter_mut().for_each(|it| prefix_controls(it, ns));
@@ -216,6 +230,13 @@ pub fn substitute_controls(
         Expr::Match(inner) => Expr::Match(sub_str(inner)),
         Expr::InSet(field, inner) => Expr::InSet(field.clone(), sub_str(inner)),
         Expr::Num(_) | Expr::Var | Expr::Field(_) | Expr::Str(_) => e.clone(),
+        Expr::Call(name, items) => Expr::Call(
+            name.clone(),
+            items
+                .iter()
+                .map(|it| substitute_controls(it, num, strv))
+                .collect(),
+        ),
         Expr::Neg(a) => Expr::Neg(sub(a)),
         Expr::Not(a) => Expr::Not(sub(a)),
         Expr::InList(l, items) => Expr::InList(
@@ -263,6 +284,26 @@ pub fn eval_pred_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<
     }
 }
 
+/// Evaluate a `name(args)` inline-Rust FFI call at lowering time: resolve each
+/// argument to an f64 on the same VM, marshal it as a `fusevm::Value::float`
+/// (fusevm coerces to the export's `i64`/`f64` signature), dispatch to the
+/// registered export, and read the return back as an f64. An unregistered name
+/// or a failed call yields NaN — the same way an unresolved control degrades —
+/// so the emitter can bake the result in as a constant without a fallible path.
+fn eval_call(name: &str, args: &[Expr], x: f64, resolve: &dyn Fn(&str) -> f64) -> f64 {
+    if !fusevm::ffi::is_registered(name) {
+        return f64::NAN;
+    }
+    let vals: Vec<Value> = args
+        .iter()
+        .map(|a| Value::float(eval_ctx(a, x, resolve).unwrap_or(f64::NAN)))
+        .collect();
+    match fusevm::ffi::try_call(name, &vals) {
+        Some(Ok(v)) => v.to_float(),
+        _ => f64::NAN,
+    }
+}
+
 fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
     match e {
         Expr::Num(n) => {
@@ -285,6 +326,11 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
         // stray numeric use degrades gracefully instead of panicking.
         Expr::Str(_) | Expr::Match(_) | Expr::InSet(..) => {
             b.emit(Op::LoadFloat(0.0), 0);
+        }
+        // An FFI call can't run inside fusevm bytecode, so evaluate it now and
+        // bake the resulting f64 in as a constant.
+        Expr::Call(name, args) => {
+            b.emit(Op::LoadFloat(eval_call(name, args, x, resolve)), 0);
         }
         Expr::Neg(a) => {
             emit(a, x, resolve, b);
@@ -647,6 +693,12 @@ impl Parser {
                     self.i += 1;
                     return Ok(Expr::Match(Box::new(inner)));
                 }
+                // `name(arg, …)` — an inline-Rust FFI call. Any other identifier
+                // immediately followed by `(` was previously a parse error, so
+                // this grammar addition is purely additive.
+                if self.peek() == Some('(') {
+                    return self.call(name);
+                }
                 Ok(if name == "x" {
                     Expr::Var
                 } else {
@@ -674,6 +726,26 @@ impl Parser {
             self.i += 1;
         }
         self.c[start..self.i].iter().collect()
+    }
+
+    /// Parse the argument list of a `name(arg, …)` FFI call — the leading `(` is
+    /// the next char. Each argument is a full expression; `,` separates and `)`
+    /// closes. A zero-arg call `name()` is allowed.
+    fn call(&mut self, name: String) -> Result<Expr, String> {
+        self.i += 1; // consume '('
+        let mut args = Vec::new();
+        if self.peek() != Some(')') {
+            loop {
+                args.push(self.ternary()?);
+                match self.peek() {
+                    Some(',') => self.i += 1,
+                    Some(')') => break,
+                    _ => return Err(format!("calc: expected `,` or `)` in call to `{name}`")),
+                }
+            }
+        }
+        self.i += 1; // consume ')'
+        Ok(Expr::Call(name, args))
     }
 
     fn number(&mut self) -> Result<Expr, String> {

@@ -34,7 +34,7 @@ path = "src/bin/gen_docs.rs"
 # arb's computational core executes on fusevm: expressions lower to a
 # fusevm::Chunk and run on the VM, with the three-tier Cranelift JIT for hot
 # chunks. Same engine as the sibling frontends (zshrs/stryke/rubyrs/…).
-fusevm = { version = "0.14.10", features = ["jit"] }
+fusevm = { version = "0.14.11", features = ["jit", "ffi"] }
 ratatui = "0.29"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1"

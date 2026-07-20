@@ -12,9 +12,12 @@ use crate::lexer::{lex, Tok};
 /// depth guard). 256 is far above any legitimate spec.
 const MAX_BLOCK_DEPTH: usize = 256;
 
-/// Parse spec source into a command tree.
+/// Parse spec source into a command tree. Inline `rust { ... }` FFI blocks are
+/// desugared to `__rust_compile "<b64>" LINE` commands before lexing (a no-op
+/// when the source has no `rust` keyword).
 pub fn parse(src: &str) -> Result<Vec<Command>, SpecError> {
-    parse_at(src, 0, 0)
+    let desugared = crate::rust_ffi::desugar(src);
+    parse_at(&desugared, 0, 0)
 }
 
 /// Parse `src`, treating its offsets as `base`-relative in the whole document

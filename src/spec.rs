@@ -799,6 +799,17 @@ fn build_into(
                 // fans the stream across a pool of it.
                 let def = crate::actor::parse_actor(&c.args)?;
                 spec.actors.insert(def.name.clone(), Arc::new(def));
+            } else if c.name == "__rust_compile" {
+                // Desugared `rust { ... }` block (see `rust_ffi`): compile the
+                // base64 body to a cached cdylib and register its exports, so a
+                // later `name(args)` call in a where/map/calc expression resolves.
+                // Runs at build time, before any render-time expression eval.
+                let b64 = c
+                    .args
+                    .first()
+                    .and_then(Arg::as_str)
+                    .ok_or("__rust_compile: missing block body")?;
+                fusevm::ffi::compile_and_register(b64).map_err(crate::err::SpecError::from)?;
             } else if let Some(kind) = WidgetKind::from(&c.name) {
                 let path = c
                     .args

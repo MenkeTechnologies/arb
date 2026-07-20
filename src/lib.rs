@@ -24,6 +24,7 @@ pub mod pkg;
 pub mod pty;
 pub mod query;
 pub mod repl;
+pub mod rust_ffi;
 pub mod serve;
 pub mod sniff;
 pub mod spec;
