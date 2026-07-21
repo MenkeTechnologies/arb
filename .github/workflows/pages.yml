@@ -19,7 +19,7 @@ permissions:
 
 # One Pages deployment at a time; let an in-flight deploy finish.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
