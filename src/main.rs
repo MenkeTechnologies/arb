@@ -602,7 +602,8 @@ fn main() -> io::Result<()> {
         // No `--theme`: keep an explicit spec directive / `theme off`, else apply
         // the global config default (or the baked default) so presets are themed.
         None if !spec.theme_off && spec.theme.is_none() => {
-            spec.theme = Some(arb::theme::config_default().unwrap_or_else(arb::theme::default_palette));
+            spec.theme =
+                Some(arb::theme::config_default().unwrap_or_else(arb::theme::default_palette));
         }
         None => {}
     }
@@ -1245,7 +1246,11 @@ fn dump_bytecode(cli: &Cli) -> Result<(), String> {
     for w in &spec.widgets {
         match &w.source {
             Some(s) => println!("== {} ({}) ==\n{:#?}", w.path, w.kind.label(), s.pipeline),
-            None => println!("== {} ({}) ==\n(no source pipeline)", w.path, w.kind.label()),
+            None => println!(
+                "== {} ({}) ==\n(no source pipeline)",
+                w.path,
+                w.kind.label()
+            ),
         }
     }
     Ok(())

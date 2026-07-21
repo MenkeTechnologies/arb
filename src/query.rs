@@ -153,7 +153,7 @@ pub enum QueryOp {
     Under(f64),
     /// Keep numeric lines x where lo <= x <= hi (inclusive); non-numeric lines are dropped.
     Between(f64, f64),
-    /// Prefix each line with its 1-based index and a tab: "1\t<line>".
+    /// Prefix each line with its 1-based index and a tab: `"1\t<line>"`.
     Enumerate,
     /// Split each line on whitespace and emit one word per line (flatten); empty lines produce nothing.
     Words,
@@ -1798,13 +1798,13 @@ fn field_num(line: &str, name: &str) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
-/// Public wrapper for [`field_str`] — used by the TUI facet control to derive
+/// Public wrapper for `field_str` — used by the TUI facet control to derive
 /// candidate values from a stream field.
 pub fn field_str_pub(line: &str, name: &str) -> String {
     field_str(line, name)
 }
 
-/// Public wrapper for [`field_num`] — used by the DAP `evaluate` request to
+/// Public wrapper for `field_num` — used by the DAP `evaluate` request to
 /// resolve `.field` references against the paused stream line (same resolver the
 /// per-line `where`/`map` evaluation uses).
 pub fn field_num_pub(line: &str, name: &str) -> f64 {

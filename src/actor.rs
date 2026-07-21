@@ -82,7 +82,10 @@ pub fn parse_actor(args: &[crate::ast::Arg]) -> Result<ActorDef, String> {
     let mut handlers = Vec::new();
     for c in block {
         if c.name != "on" {
-            return Err(format!("actor: expected `on MSG {{ … }}`, got `{}`", c.name));
+            return Err(format!(
+                "actor: expected `on MSG {{ … }}`, got `{}`",
+                c.name
+            ));
         }
         let sig = c
             .args
@@ -161,7 +164,10 @@ fn parse_body(cmds: &[crate::ast::Command]) -> Result<Vec<Stmt>, String> {
             // word. Split at the first `=`; the RHS continues with any later args.
             let var = lhs.trim();
             if var.is_empty() || !var.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
-                return Err(format!("actor: `{}` is not a valid assignment target", c.name));
+                return Err(format!(
+                    "actor: `{}` is not a valid assignment target",
+                    c.name
+                ));
             }
             let mut expr = rhs.trim().to_string();
             for a in &c.args {
@@ -668,7 +674,8 @@ mod tests {
     #[test]
     fn parses_header_and_handlers() {
         // Handlers are separated like every other verb — by newline or `;`.
-        let d = def("actor worker(state) {\n on job(x) { reply x * 2 }\n on reset { state = 0 }\n }");
+        let d =
+            def("actor worker(state) {\n on job(x) { reply x * 2 }\n on reset { state = 0 }\n }");
         assert_eq!(d.name, "worker");
         assert_eq!(d.state_param.as_deref(), Some("state"));
         assert_eq!(d.handlers.len(), 2);
@@ -852,19 +859,24 @@ bind C-a ask .out p job(.th)\n";
         let sp = spec::build(&parse(src).unwrap()).unwrap();
         assert_eq!(sp.actor_refs.len(), 2);
         let w = &sp.actor_refs[0];
-        assert_eq!((w.name.as_str(), w.actor.as_str(), w.init, w.pool), ("w", "worker", 3.0, None));
+        assert_eq!(
+            (w.name.as_str(), w.actor.as_str(), w.init, w.pool),
+            ("w", "worker", 3.0, None)
+        );
         let p = &sp.actor_refs[1];
         assert_eq!((p.name.as_str(), p.pool, p.restart), ("p", Some(4), false)); // stop policy
-        // The two binds carry the actor actions.
+                                                                                 // The two binds carry the actor actions.
         let tell = sp.binds.iter().find_map(|b| match &b.action {
             BindAction::ActorTell { refname, call } => Some((refname.clone(), call.clone())),
             _ => None,
         });
         assert_eq!(tell, Some(("w".to_string(), "job(5)".to_string())));
         let ask = sp.binds.iter().find_map(|b| match &b.action {
-            BindAction::ActorAsk { ctrl, refname, call } => {
-                Some((ctrl.clone(), refname.clone(), call.clone()))
-            }
+            BindAction::ActorAsk {
+                ctrl,
+                refname,
+                call,
+            } => Some((ctrl.clone(), refname.clone(), call.clone())),
             _ => None,
         });
         assert_eq!(

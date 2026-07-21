@@ -23,8 +23,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Points};
 use ratatui::widgets::calendar::{CalendarEventStore, Monthly};
+use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Points};
 use ratatui::widgets::{
     Axis, BarChart, Block, Borders, Cell, Chart, Clear, Dataset, Gauge, GraphType, LineGauge, List,
     ListItem, ListState, Paragraph, RatatuiLogo, Row, Scrollbar, ScrollbarOrientation,
@@ -805,7 +805,9 @@ pub fn run(
                     let key: Option<Arc<str>> = if search_proj.is_empty() {
                         None
                     } else {
-                        Some(Arc::from(project_line(&search_proj, raw).join(" ").as_str()))
+                        Some(Arc::from(
+                            project_line(&search_proj, raw).join(" ").as_str(),
+                        ))
                     };
                     for disp in project_line(&proj, raw) {
                         let d: Arc<str> = Arc::from(disp.as_str());
@@ -882,7 +884,10 @@ pub fn run(
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
             // what would be emitted, not the projected display.
-            c.current = matched.get(sel).map(|(_, o)| o.to_string()).unwrap_or_default();
+            c.current = matched
+                .get(sel)
+                .map(|(_, o)| o.to_string())
+                .unwrap_or_default();
             if c.toggle {
                 // Tab: toggle the cursor line's original in the mark set, advance.
                 c.toggle = false;
@@ -1906,11 +1911,7 @@ fn render_input(f: &mut Frame, area: Rect, w: &Widget, val: &str, focused: bool,
         .or_else(|| w.opts.get("placeholder"))
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
-    let border = if focused {
-        accent
-    } else {
-        Color::DarkGray
-    };
+    let border = if focused { accent } else { Color::DarkGray };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -1952,11 +1953,7 @@ fn render_control(
         .or_else(|| w.opts.get("title"))
         .map(String::as_str)
         .unwrap_or_else(|| w.path.trim_start_matches('.'));
-    let border = if focused {
-        accent
-    } else {
-        Color::DarkGray
-    };
+    let border = if focused { accent } else { Color::DarkGray };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -1999,9 +1996,7 @@ fn render_control(
                         "[ ] "
                     };
                     let style = if focused && i == meta.cursor {
-                        Style::default()
-                            .fg(accent)
-                            .add_modifier(Modifier::REVERSED)
+                        Style::default().fg(accent).add_modifier(Modifier::REVERSED)
                     } else {
                         Style::default()
                     };
@@ -2107,7 +2102,11 @@ fn fzf_line(
         let h = pos.contains(&i);
         if h != cur_hl && !cur.is_empty() {
             let s = std::mem::take(&mut cur);
-            spans.push(if cur_hl { Span::styled(s, hl) } else { base_span(s) });
+            spans.push(if cur_hl {
+                Span::styled(s, hl)
+            } else {
+                base_span(s)
+            });
         }
         cur_hl = h;
         cur.push(ch);
@@ -2497,7 +2496,10 @@ fn theme_picker_accept(c: &mut Controls) {
     set_live_theme(c, c.theme_picker_sel);
     let name = crate::theme::THEMES[c.theme_idx].0;
     let _ = crate::theme::set_config_default(name);
-    c.alert = Some((format!("theme: {name}"), Instant::now() + Duration::from_secs(2)));
+    c.alert = Some((
+        format!("theme: {name}"),
+        Instant::now() + Duration::from_secs(2),
+    ));
     c.theme_picker_open = false;
 }
 
@@ -2761,7 +2763,13 @@ fn render_widget(
             let start = series.len().saturating_sub(cap);
             let data: Vec<u64> = series[start..]
                 .iter()
-                .map(|v| if v.is_finite() && *v > 0.0 { *v as u64 } else { 0 })
+                .map(|v| {
+                    if v.is_finite() && *v > 0.0 {
+                        *v as u64
+                    } else {
+                        0
+                    }
+                })
                 .collect();
             let sp = Sparkline::default()
                 .block(block)
@@ -2809,10 +2817,7 @@ fn render_widget(
             // `YYYY-MM-DD` anywhere in a stream line are highlighted (activity).
             let today = time::OffsetDateTime::now_utc().date();
             let mut events = CalendarEventStore::default();
-            events.add(
-                today,
-                Style::default().fg(Color::Black).bg(accent),
-            );
+            events.add(today, Style::default().fg(Color::Black).bg(accent));
             for d in stream_event_dates(lines) {
                 if d != today {
                     events.add(d, Style::default().fg(accent).add_modifier(Modifier::BOLD));
@@ -2874,9 +2879,11 @@ fn render_widget(
                 Some(QueryResult::Scalar(v)) => vec![*v],
                 None => crate::query::numeric_series(lines),
             };
-            let (min, max) = series.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
-                (a.min(v), b.max(v))
-            });
+            let (min, max) = series
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+                    (a.min(v), b.max(v))
+                });
             let span = (max - min).max(f64::MIN_POSITIVE);
             let cols = (inner_w / 2).max(1);
             let rows: Vec<Line> = series
@@ -2886,7 +2893,11 @@ fn render_widget(
                         chunk
                             .iter()
                             .map(|&v| {
-                                let t = if min.is_finite() { (v - min) / span } else { 0.0 };
+                                let t = if min.is_finite() {
+                                    (v - min) / span
+                                } else {
+                                    0.0
+                                };
                                 Span::styled("  ", Style::default().bg(heat_color(t, theme)))
                             })
                             .collect::<Vec<_>>(),
@@ -2909,7 +2920,11 @@ fn render_widget(
                 width: area.width.saturating_sub(2),
                 height: area.height.saturating_sub(2),
             };
-            for (i, (rect, (label, val))) in treemap_rects(inner, &pairs).into_iter().zip(pairs.iter()).enumerate() {
+            for (i, (rect, (label, val))) in treemap_rects(inner, &pairs)
+                .into_iter()
+                .zip(pairs.iter())
+                .enumerate()
+            {
                 let col = slot_by_index(i, theme, accent);
                 let body = format!("{label} {val}");
                 f.render_widget(
@@ -2932,8 +2947,14 @@ fn render_widget(
                     Some((label, s, e.max(s)))
                 })
                 .collect();
-            let lo = bars.iter().map(|(_, s, _)| *s).fold(f64::INFINITY, f64::min);
-            let hi = bars.iter().map(|(_, _, e)| *e).fold(f64::NEG_INFINITY, f64::max);
+            let lo = bars
+                .iter()
+                .map(|(_, s, _)| *s)
+                .fold(f64::INFINITY, f64::min);
+            let hi = bars
+                .iter()
+                .map(|(_, _, e)| *e)
+                .fold(f64::NEG_INFINITY, f64::max);
             let span = (hi - lo).max(f64::MIN_POSITIVE);
             let label_w = 12usize.min(inner_w / 2);
             let track = inner_w.saturating_sub(label_w + 1);
@@ -2951,7 +2972,10 @@ fn render_widget(
                     let len = ((((e - s) / span) * track as f64) as usize).max(1);
                     let bar = " ".repeat(off) + &"█".repeat(len.min(track.saturating_sub(off)));
                     Line::from(vec![
-                        Span::styled(format!("{:<label_w$} ", clip(label, label_w)), Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            format!("{:<label_w$} ", clip(label, label_w)),
+                            Style::default().fg(Color::Gray),
+                        ),
                         Span::styled(bar, Style::default().fg(slot_by_index(i, theme, accent))),
                     ])
                 })
@@ -3097,7 +3121,14 @@ fn render_widget(
 /// Draw a vertical scrollbar (ratatui `Scrollbar`) on the right border of a
 /// scrollable list widget — only when the content overflows the viewport. `pos`
 /// is the topmost visible row; the thumb tracks it. A no-op when everything fits.
-fn render_scrollbar(f: &mut Frame, area: Rect, content: usize, visible: usize, pos: usize, accent: Color) {
+fn render_scrollbar(
+    f: &mut Frame,
+    area: Rect,
+    content: usize,
+    visible: usize,
+    pos: usize,
+    accent: Color,
+) {
     if content <= visible || area.height < 3 {
         return;
     }
@@ -3183,11 +3214,19 @@ fn treemap_rects(area: Rect, pairs: &[(String, u64)]) -> Vec<Rect> {
         if rem.width >= rem.height {
             let cw = ((rem.width as f64 * frac).round() as u16).clamp(1, rem.width);
             out.push(Rect { width: cw, ..rem });
-            rem = Rect { x: rem.x + cw, width: rem.width - cw, ..rem };
+            rem = Rect {
+                x: rem.x + cw,
+                width: rem.width - cw,
+                ..rem
+            };
         } else {
             let ch = ((rem.height as f64 * frac).round() as u16).clamp(1, rem.height);
             out.push(Rect { height: ch, ..rem });
-            rem = Rect { y: rem.y + ch, height: rem.height - ch, ..rem };
+            rem = Rect {
+                y: rem.y + ch,
+                height: rem.height - ch,
+                ..rem
+            };
         }
         rem_total = rem_total.saturating_sub(*v);
     }
@@ -3281,7 +3320,12 @@ mod tests {
         use crate::spec::{parse_tracks, Track};
         assert_eq!(
             parse_tracks("20c * 2* 30%").unwrap(),
-            vec![Track::Length(20), Track::Fill(1), Track::Fill(2), Track::Percentage(30)]
+            vec![
+                Track::Length(20),
+                Track::Fill(1),
+                Track::Fill(2),
+                Track::Percentage(30)
+            ]
         );
         assert!(parse_tracks("").is_err());
         assert!(parse_tracks("bogus").is_err());
@@ -4041,10 +4085,16 @@ mod tests {
         assert_eq!(resolve_accent(None, th), Color::Indexed(231));
         // A palette slot resolves through the theme.
         assert_eq!(resolve_accent(Some("dim"), th), Color::Indexed(57)); // c5
-        // A fixed semantic name is theme-independent (green hex, not a slot).
-        assert_eq!(resolve_accent(Some("green"), th), super::hex_color("#00e676"));
+                                                                         // A fixed semantic name is theme-independent (green hex, not a slot).
+        assert_eq!(
+            resolve_accent(Some("green"), th),
+            super::hex_color("#00e676")
+        );
         // No theme, no color -> classic cyan default (backward compatible).
-        assert_eq!(resolve_accent(None, None), super::hex_color(crate::spec::color_hex(None)));
+        assert_eq!(
+            resolve_accent(None, None),
+            super::hex_color(crate::spec::color_hex(None))
+        );
     }
 
     #[test]
@@ -4077,7 +4127,10 @@ mod tests {
     fn theme_custom_and_unknown() {
         // `theme custom c1..c6` builds a palette from six indices.
         let sp = build(&parse("theme custom 1 2 3 4 5 6\ntext .t <- in").unwrap()).unwrap();
-        assert_eq!(sp.theme.map(|p| p.accent()), Some(ratatui::style::Color::Indexed(2)));
+        assert_eq!(
+            sp.theme.map(|p| p.accent()),
+            Some(ratatui::style::Color::Indexed(2))
+        );
         // An unknown theme name is a build error.
         assert!(build(&parse("theme bogus\ntext .t <- in").unwrap()).is_err());
         // `theme custom` with the wrong count of indices errors.
@@ -4118,12 +4171,21 @@ mod tests {
     fn treemap_rects_are_proportional() {
         use super::treemap_rects;
         use ratatui::layout::Rect;
-        let area = Rect { x: 0, y: 0, width: 100, height: 10 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 10,
+        };
         // Two equal values -> two rects covering the area, roughly equal.
         let rects = treemap_rects(area, &[("a".into(), 1), ("b".into(), 1)]);
         assert_eq!(rects.len(), 2);
         // First split is along the long axis (width 100 >= height 10) => ~50/50.
-        assert!((rects[0].width as i32 - 50).abs() <= 1, "got {}", rects[0].width);
+        assert!(
+            (rects[0].width as i32 - 50).abs() <= 1,
+            "got {}",
+            rects[0].width
+        );
         // Every rect stays inside the area.
         for r in &rects {
             assert!(r.x + r.width <= area.width && r.y + r.height <= area.height);
@@ -4134,10 +4196,19 @@ mod tests {
     fn log_level_style_colors_by_level() {
         use super::log_level_style;
         use ratatui::style::Color;
-        assert_eq!(log_level_style("2026 ERROR boom", None).fg, Some(Color::Red));
-        assert_eq!(log_level_style("2026 WARN slow", None).fg, Some(Color::Yellow));
+        assert_eq!(
+            log_level_style("2026 ERROR boom", None).fg,
+            Some(Color::Red)
+        );
+        assert_eq!(
+            log_level_style("2026 WARN slow", None).fg,
+            Some(Color::Yellow)
+        );
         assert_eq!(log_level_style("2026 INFO ok", None).fg, Some(Color::Cyan));
-        assert_eq!(log_level_style("2026 DEBUG x", None).fg, Some(Color::DarkGray));
+        assert_eq!(
+            log_level_style("2026 DEBUG x", None).fg,
+            Some(Color::DarkGray)
+        );
     }
 
     #[test]
@@ -4163,8 +4234,12 @@ mod tests {
         ];
         let dates = stream_event_dates(&lines);
         assert_eq!(dates.len(), 2);
-        assert!(dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 19).unwrap()));
-        assert!(dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 20).unwrap()));
+        assert!(
+            dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 19).unwrap())
+        );
+        assert!(
+            dates.contains(&time::Date::from_calendar_date(2026, time::Month::July, 20).unwrap())
+        );
     }
 
     #[test]
@@ -4173,8 +4248,15 @@ mod tests {
         // A `sel` widget over `field 1` yields the first column of each row; the
         // cursor row is published into the `.ps.sel` control.
         let spec = build(&parse("sel .ps\nsource .ps { in; fields 1 }").unwrap()).unwrap();
-        let raw = vec!["alice 30".to_string(), "bob 25".to_string(), "carol 40".to_string()];
-        assert_eq!(sel_candidates(&spec.widgets[0], &raw), vec!["alice", "bob", "carol"]);
+        let raw = vec![
+            "alice 30".to_string(),
+            "bob 25".to_string(),
+            "carol 40".to_string(),
+        ];
+        assert_eq!(
+            sel_candidates(&spec.widgets[0], &raw),
+            vec!["alice", "bob", "carol"]
+        );
 
         let mut c = Controls {
             inputs: vec![("ps.sel".into(), String::new())],

@@ -816,6 +816,9 @@ mod tests {
     #[test]
     fn fractional_bound_still_a_number_not_a_control() {
         // `.5` stays a number; only `.<letter>` is a control ref.
-        assert!(matches!(parse("x + .5").unwrap(), Expr::Bin(BinOp::Add, _, _)));
+        assert!(matches!(
+            parse("x + .5").unwrap(),
+            Expr::Bin(BinOp::Add, _, _)
+        ));
     }
 }

@@ -184,10 +184,12 @@ fn upsert_ui_theme(existing: &str, name: &str) -> String {
     let line = format!("theme = \"{name}\"");
     // Replace an existing active `theme = ...` (commented or not) if present.
     let mut lines: Vec<String> = existing.lines().map(String::from).collect();
-    if let Some(i) = lines
-        .iter()
-        .position(|l| l.trim_start().trim_start_matches('#').trim_start().starts_with("theme ="))
-    {
+    if let Some(i) = lines.iter().position(|l| {
+        l.trim_start()
+            .trim_start_matches('#')
+            .trim_start()
+            .starts_with("theme =")
+    }) {
         lines[i] = line;
         return lines.join("\n") + "\n";
     }

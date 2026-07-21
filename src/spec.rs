@@ -532,7 +532,11 @@ fn apply_supervise(args: &[Arg], refs: &mut [crate::actor::RefDecl]) -> Result<(
         match policy {
             "restart" => decl.restart = true,
             "stop" => decl.restart = false,
-            other => return Err(format!("supervise: unknown crash policy `{other}` (restart | stop)")),
+            other => {
+                return Err(format!(
+                    "supervise: unknown crash policy `{other}` (restart | stop)"
+                ))
+            }
         }
     }
     Ok(())
@@ -1203,11 +1207,10 @@ fn build_into(
             } else if c.name == "theme" {
                 // `theme NAME` — one of the 31 built-in palettes; or
                 // `theme custom c1 c2 c3 c4 c5 c6` — a 6-index custom palette.
-                let first = c
-                    .args
-                    .first()
-                    .and_then(Arg::as_str)
-                    .ok_or("theme: expected a name (`theme neon-noir`) or `theme custom c1..c6`")?;
+                let first =
+                    c.args.first().and_then(Arg::as_str).ok_or(
+                        "theme: expected a name (`theme neon-noir`) or `theme custom c1..c6`",
+                    )?;
                 if first == "off" || first == "none" {
                     // Opt out to the classic cyan scheme; block the default resolver.
                     spec.theme = None;

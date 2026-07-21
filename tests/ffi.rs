@@ -51,7 +51,9 @@ fn float_export_callable_from_expression() {
         eprintln!("skipping FFI test: rustc not on PATH");
         return;
     }
-    register(r#"rust { pub extern "C" fn arb_ffi_mulf(x: f64, y: f64, z: f64) -> f64 { x * y * z } }"#);
+    register(
+        r#"rust { pub extern "C" fn arb_ffi_mulf(x: f64, y: f64, z: f64) -> f64 { x * y * z } }"#,
+    );
     assert_eq!(eval("arb_ffi_mulf(1.5, 2.0, 3.0)"), 9.0);
 }
 
@@ -60,5 +62,8 @@ fn unregistered_call_is_nan_not_a_panic() {
     // A call to a name no `rust { }` block exported degrades to NaN (like an
     // unresolved control), never a panic — no rustc needed for this path.
     let v = eval("arb_ffi_never_registered(1, 2)");
-    assert!(v.is_nan(), "expected NaN for an unregistered FFI call, got {v}");
+    assert!(
+        v.is_nan(),
+        "expected NaN for an unregistered FFI call, got {v}"
+    );
 }
