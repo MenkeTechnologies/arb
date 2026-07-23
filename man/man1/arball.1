@@ -1,0 +1,122 @@
+.\" arball(1) — comprehensive all-in-one man page for arb.
+.\" Modeled after zshall(1): every section of the reference in one document.
+.\" Render with:  man -l man/man1/arball.1
+.\" Install:      cp man/man1/arball.1 /usr/local/share/man/man1/
+.TH ARBALL 1 "2026-07-23" "arb 0.1.1" "User Commands"
+.SH NAME
+arball \- the arb comprehensive reference (invocation, spec language, architecture,
+bytecode VM + Cranelift JIT, LSP, DAP, inline-Rust FFI)
+.SH OVERVIEW
+This is the all\-in\-one
+.B arb
+manual, modeled on
+.BR zshall (1).
+It concatenates the major sections of the arb reference into a single page so you
+can grep with `/`:
+.RS 2
+.PP
+.B 1.  INVOCATION
+.RB "\(em " "flags, specs, presets, verbs, headless mode"
+.br
+.B 2.  SPEC LANGUAGE
+.RB "\(em " "widgets, source pipelines, out reshapes, binds"
+.br
+.B 3.  ARCHITECTURE
+.RB "\(em " "lower expressions \[->] fusevm chunk \[->] VM + JIT"
+.br
+.B 4.  TOOLING
+.RB "\(em " "\-\-lsp, \-\-dap, inline-Rust FFI, dumps"
+.br
+.B 5.  DIAGNOSTICS
+.RB "\(em " "error format and common messages"
+.RE
+.SH 1. INVOCATION
+.B arb
+[\fIOPTIONS\fR] \fIFILE\fR reads a stream on standard input and renders a dynamic TUI
+built from a declarative
+.I .arb
+spec. With no spec it synthesizes a full\-screen tail of stdin.
+.B \-e \fISPEC\fR
+supplies a spec inline and
+.B \-p \fIPRESET\fR
+selects a built\-in preset;
+.B arb \fIVERB\fR
+runs a named packaged dashboard. With no controlling terminal reachable (piped
+onward / CI) arb prints the parsed spec and each source pipeline's evaluated result
+instead of a TUI \(em the correct headless behavior. See
+.BR arb (1)
+for the per\-flag table.
+.SH 2. SPEC LANGUAGE
+The declarative core is a Tcl/Tk\-flavored spec.
+.SS Widgets
+Layout and display widgets are declared in the spec and bound to
+.B source
+pipelines that feed them data.
+.SS Source pipelines
+A
+.B source
+query pipeline is a superset of
+.BR jq / xpath / css / yq :
+it extracts and reshapes structured input, and an interactive megafilter/map runs
+over the live passthrough so you refine the view without restarting the stream.
+.B spawn
+and poll sources feed a widget from a subprocess re\-run on an interval.
+.SS Reshapes and binds
+.B out { \[u2026] }
+blocks reshape a source's result before it reaches a widget; form controls and
+key/mouse binds drive interaction.
+.SH 3. ARCHITECTURE
+.EX
+.arb spec \[->] parser \[->] expressions lower to a fusevm chunk \[->] fusevm VM + Cranelift JIT
+.EE
+.PP
+Expressions and the
+.B calc
+pipeline op lower to a
+.B fusevm
+chunk and execute on the bytecode VM with a three\-tier Cranelift JIT. arb has no
+whole\-program chunk \(em only ephemeral per\-expression chunks \(em so it reuses the
+same shared engine that hosts zshrs, stryke, awkrs, elisp, and ruby without
+carrying a bespoke runtime.
+.SH 4. TOOLING
+.SS Language server (\-\-lsp)
+.B arb \-\-lsp
+speaks LSP over stdio: completion and hover from the symbol corpus (the same table
+that generates
+.IR docs/reference.html ),
+and diagnostics from the runtime's own parser. It is read\-only; no output reaches
+the terminal.
+.SS Debugger (\-\-dap)
+.B arb \-\-dap
+speaks the Debug Adapter Protocol over stdio: line breakpoints, single\-stepping,
+a stack trace, and variable inspection. Output is captured and forwarded as
+.B output
+events so it never corrupts the protocol channel.
+.SS Inline-Rust FFI
+A
+.B rust { pub extern "C" fn \[u2026] }
+block desugars to an internal
+.BR __rust_compile ,
+compiles to a cached
+.B cdylib
+on first run (via the shared
+.B fusevm
+FFI runtime), and its exports become callable by name
+.RB ( src/rust_ffi.rs ).
+.SS Dumps
+.B \-\-dump\-tokens
+prints the token stream and
+.B \-\-dump\-ast
+the parsed AST. Because arb has no whole\-program chunk,
+.B \-\-disasm
+lists the compiled per\-expression op vectors. Each flag prints its artifact and
+exits.
+.SH 5. DIAGNOSTICS
+Errors are written to standard error. The process exits non\-zero on a spec or
+pipeline error and 0 on success.
+.SH SEE ALSO
+.BR arb (1)
+The focused invocation page. Source and issue tracker:
+https://github.com/MenkeTechnologies/arb
+.SH AUTHOR
+Part of the fusevm language family.
