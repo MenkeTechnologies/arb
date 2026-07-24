@@ -37,7 +37,7 @@ path = "src/bin/gen_docs.rs"
 # arb's computational core executes on fusevm: expressions lower to a
 # fusevm::Chunk and run on the VM, with the three-tier Cranelift JIT for hot
 # chunks. Same engine as the sibling frontends (zshrs/stryke/rubyrs/…).
-fusevm = { version = "0.14.12", features = ["jit", "ffi"] }
+fusevm = { version = "0.14.17", features = ["jit", "ffi"] }
 # `widget-calendar` enables the ratatui `Monthly` calendar widget (pulls `time`).
 ratatui = { version = "0.29", features = ["widget-calendar"] }
 # Date construction for the `calendar` widget (current month + ISO-date events).
