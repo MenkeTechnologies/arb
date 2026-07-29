@@ -147,7 +147,7 @@ const WARMUP: usize = 8;
 /// (`expr::chunk_of`), so an expression evaluated over a pipeline produces a
 /// *different chunk per row* — different constants, different op hash, and
 /// therefore a warm-up counter that restarts from zero every row. This report
-/// holds `x` fixed at [`REPORT_X`] so a single chunk survives long enough to be
+/// holds `x` fixed at `REPORT_X` so a single chunk survives long enough to be
 /// compiled, which answers "is this expression's shape something the tiers can
 /// take" but not "does a running pipeline reach native code". The second
 /// question's answer is no as long as the constants are baked per evaluation.

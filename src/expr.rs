@@ -283,7 +283,7 @@ pub fn eval_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<f64, 
 /// Lower `e` to the fusevm chunk [`eval_ctx`] would run, without running it.
 ///
 /// The chunk is a function of `x` and the resolved fields, not of `e` alone:
-/// both are baked in as `LoadFloat` constants (see [`emit`]). Two evaluations
+/// both are baked in as `LoadFloat` constants (see the private `emit`). Two evaluations
 /// of the same expression at different `x` are therefore *different* chunks
 /// with different op hashes, which is what [`crate::tiers`] exists to report on.
 pub fn chunk_of(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> fusevm::Chunk {
