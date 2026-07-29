@@ -112,6 +112,14 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m List the 31 built-in color themes and exit"
     )]
     list_themes: bool,
+    /// Evaluate EXPR on fusevm, then report which execution tier took its
+    /// chunk, and exit.
+    #[arg(
+        long = "tiers",
+        value_name = "EXPR",
+        help = "\x1b[32m//\x1b[0m Evaluate EXPR, then report which fusevm tiers took it"
+    )]
+    tiers: Option<String>,
     /// Persist a global default theme to ~/.arb/config.toml, then exit.
     #[arg(
         long = "set-theme",
@@ -463,6 +471,21 @@ fn main() -> io::Result<()> {
         let mut out = io::stdout().lock();
         for (name, desc) in spec::list_presets() {
             writeln!(out, "{name:<10} {desc}")?;
+        }
+        return Ok(());
+    }
+
+    // `--tiers EXPR`: lower the expression to its fusevm chunk, evaluate it
+    // past the block tier's warm-up threshold, then report which tier took it —
+    // asked of fusevm's own eligibility and cache predicates, so the answer
+    // comes from the compiler that would have done the work.
+    if let Some(expr) = &cli.tiers {
+        match arb::tiers::report(expr) {
+            Ok(r) => println!("{r}"),
+            Err(e) => {
+                eprintln!("arb: --tiers: {e}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

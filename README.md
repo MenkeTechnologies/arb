@@ -532,6 +532,7 @@ ok 1 - keeps 5xx
 | `arb --lsp` | Language Server over stdio for `.arb` (diagnostics, completion, hover, signatureHelp, definition/references/highlight/rename, folding, formatting, semanticTokens). |
 | `arb --dap` | Debug Adapter over stdio: step the stream line-by-line, regex breakpoints, inspect the paused line / stats / controls. |
 | `arb --check` | Validate the spec (parse + build) and exit 0/1, no stdin. |
+| `arb --tiers 'EXPR'` | Evaluate EXPR on fusevm, then report which execution tier took its chunk. |
 | `arb --test` | Run the spec's in-language `test { … }` blocks (TAP output), exit 0/1. |
 | `--version` / `--help` | Version / usage. |
 

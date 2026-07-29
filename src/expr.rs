@@ -252,6 +252,19 @@ pub fn substitute_controls(
     }
 }
 
+/// Arm fusevm's Cranelift tiers on a VM about to run an expression chunk.
+///
+/// One flag gates both tiers: `vm.rs`'s tiered auto-dispatch checks
+/// `tracing_jit` before it will even ask `is_block_eligible`, so without this
+/// call a chunk runs on the interpreter no matter what the `jit` feature says.
+/// An arb expression lowers to straight-line native ops with no backward
+/// branch, so the block tier is the one that takes it — compiled once, then
+/// reused from fusevm's on-disk cache across runs, which is what a predicate
+/// evaluated over every row wants. `arb --tiers` reports the outcome.
+fn arm_tiers(vm: &mut VM) {
+    vm.enable_tracing_jit();
+}
+
 /// Lower `e` to a fusevm chunk (with `x` and resolved fields baked in), run it on
 /// the VM, and return the resulting number. `resolve` maps a field name to its
 /// numeric value.
@@ -259,11 +272,24 @@ pub fn eval_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<f64, 
     let mut b = ChunkBuilder::new();
     emit(e, x, resolve, &mut b);
     let mut vm = VM::new(b.build());
+    arm_tiers(&mut vm);
     match vm.run() {
         VMResult::Ok(v) => Ok(v.to_float()),
         VMResult::Halted => Ok(vm.peek().to_float()),
         VMResult::Error(err) => Err(err),
     }
+}
+
+/// Lower `e` to the fusevm chunk [`eval_ctx`] would run, without running it.
+///
+/// The chunk is a function of `x` and the resolved fields, not of `e` alone:
+/// both are baked in as `LoadFloat` constants (see [`emit`]). Two evaluations
+/// of the same expression at different `x` are therefore *different* chunks
+/// with different op hashes, which is what [`crate::tiers`] exists to report on.
+pub fn chunk_of(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> fusevm::Chunk {
+    let mut b = ChunkBuilder::new();
+    emit(e, x, resolve, &mut b);
+    b.build()
 }
 
 /// Evaluate as a predicate with no field resolver.
@@ -277,6 +303,7 @@ pub fn eval_pred_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<
     let mut b = ChunkBuilder::new();
     emit(e, x, resolve, &mut b);
     let mut vm = VM::new(b.build());
+    arm_tiers(&mut vm);
     match vm.run() {
         VMResult::Ok(v) => Ok(v.is_truthy()),
         VMResult::Halted => Ok(vm.peek().is_truthy()),
