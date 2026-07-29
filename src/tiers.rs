@@ -161,7 +161,6 @@ pub fn report(expr_src: &str) -> Result<Report, String> {
     Ok(inspect_all(&[("expr".to_string(), chunk)]))
 }
 
-
 /// Report on one already-executed chunk, as a whole-program report. Used by
 /// tests that build a chunk by hand.
 pub fn inspect(chunk: &Chunk) -> Report {
@@ -263,7 +262,6 @@ fn op_name(op: &Op) -> String {
         None => text,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
