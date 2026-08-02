@@ -534,6 +534,12 @@ ok 1 - keeps 5xx
 | `arb --check` | Validate the spec (parse + build) and exit 0/1, no stdin. |
 | `arb --tiers 'EXPR'` | Evaluate EXPR on fusevm, then report which execution tier took its chunk. |
 | `arb --test` | Run the spec's in-language `test { … }` blocks (TAP output), exit 0/1. |
+| `arb -p NAME` / `--preset` | Run a bundled stdlib module by name (`-p logs` == `import logs`). `-l` / `--list` lists what is available (bundled + `~/.arb/lib`). |
+| `arb -r` / `--repl` | Interactive REPL — author and test specs against a sample buffer. |
+| `cmd \| arb --json` | With an `out { … }` pipeline, emit results as JSON (array / number / object) instead of plain lines — pipe to `jq`. |
+| `arb --html` | Emit a static HTML dashboard snapshot to stdout and exit. |
+| `arb --dump-tokens` / `--dump-ast` | Print the lexer token stream / parsed command-tree AST and exit. |
+| `arb --dump-bytecode` / `--disasm` | Print the compiled query-pipeline op vectors / a numbered disassembly and exit. |
 | `--version` / `--help` | Version / usage. |
 
 ---
