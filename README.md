@@ -217,18 +217,33 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
   best-first (contiguous runs + word-boundary starts win). **Smart-case**:
   lowercase query is case-insensitive, any uppercase makes it case-sensitive.
 - **Navigate** — `↑`/`↓`, `Ctrl-J`/`Ctrl-N` down, `Ctrl-K`/`Ctrl-P` up.
-- **Multi-select** — `Tab` marks lines (green `+`); Enter emits all marked.
-- Matched chars highlight yellow; keeps the entire stream (no line drop), so
-  marks persist and a huge `find /` stays fully selectable.
+- **Multi-select** — with `-m`/`--multi`, `Tab` marks lines (`┃` in the mark
+  column) and moves down; Enter emits all marked.
+- Matched chars highlight; keeps the entire stream (no line drop), so marks
+  persist and a huge `find /` stays fully selectable.
 
-**Drop-in for `fzf`.** `arb --fzf` tolerates the `fzf` binary's flags, so you can
-repoint a wrapper at it (e.g. `ZPWR_FZF='arb --fzf'`) without rewriting call
-sites. Honored: `-e`/`--exact` (substring, not fuzzy), `--no-sort` (keep input
-order), `--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height`,
-`--preview 'CMD {}'`. fzf-only flags with no arb analog (`--ansi`, `--border`,
-`--reverse`, `--preview-window`, `--min-height`, `--tiebreak`, `--layout`,
-`--bind`, `--nth`, `+m`/`+s`, …) are accepted and quietly ignored so the command
-still runs.
+**Drop-in for `fzf`.** `arb --fzf` reads your fzf configuration the way the `fzf`
+binary does — `$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the
+command line (later wins) — and renders the picker to match: same layout, border,
+separator, pointer/marker glyphs, palette, scrollbar, ellipsis and ranking. Point
+a wrapper at it (e.g. `ZPWR_FZF='arb --fzf'`) and nothing else changes.
+
+Honored: `--layout`/`--reverse`, `--border[=STYLE]`, `--info=STYLE`, `--color`
+(`dark`/`light`/`16`/`bw` plus per-slot overrides), `--pointer`, `--marker`,
+`--ellipsis`, `--scrollbar`/`--no-scrollbar`, `--scroll-off`, `--cycle`, `--tac`,
+`--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
+`page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
+`toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
+`ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,
+`--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height`,
+`--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
+(`execute(…)`, preview control, …) is skipped so the key keeps its built-in
+behavior; the remaining fzf flags are accepted and ignored so the command still
+runs.
+
+The picker uses fzf's own palette, not arb's theme, unless a theme is asked for
+explicitly (`--theme NAME`, a spec `theme` directive, or the live `Ctrl-T`
+chooser) — the point of the drop-in is that it looks like fzf.
 
 **`--fzf` is a DSL spec, not a hardcoded mode.** It synthesizes a one-widget
 `select` spec — so the select surface is expressible directly, and `-prompt`/

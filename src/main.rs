@@ -341,44 +341,139 @@ struct Cli {
 
 /// Rewrite argv so `arb --fzf` tolerates the `fzf` binary's flags (for drop-in
 /// use like `ZPWR_FZF='arb --fzf'`): translate fzf's `+`-negations (`+m`→`+m`
-/// disables multi, `+s`→keep order) and DROP cosmetic fzf flags arb has no
-/// analog for, consuming a value for the value-taking ones. Flags arb honors
+/// disables multi, `+s`→keep order) and DROP the flags clap doesn't declare,
+/// consuming a value for the value-taking ones. Flags arb honors
 /// (`-e`, `--no-sort`, `--query`, `-m`, `--nth`, `--preview`, `--prompt`,
 /// `--header`, `--height`) pass through to clap untouched.
 fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
-    // Cosmetic fzf flags with no arb effect: bool (dropped) and value-taking
-    // (drop the flag AND its value, whether `--flag val` or `--flag=val`).
+    // Presentation flags (`--border`, `--layout`, `--info`, `--color`,
+    // `--pointer`, `--marker`, `--bind`, …) are stripped HERE but not ignored:
+    // `fzf::Look::parse` already read them off the full argv, so they drive the
+    // picker's look while clap only ever sees arb's own options. The rest
+    // (`--ansi`, `--tiebreak`, …) genuinely have no arb analog and are dropped.
+    // Every fzf 0.74 option except the eight arb declares itself (`--preview`,
+    // `--prompt`, `--header`, `--height`, `--query`, `--exact`, `--no-sort`,
+    // `--multi`). The lists are exhaustive on purpose: an unknown flag makes
+    // clap abort, which would break the drop-in for anyone whose
+    // `$FZF_DEFAULT_OPTS` mentions a flag arb never modeled.
     const DROP_BOOL: &[&str] = &[
+        "--ambidouble",
         "--ansi",
+        "--bash",
+        "--black",
         "--border",
-        "--reverse",
-        "--print-query",
         "--cycle",
-        "--select-1",
-        "-1",
+        "--disabled",
         "--exit-0",
         "-0",
-        "--sort",
         "--extended",
-        "--no-mouse",
         "--filepath-word",
+        "--fish",
+        "--footer-border",
+        "--footer-label",
+        "--gap",
+        "--header-border",
+        "--header-first",
+        "--header-lines-border",
+        "--highlight-line",
+        "--inline-info",
+        "--input-border",
+        "--input-label",
         "--keep-right",
+        "--list-border",
+        "--list-label",
+        "--listen",
+        "--literal",
+        "--man",
+        "--no-bold",
+        "--no-border",
+        "--no-clear",
+        "--no-color",
+        "--no-cycle",
+        "--no-hscroll",
+        "--no-info",
+        "--no-input",
+        "--no-mouse",
+        "--no-multi-line",
+        "--no-reverse",
+        "--no-scrollbar",
+        "--no-separator",
+        "--no-tty-default",
+        "--no-unicode",
+        "--nushell",
+        "--popup",
+        "--preview-border",
+        "--preview-label",
+        "--print-query",
+        "--print0",
+        "--raw",
+        "--read0",
+        "--reverse",
+        "--select-1",
+        "-1",
+        "--smart-case",
+        "--sort",
+        "--sync",
+        "--tac",
+        "--track",
+        "--wrap",
+        "--zsh",
     ];
     const DROP_VALUE: &[&str] = &[
-        "--min-height",
-        "--tiebreak",
-        "--layout",
-        "--info",
-        "--preview-window",
-        "--header-lines",
-        "--with-nth",
-        "--nth",
+        "--accept-nth",
+        "--algo",
+        "--bench",
         "--bind",
-        "--color",
-        "--pointer",
-        "--marker",
         "--border-label",
+        "--border-label-pos",
+        "--color",
+        "--ellipsis",
+        "--expect",
+        "--footer",
+        "--footer-label-pos",
+        "--freeze-left",
+        "--freeze-right",
+        "--ghost",
+        "--gutter",
+        "--gutter-raw",
+        "--header-label",
+        "--header-label-pos",
+        "--header-lines",
+        "--history",
+        "--history-size",
+        "--hscroll-off",
+        "--id-nth",
+        "--info",
+        "--info-command",
+        "--input-label-pos",
+        "--jump-labels",
+        "--layout",
+        "--list-label-pos",
+        "--margin",
+        "--marker",
+        "--marker-multi-line",
+        "--min-height",
+        "--nth",
+        "--padding",
+        "--pointer",
+        "--preview-label-pos",
+        "--preview-window",
+        "--preview-wrap-sign",
+        "--scheme",
+        "--scroll-off",
+        "--scrollbar",
+        "--separator",
+        "--style",
         "--tabstop",
+        "--tail",
+        "--threads",
+        "--tiebreak",
+        "--walker",
+        "--walker-root",
+        "--walker-skip",
+        "--with-nth",
+        "--with-shell",
+        "--wrap-sign",
     ];
     let argv: Vec<String> = args.collect();
     // Only rewrite fzf short-flags when in fzf mode (else `-e` stays `--eval`).
@@ -434,7 +529,22 @@ fn main() -> io::Result<()> {
         std::process::exit(code);
     }
 
-    let cli = Cli::parse_from(fzf_compat_args(std::env::args()));
+    // `arb --fzf` inherits the user's fzf configuration exactly like the fzf
+    // binary: `$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the
+    // command line — later wins, so an explicit flag still overrides the env.
+    // Splicing the env words in right after argv[0] is what lets a themed setup
+    // (`ZPWR_FZF='arb --fzf'`) keep its prompt, layout, border, colors and key
+    // bindings without editing a single call site.
+    let mut argv: Vec<String> = std::env::args().collect();
+    if argv.iter().any(|a| a == "--fzf") {
+        let env = arb::fzf::env_args();
+        argv.splice(1..1, env);
+    }
+    // The presentation flags are parsed from the FULL argv (env + command line)
+    // before `fzf_compat_args` strips them for clap, which knows only arb's own
+    // options.
+    let fzf_look = arb::fzf::Look::parse(&argv);
+    let cli = Cli::parse_from(fzf_compat_args(argv.into_iter()));
 
     if cli.repl {
         arb::repl::run();
@@ -613,6 +723,10 @@ fn main() -> io::Result<()> {
     // global default → the baked `neon-sprawl` default. So every dashboard (and
     // the stdlib presets, which set no color) is themed out of the box, tunable
     // globally via `--set-theme` and per-run via `--theme`.
+    // Did anything ASK for an arb theme, or is one about to be applied merely as
+    // the baked default? `--fzf` needs to know: a picker that nobody themed must
+    // come out in fzf's own colors, not in `neon-sprawl`.
+    let theme_requested = cli.theme.is_some() || spec.theme.is_some();
     match cli.theme.as_deref() {
         Some("off") | Some("none") => spec.theme = None,
         Some(name) => match arb::theme::by_name(name) {
@@ -640,6 +754,13 @@ fn main() -> io::Result<()> {
             .widgets
             .iter()
             .any(|w| w.kind == spec::WidgetKind::Select);
+    // An unthemed picker renders in fzf's palette (`fzf::Colors`), which is the
+    // whole point of the drop-in: `arb --fzf` should be indistinguishable from
+    // `fzf`. `--theme NAME` or a spec `theme` directive still wins, and Ctrl-T
+    // switches to an arb theme live.
+    if fzf_mode && !theme_requested {
+        spec.theme = None;
+    }
     let (sel_prompt, sel_header) = spec
         .widgets
         .iter()
@@ -920,11 +1041,24 @@ fn main() -> io::Result<()> {
             // fzf-compat: exact/no-sort match modes; `--query` seeds the filter.
             c.exact = cli.exact;
             c.no_sort = cli.no_sort;
+            // The resolved fzf presentation (layout/border/info/colors/pointer)
+            // plus its `--bind` table, which the key handler consults first.
+            // Only `--fzf` inherits fzf's bottom-up default layout; a DSL
+            // `select` widget keeps arb's prompt-on-top list.
+            c.look = if cli.fzf {
+                fzf_look.clone()
+            } else {
+                arb::fzf::Look {
+                    layout: arb::fzf::Layout::Reverse,
+                    ..arb::fzf::Look::default()
+                }
+            };
             if let Some(q) = &cli.query {
                 c.filter = q.clone();
             }
-            // `-m`/`--multi` is accepted for compat; arb always allows Tab-marking.
-            let _ = cli.multi;
+            // fzf only marks with `-m`/`--multi`; `arb --fzf` matches that. A
+            // DSL `select` widget (fzf mode without `--fzf`) keeps marking on.
+            c.multi = cli.multi || !cli.fzf;
         }
         let outcome = tui::run(
             &spec,
@@ -1757,6 +1891,61 @@ mod tests {
 
     fn run(args: &[&str]) -> Vec<String> {
         fzf_compat_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn presentation_flags_are_parsed_then_kept_from_clap() {
+        // These now DRIVE the picker (via `fzf::Look`) but clap must never see
+        // them — an undeclared flag would abort the whole run, which is exactly
+        // what a real `$FZF_DEFAULT_OPTS` would trigger.
+        let argv = [
+            "arb",
+            "--fzf",
+            "--layout=reverse",
+            "--info",
+            "inline",
+            "--pointer",
+            ">",
+            "--marker",
+            "+",
+            "--color=dark,hl:2",
+            "--bind",
+            "tab:toggle+down",
+            "--scroll-off",
+            "0",
+            "--ellipsis",
+            "~",
+            "--tac",
+            "--no-scrollbar",
+            "--prompt",
+            "P> ",
+        ];
+        let look = arb::fzf::Look::parse(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(look.layout, arb::fzf::Layout::Reverse);
+        assert_eq!(look.pointer, ">");
+        assert_eq!(look.scroll_off, 0);
+        assert_eq!(look.ellipsis, "~");
+        assert!(look.tac && !look.scrollbar);
+        let out = run(&argv);
+        for a in [
+            "--layout=reverse",
+            "--info",
+            "inline",
+            "--pointer",
+            "--marker",
+            "--color=dark,hl:2",
+            "--bind",
+            "tab:toggle+down",
+            "--scroll-off",
+            "--ellipsis",
+            "--tac",
+            "--no-scrollbar",
+        ] {
+            assert!(!out.iter().any(|o| o == a), "{a} reached clap");
+        }
+        // arb's own flags still pass through untouched.
+        assert!(out.iter().any(|o| o == "--prompt"));
+        assert!(out.iter().any(|o| o == "P> "));
     }
 
     #[test]

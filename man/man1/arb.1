@@ -41,13 +41,19 @@ also drops in for
 .BR fzf :
 .B \-\-fzf
 turns the stream into an interactive select list and prints the chosen line(s) to
-stdout on Enter. Cosmetic
+stdout on Enter. It reads
+.B $FZF_DEFAULT_OPTS_FILE
+and
+.B $FZF_DEFAULT_OPTS
+like the
 .B fzf
-flags are tolerated so
+binary and honors the presentation options, so
 .B arb \-\-fzf
-can replace the
+renders the same picker as
+.BR fzf (1)
+for the same configuration; the remaining
 .B fzf
-binary.
+flags are tolerated so it can replace the binary outright.
 .SH OPTIONS
 .SS Spec source
 .TP
@@ -271,6 +277,29 @@ the preset library, script cache, and REPL config.
 .TP
 .B ARB_LIB
 Overrides the preset library directory.
+.TP
+.B FZF_DEFAULT_OPTS
+Under
+.BR \-\-fzf ,
+parsed as fzf itself parses it: the options are spliced in front of the command
+line, so an explicit flag still wins. Presentation options
+.RB ( \-\-layout ", " \-\-border ", " \-\-info ", " \-\-color ", " \-\-pointer ", "
+.BR \-\-marker ", " \-\-ellipsis ", " \-\-scrollbar ", " \-\-scroll\-off ", "
+.BR \-\-cycle ", " \-\-tac ", " \-\-tiebreak ", " \-\-bind )
+drive the picker, so it renders the same as
+.BR fzf (1)
+with the same configuration.
+.TP
+.B FZF_DEFAULT_OPTS_FILE
+A file of the same options, read before
+.BR FZF_DEFAULT_OPTS .
+.TP
+.B NO_COLOR
+Starts the
+.B \-\-fzf
+picker from fzf's colorless
+.B bw
+scheme.
 .SH FILES
 .TP
 .I ~/.arb/scripts.rkyv

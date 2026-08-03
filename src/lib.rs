@@ -16,6 +16,7 @@ pub mod cache;
 pub mod dap;
 pub mod err;
 pub mod expr;
+pub mod fzf;
 pub mod jq;
 pub mod lexer;
 pub mod lsp;

@@ -27,8 +27,8 @@ use ratatui::widgets::calendar::{CalendarEventStore, Monthly};
 use ratatui::widgets::canvas::{Canvas, Map, MapResolution, Points};
 use ratatui::widgets::{
     Axis, BarChart, Block, Borders, Cell, Chart, Clear, Dataset, Gauge, GraphType, LineGauge, List,
-    ListItem, ListState, Paragraph, RatatuiLogo, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Sparkline, Table, Tabs,
+    ListItem, Paragraph, RatatuiLogo, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Sparkline, Table, Tabs,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
@@ -82,9 +82,17 @@ pub struct Controls {
     pub fzf: bool,
     /// Tab-marked lines (multi-select). Emitted on Enter when non-empty.
     pub marks: Vec<String>,
-    /// Tab pressed — the run loop toggles the cursor line in `marks`, since only
-    /// it knows the current filtered list + cursor.
-    pub toggle: bool,
+    /// Tab pressed — the run loop toggles a line in `marks`, since only it knows
+    /// the current filtered list.
+    /// Rows with a pending `toggle`, in press order. The INDEX is recorded when
+    /// the key is pressed for two reasons: fzf's `toggle+down` marks the row you
+    /// were on and only then moves, and several Tabs can land inside one render
+    /// tick — a plain flag would collapse them into a single mark.
+    pub toggles: Vec<usize>,
+    /// Whether marking is allowed at all. fzf ignores `toggle` without
+    /// `-m`/`--multi`, so `arb --fzf` does too; arb's own `select` widget keeps
+    /// marking on unconditionally.
+    pub multi: bool,
     /// Final selection (fzf mode), filled by the run loop on submit and printed
     /// to stdout by `main`: the marks if any, else the cursor line.
     pub result: Vec<String>,
@@ -153,6 +161,20 @@ pub struct Controls {
     pub theme_picker_sel: usize,
     /// The theme index to revert to if the chooser is cancelled with Esc.
     pub theme_picker_revert: usize,
+    /// The resolved fzf presentation (`$FZF_DEFAULT_OPTS` + the command line):
+    /// layout, border, info style, pointer/marker glyphs, palette and the
+    /// `--bind` table. The key handler consults the bindings before its own
+    /// defaults, so `tab:toggle+down` behaves the way fzf would.
+    pub look: crate::fzf::Look,
+    /// Rows of list currently on screen, published by the renderer so a
+    /// `page-up`/`page-down` binding moves by a real screenful.
+    pub fzf_page: usize,
+    /// Matches on screen this frame, so `--cycle` can wrap and `last` can land
+    /// on the final row.
+    pub fzf_count: usize,
+    /// A `toggle-all` binding fired; the run loop marks (or clears) every match,
+    /// since only it holds the filtered list.
+    pub toggle_all: bool,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -331,6 +353,133 @@ fn apply_bind_action(c: &mut Controls, action: &BindAction) {
     }
 }
 
+/// Map one keystroke to the fzf key name a `--bind` could have used. Escape
+/// sequences (arrows, PgUp/PgDn, Home/End, Shift-Tab, Alt-<char>) return the
+/// bytes they consumed; a single byte consumes one.
+fn fzf_key(buf: &[u8], i: usize) -> Option<(crate::fzf::Key, usize)> {
+    use crate::fzf::Key;
+    let b = *buf.get(i)?;
+    if b == 0x1b {
+        // CSI: ESC [ …
+        if buf.get(i + 1) == Some(&b'[') {
+            let k = match buf.get(i + 2)? {
+                b'A' => Key::Up,
+                b'B' => Key::Down,
+                b'C' => Key::Right,
+                b'D' => Key::Left,
+                b'H' => Key::Home,
+                b'F' => Key::End,
+                b'Z' => Key::BTab,
+                // ESC [ N ~ — the numbered navigation keys.
+                d @ (b'1' | b'3' | b'4' | b'5' | b'6') if buf.get(i + 3) == Some(&b'~') => {
+                    let k = match d {
+                        b'1' => Key::Home,
+                        b'3' => Key::Delete,
+                        b'4' => Key::End,
+                        b'5' => Key::PageUp,
+                        _ => Key::PageDown,
+                    };
+                    return Some((k, 4));
+                }
+                _ => return None,
+            };
+            return Some((k, 3));
+        }
+        // Alt-<char> arrives as Esc followed by the character.
+        if let Some(&c) = buf.get(i + 1) {
+            if (0x20..0x7f).contains(&c) {
+                return Some((Key::Alt(c.to_ascii_lowercase() as char), 2));
+            }
+        }
+        return Some((Key::Esc, 1));
+    }
+    let k = match b {
+        0x09 => Key::Tab,
+        0x0d | 0x0a => Key::Enter,
+        0x08 | 0x7f => Key::Backspace,
+        0x20 => Key::Space,
+        0x01..=0x1a => Key::Ctrl((b'a' + b - 1) as char),
+        0x21..=0x7e => Key::Char(b as char),
+        _ => return None,
+    };
+    Some((k, 1))
+}
+
+/// Run an fzf `--bind` action chain against the picker state. Returns true when
+/// the action ends the session (`accept`/`abort`), so the reader stops.
+fn fzf_action(c: &mut Controls, acts: &[crate::fzf::Action]) -> bool {
+    use crate::fzf::Action;
+    // Never zero: a page move must advance even before the first frame lands.
+    let page = c.fzf_page.max(1);
+    let count = c.fzf_count;
+    let cycle = c.look.cycle;
+    // fzf's movement actions are SCREEN directions. In the bottom-up default
+    // layout "down" walks toward the prompt — i.e. toward the better match — so
+    // every move flips against the ranked index arb stores in `cursor`.
+    let inv = c.look.layout == crate::fzf::Layout::Default;
+    for a in acts {
+        let a = &if inv {
+            match a {
+                Action::Up => Action::Down,
+                Action::Down => Action::Up,
+                Action::PageUp => Action::PageDown,
+                Action::PageDown => Action::PageUp,
+                Action::HalfPageUp => Action::HalfPageDown,
+                Action::HalfPageDown => Action::HalfPageUp,
+                other => *other,
+            }
+        } else {
+            *a
+        };
+        match a {
+            Action::Up => {
+                c.cursor = match (c.cursor, cycle, count) {
+                    (0, true, n) if n > 0 => n - 1,
+                    (cur, _, _) => cur.saturating_sub(1),
+                }
+            }
+            Action::Down => {
+                let next = c.cursor.saturating_add(1);
+                c.cursor = if cycle && count > 0 && next >= count {
+                    0
+                } else {
+                    next
+                };
+            }
+            Action::PageUp => c.cursor = c.cursor.saturating_sub(page),
+            Action::PageDown => c.cursor = c.cursor.saturating_add(page),
+            Action::HalfPageUp => c.cursor = c.cursor.saturating_sub(page / 2 + 1),
+            Action::HalfPageDown => c.cursor = c.cursor.saturating_add(page / 2 + 1),
+            Action::First => c.cursor = 0,
+            // The renderer clamps to the last row, so "past the end" IS last.
+            Action::Last => c.cursor = usize::MAX,
+            Action::Toggle => {
+                let at = c.cursor;
+                c.toggles.push(at);
+            }
+            Action::ToggleAll => c.toggle_all = true,
+            Action::Accept => {
+                c.submit = true;
+                return true;
+            }
+            Action::Abort => {
+                c.quit = true;
+                return true;
+            }
+            Action::ClearQuery => {
+                c.filter.clear();
+                c.cursor = 0;
+            }
+            Action::BackwardDeleteChar => {
+                c.filter.pop();
+                c.cursor = 0;
+            }
+            Action::Ignore => {}
+        }
+    }
+    false
+}
+
 /// Advance idle-timeout state one render tick. If the stream advanced since the
 /// last tick, reset the idle clock and re-arm every latch. Otherwise fire any
 /// timeout whose idle span has elapsed and latch it (once until the next line).
@@ -433,12 +582,32 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         i += 1;
                         continue;
                     }
+                    // fzf `--bind` wins over arb's built-in picker keys, so the
+                    // bindings in a user's `$FZF_DEFAULT_OPTS` (`tab:toggle+down`,
+                    // `ctrl-n:page-down`, …) behave exactly as they do under fzf.
+                    if fzf && !c.look.binds.is_empty() {
+                        if let Some((key, used)) = fzf_key(&buf[..n], i) {
+                            if let Some(acts) = c.look.bound(key).map(<[_]>::to_vec) {
+                                if fzf_action(&mut c, &acts) {
+                                    break 'read;
+                                }
+                                i += used;
+                                continue;
+                            }
+                        }
+                    }
                     // Arrow keys: ESC [ A/B/C/D. fzf moves the cursor; a form slider
                     // adjusts on Left/Right, a facet moves its cursor on Up/Down.
                     if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
                         match buf[i + 2] {
-                            b'A' if fzf => c.cursor = c.cursor.saturating_sub(1),
-                            b'B' if fzf => c.cursor = c.cursor.saturating_add(1),
+                            // Movement goes through the fzf action path so the
+                            // bottom-up layout flips it exactly once.
+                            b'A' if fzf => {
+                                fzf_action(&mut c, &[crate::fzf::Action::Up]);
+                            }
+                            b'B' if fzf => {
+                                fzf_action(&mut c, &[crate::fzf::Action::Down]);
+                            }
                             // Facet and Sel both move a row cursor with Up/Down.
                             b'A' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
                                 let f = c.focus;
@@ -486,9 +655,20 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                             c.submit = true;
                             break 'read;
                         }
-                        0x0e | 0x0a if fzf => c.cursor = c.cursor.saturating_add(1),
-                        0x10 | 0x0b if fzf => c.cursor = c.cursor.saturating_sub(1),
-                        0x09 if fzf => c.toggle = true, // Tab: mark/unmark
+                        0x0e | 0x0a if fzf => {
+                            fzf_action(&mut c, &[crate::fzf::Action::Down]);
+                        }
+                        0x10 | 0x0b if fzf => {
+                            fzf_action(&mut c, &[crate::fzf::Action::Up]);
+                        }
+                        // Tab: fzf's own default binding is `toggle+down` —
+                        // mark the row, then move to the next one.
+                        0x09 if fzf => {
+                            fzf_action(
+                                &mut c,
+                                &[crate::fzf::Action::Toggle, crate::fzf::Action::Down],
+                            );
+                        }
                         0x09 if form => {
                             // Tab: cycle focus between inputs.
                             let nlen = c.inputs.len();
@@ -675,15 +855,24 @@ pub fn run(
     // patterns. Tracked by `total` (lines-ever), not a deque index, because the
     // dashboard ring drops old lines — we scan the newest arrivals each frame.
     let mut expect_total: u64 = 0;
-    // fzf prompt/header (set once by `main` before this call).
-    let (fzf_prompt, fzf_header, fzf_exact, fzf_no_sort) = {
+    // fzf prompt/header/look (set once by `main` before this call — the look is
+    // resolved from `$FZF_DEFAULT_OPTS` plus the command line and never changes
+    // mid-run, so one snapshot serves every frame).
+    let (fzf_prompt, fzf_header, fzf_exact, fzf_no_sort, fzf_multi, fzf_look) = {
         let c = controls.lock().unwrap();
         let p = if c.prompt.is_empty() {
             "> ".to_string()
         } else {
             c.prompt.clone()
         };
-        (p, c.header.clone(), c.exact, c.no_sort)
+        (
+            p,
+            c.header.clone(),
+            c.exact,
+            c.no_sort,
+            c.multi,
+            c.look.clone(),
+        )
     };
 
     // `timeout Ns …` idle reactions: track the last stream `total` and when it
@@ -693,6 +882,8 @@ pub fn run(
     let mut to_fired = vec![false; spec.timeouts.len()];
     // `bind <Resize>`: poll the terminal size each frame; fire on a change.
     let mut last_size = size().unwrap_or((0, 0));
+    // fzf-mode scroll offset, carried between frames (see `render_fzf`).
+    let mut fzf_start = 0usize;
 
     // Redraw on a fixed cadence so live stream updates show; the key handler runs
     // independently, so the render loop never blocks on input (the pipeline keeps
@@ -870,9 +1061,21 @@ pub fn run(
                 let now = Instant::now();
                 if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
-                    // `--no-sort` keeps the input (scan) order; else rank best-first.
+                    // `--no-sort` keeps the input (scan) order; else rank
+                    // best-first, breaking ties fzf's way: `--tiebreak=length`
+                    // (its default) puts the shorter match first, and the sort
+                    // is stable so anything still equal keeps input order —
+                    // which is fzf's final `index` criterion.
                     if !fzf_no_sort {
-                        h.par_sort_by(|a, b| b.0.cmp(&a.0));
+                        h.par_sort_by(|a, b| {
+                            b.0.cmp(&a.0).then_with(|| {
+                                if fzf_look.tiebreak_length {
+                                    a.2.chars().count().cmp(&b.2.chars().count())
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                }
+                            })
+                        });
                     }
                     fzf_matched = h.into_iter().map(|(_, d, _k, o)| (d, o)).collect();
                     fzf_last_sort = now;
@@ -880,18 +1083,23 @@ pub fn run(
             }
             let matched = &fzf_matched;
             let sel = cursor.min(matched.len().saturating_sub(1));
+            // The cursor is a DISPLAY position; `--tac` flips it to a rank.
+            let rank = |pos: usize| tac_index(pos, matched.len(), fzf_look.tac);
 
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
             // what would be emitted, not the projected display.
             c.current = matched
-                .get(sel)
+                .get(rank(sel))
                 .map(|(_, o)| o.to_string())
                 .unwrap_or_default();
-            if c.toggle {
-                // Tab: toggle the cursor line's original in the mark set, advance.
-                c.toggle = false;
-                if let Some((_, orig)) = matched.get(sel) {
+            // `toggle`: flip each pending row's original in the mark set. Every
+            // press queued its own row, so a burst of Tabs marks every one of
+            // them, and the cursor move fzf pairs with `toggle+down` has already
+            // been applied by the key handler.
+            for at in std::mem::take(&mut c.toggles) {
+                let at = rank(at.min(matched.len().saturating_sub(1)));
+                if let Some((_, orig)) = matched.get(at).filter(|_| c.multi) {
                     match c.marks.iter().position(|m| m.as_str() == orig.as_ref()) {
                         Some(pos) => {
                             c.marks.remove(pos);
@@ -899,13 +1107,26 @@ pub fn run(
                         None => c.marks.push(orig.to_string()),
                     }
                 }
-                c.cursor = c.cursor.saturating_add(1);
             }
+            if c.toggle_all {
+                // `toggle-all`: clear the marks if everything is already marked,
+                // else mark every current match.
+                c.toggle_all = false;
+                if !c.multi {
+                    // Single-select: `toggle-all` is a no-op, like fzf.
+                } else if c.marks.len() == matched.len() {
+                    c.marks.clear();
+                } else {
+                    c.marks = matched.iter().map(|(_, o)| o.to_string()).collect();
+                }
+            }
+            // Publish the match count so `--cycle` wraps against a real length.
+            c.fzf_count = matched.len();
             if submit {
                 // Emit the marks if any (multi-select), else the cursor original.
                 c.result = if c.marks.is_empty() {
                     matched
-                        .get(sel)
+                        .get(rank(sel))
                         .map(|(_, o)| o.to_string())
                         .into_iter()
                         .collect()
@@ -928,20 +1149,23 @@ pub fn run(
                 .as_ref()
                 .map(|(l, lab)| (l.as_slice(), lab.as_str()));
             let mut hitmap: Vec<HitTarget> = Vec::new();
-            let mut fzf_start = 0usize;
+            let mut fzf_rows = 0usize;
             let draw = terminal.draw(|f| {
-                fzf_start = render_fzf(
+                (fzf_start, fzf_rows) = render_fzf(
                     f,
                     matched,
                     &filter,
                     sel,
+                    fzf_start,
                     &marks,
+                    fzf_multi,
                     total,
                     err_ref,
                     prev_ref,
                     &fzf_prompt,
                     &fzf_header,
                     fzf_theme,
+                    &fzf_look,
                     &mut hitmap,
                 );
                 // Global overlays draw on top of the picker too.
@@ -957,6 +1181,8 @@ pub fn run(
                 let mut c = controls.lock().unwrap();
                 c.hitmap = hitmap;
                 c.fzf_list_start = fzf_start;
+                // A `page-up`/`page-down` binding moves by what is on screen.
+                c.fzf_page = fzf_rows;
             }
             if let Err(e) = draw {
                 break Err(e);
@@ -1508,10 +1734,53 @@ pub fn facet_row_to_index(rect_y: u16, row: u16) -> Option<usize> {
     }
 }
 
+/// Where the visible list window starts, given the previous frame's offset.
+/// Scrolling picks up where it left off and slides only as far as the cursor
+/// plus fzf's `--scroll-off` margin demands — recomputing from the cursor alone
+/// would scroll at different moments than fzf does. The two margins are applied
+/// in this order on purpose: on a window too short to honor both, the trailing
+/// one wins, which is where fzf settles too.
+pub fn fzf_window_start(
+    prev: usize,
+    sel: usize,
+    list_h: usize,
+    n: usize,
+    scroll_off: usize,
+) -> usize {
+    let so = scroll_off.min(list_h.saturating_sub(1));
+    let max_start = n.saturating_sub(list_h);
+    let mut start = prev.min(max_start);
+    if sel < start + so {
+        start = sel.saturating_sub(so);
+    }
+    if sel + so >= start + list_h {
+        start = (sel + so + 1).saturating_sub(list_h);
+    }
+    start.min(max_start)
+}
+
+/// Map a display position to its index in the ranked match list. `--tac` shows
+/// the list in reverse input order, so display row 0 is the LAST match.
+pub fn tac_index(pos: usize, n: usize, tac: bool) -> usize {
+    if tac {
+        n.saturating_sub(1).saturating_sub(pos)
+    } else {
+        pos
+    }
+}
+
 /// The fzf cursor index for a clicked list row: `start` (the scroll offset of the
 /// first visible row) plus the rows below `list_top`.
 pub fn fzf_row_to_cursor(list_top: u16, start: usize, row: u16) -> usize {
     start + row.saturating_sub(list_top) as usize
+}
+
+/// The same, for fzf's `--layout=default`, where the list grows UPWARD from the
+/// prompt: the top screen row is the last match, so the click mirrors within the
+/// `rows` on screen.
+pub fn fzf_row_to_cursor_rev(list_top: u16, start: usize, rows: usize, row: u16) -> usize {
+    let off = row.saturating_sub(list_top) as usize;
+    start + rows.saturating_sub(1).saturating_sub(off)
 }
 
 /// Which widget kinds honor wheel history-scroll when the wheel is over them.
@@ -1684,7 +1953,18 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
                             }
                         }
                         WidgetKind::Select if down && ev.row >= t.rect.y => {
-                            c.cursor = fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row);
+                            // `--layout=default` draws the list bottom-up, so a
+                            // click maps to the mirrored row.
+                            c.cursor = if fzf && c.look.layout == crate::fzf::Layout::Default {
+                                fzf_row_to_cursor_rev(
+                                    t.rect.y,
+                                    c.fzf_list_start,
+                                    c.fzf_page,
+                                    ev.row,
+                                )
+                            } else {
+                                fzf_row_to_cursor(t.rect.y, c.fzf_list_start, ev.row)
+                            };
                             if dbl {
                                 c.submit = true; // double-click picks the row, like Enter
                             }
@@ -2064,38 +2344,65 @@ pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
     positions
 }
 
-/// Build a styled list line for fzf mode: a mark gutter (`+` for a Tab-marked
-/// line) followed by the text with fuzzy-matched characters highlighted.
+/// Build one styled picker row in fzf's exact shape — `[pointer][marker][text]`,
+/// with the fuzzy-matched characters highlighted. The pointer column carries the
+/// accent on the current row and the gutter color on every other one (that dim
+/// bar down the left edge is fzf's, not a decoration arb invented), and the mark
+/// column shows the `--marker` glyph for a Tab-marked row.
 fn fzf_line(
     line: &str,
     filter: &str,
     width: usize,
     marked: bool,
-    base: Option<Color>,
-    accent: Color,
+    current: bool,
+    look: &crate::fzf::Look,
+    colors: &crate::fzf::Colors,
 ) -> Line<'static> {
-    let text: String = line.chars().take(width.saturating_sub(2)).collect();
-    // Base row-text style: the theme's primary color, or terminal default.
-    let base_style = base.map(|c| Style::default().fg(c)).unwrap_or_default();
-    let base_span = |s: String| Span::styled(s, base_style);
-    let gutter = if marked {
-        Span::styled(
-            "+ ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
+    let ptr_w = look.pointer.chars().count();
+    let mark_w = look.marker.chars().count();
+    let avail = width.saturating_sub(ptr_w + mark_w);
+    // Overlong rows end in the `--ellipsis` glyphs, like fzf's `··`.
+    let text: String = if line.chars().count() > avail {
+        let ell = look.ellipsis.chars().count();
+        line.chars()
+            .take(avail.saturating_sub(ell))
+            .chain(look.ellipsis.chars())
+            .collect()
     } else {
-        Span::raw("  ")
+        line.chars().collect()
+    };
+    // The row background rides on the SPANS, not the whole row: fzf's `bg+` bar
+    // ends where the text ends, it doesn't run to the right edge.
+    let row_bg = if current { colors.bg_plus } else { colors.bg }.bg();
+    let base_style = if current { colors.fg_plus } else { colors.fg }
+        .fg()
+        .patch(row_bg);
+    let base_span = |s: String| Span::styled(s, base_style);
+    // Current row: the `--pointer` glyph. Every other row: fzf's fixed gutter
+    // block — it does NOT follow `--pointer`, it is the bar down the left edge.
+    let pointer = if current {
+        Span::styled(look.pointer.clone(), colors.pointer.fg().patch(row_bg))
+    } else {
+        Span::styled(
+            "\u{258c}".repeat(ptr_w.max(1)),
+            colors.gutter.fg().patch(row_bg),
+        )
+    };
+    let gutter = if marked {
+        Span::styled(look.marker.clone(), colors.marker.fg().patch(row_bg))
+    } else {
+        Span::styled(" ".repeat(mark_w), row_bg)
     };
     if filter.is_empty() {
-        return Line::from(vec![gutter, base_span(text)]);
+        return Line::from(vec![pointer, gutter, base_span(text)]);
     }
     let pos: std::collections::HashSet<usize> =
         match_positions(&text, filter).into_iter().collect();
-    // Matched characters glow in the theme accent (was a fixed yellow).
-    let hl = Style::default().fg(accent).add_modifier(Modifier::BOLD);
-    let mut spans = vec![gutter];
+    // Matched characters take fzf's `hl` / `hl+` slot.
+    let hl = if current { colors.hl_plus } else { colors.hl }
+        .fg()
+        .patch(row_bg);
+    let mut spans = vec![pointer, gutter];
     let mut cur = String::new();
     let mut cur_hl = false;
     for (i, ch) in text.chars().enumerate() {
@@ -2121,9 +2428,6 @@ fn fzf_line(
     Line::from(spans)
 }
 
-/// Full-screen fzf select view: an fzf-style prompt line at the top, the filtered
-/// list below with the cursor line highlighted. ratatui auto-scrolls to keep the
-/// selection visible. Cursor 0 is the newest (bottom) line.
 /// A red-bordered pane for a spawned command's stderr (`--run` producer errors),
 /// so upstream errors show inside arb instead of scribbling over the TUI.
 fn render_err_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) {
@@ -2159,6 +2463,11 @@ pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
     }
 }
 
+/// The fzf select view: prompt, match counter and list, laid out and colored the
+/// way the `fzf` binary would for the same options (see [`crate::fzf`]). Returns
+/// `(scroll offset of the first visible row, rows of list on screen)` — the
+/// first maps a click to a cursor index, the second sizes a `page-up`/
+/// `page-down` binding.
 // Distinct render inputs (matches, filter, cursor, marks, panes, prompt/header).
 #[allow(clippy::too_many_arguments)]
 fn render_fzf(
@@ -2166,15 +2475,20 @@ fn render_fzf(
     matched: &[(Arc<str>, Arc<str>)],
     filter: &str,
     sel: usize,
+    // `prev_start`: the previous frame's scroll offset, so the window slides
+    // like fzf's instead of being recomputed from the cursor every frame.
+    prev_start: usize,
     marks: &[String],
+    multi: bool,
     total: u64,
     err: Option<(&[String], &str)>,
     preview: Option<(&[String], &str)>,
     prompt: &str,
     header: &str,
     theme: Option<crate::theme::Palette>,
+    look: &crate::fzf::Look,
     hitmap: &mut Vec<HitTarget>,
-) -> usize {
+) -> (usize, usize) {
     // Reserve a bottom strip for the stderr pane when present.
     let (top, err_area) = match err {
         Some((lines, _)) => {
@@ -2201,102 +2515,270 @@ fn render_fzf(
     if let (Some(pa), Some((lines, label))) = (prev_area, preview) {
         render_output_pane(f, pa, label, lines);
     }
-    let header_h: u16 = if header.is_empty() { 0 } else { 1 };
-    let chunks = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(header_h),
-        Constraint::Min(0),
-    ])
-    .split(main_top);
-    let marked = if marks.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", marks.len())
+    // fzf's `--border`: the whole picker lives inside the box, so everything
+    // below measures against the block's inner area.
+    let body = match look.border {
+        Some((btype, sides)) => {
+            let block = Block::default()
+                .borders(sides)
+                .border_type(btype)
+                .border_style(look.colors.border.fg());
+            let inner = block.inner(main_top);
+            f.render_widget(block, main_top);
+            // fzf pads the boxed content by one column on the LEFT only; the
+            // right-hand column is the scrollbar lane, bordered or not.
+            Rect {
+                x: inner.x + 1,
+                width: inner.width.saturating_sub(1),
+                ..inner
+            }
+        }
+        None => main_top,
     };
-    // The whole picker recolors from the active palette (not just the accent):
-    // row text in `base` (primary), the prompt/matches/cursor in `accent`, the
-    // header/counter/hints in `dim`, and the cursor bar in the palette `bg`. With
-    // no theme these fall back to the classic cyan/default/gray look.
-    let accent = theme_accent(theme);
-    let base = theme.map(|p| p.primary()); // None -> terminal default text
-    let dim = theme.map(|p| p.dim()).unwrap_or(Color::DarkGray);
-    let bar_bg = theme.map(|p| p.bg()).unwrap_or(Color::Rgb(38, 38, 46));
-    let query_style = base.map(|c| Style::default().fg(c)).unwrap_or_default();
-    let acc = Style::default().fg(accent);
-    let prompt_line = Line::from(vec![
-        Span::styled(prompt.to_string(), acc.add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{filter}\u{258f}"), query_style),
-        Span::styled(
-            format!("   {}/{total}{marked}", matched.len()),
-            Style::default().fg(dim),
-        ),
-        Span::styled(
-            "   Enter select · Tab mark · \u{2191}\u{2193} move · Ctrl-T theme · Ctrl-C abort",
-            Style::default().fg(dim),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(prompt_line), chunks[0]);
+    // Palette: fzf's own by default — that is what makes the drop-in
+    // indistinguishable from `fzf`. An explicitly requested arb theme (or a
+    // live Ctrl-T pick) re-maps the same slots onto that palette instead.
+    let colors = match theme {
+        Some(p) => {
+            let acc = crate::fzf::Ent {
+                color: Some(p.accent()),
+                attrs: Modifier::BOLD,
+            };
+            let dim = crate::fzf::Ent {
+                color: Some(p.dim()),
+                attrs: Modifier::empty(),
+            };
+            crate::fzf::Colors {
+                fg: crate::fzf::Ent {
+                    color: Some(p.primary()),
+                    attrs: Modifier::empty(),
+                },
+                bg: crate::fzf::Ent::default(),
+                hl: acc,
+                fg_plus: acc,
+                bg_plus: crate::fzf::Ent {
+                    color: Some(p.bg()),
+                    attrs: Modifier::empty(),
+                },
+                hl_plus: acc,
+                gutter: crate::fzf::Ent {
+                    color: Some(p.bg()),
+                    attrs: Modifier::empty(),
+                },
+                pointer: acc,
+                marker: acc,
+                prompt: acc,
+                query: crate::fzf::Ent {
+                    color: Some(p.primary()),
+                    attrs: Modifier::empty(),
+                },
+                info: dim,
+                spinner: acc,
+                header: dim,
+                border: dim,
+                separator: dim,
+                scrollbar: dim,
+            }
+        }
+        None => look.colors,
+    };
+
+    let header_h: u16 = u16::from(!header.is_empty());
+    // The counter gets its own row only in fzf's separator styles; the inline
+    // styles ride on the prompt line and `hidden` takes no row at all.
+    // `hidden` drops the counter but KEEPS the separator row (fzf 0.74 draws the
+    // bare rule); only the inline styles give the row back to the list.
+    let info_h: u16 = u16::from(!matches!(
+        look.info,
+        crate::fzf::Info::Inline(_) | crate::fzf::Info::InlineRight(_)
+    ));
+    // `--layout`: reverse puts the prompt on top; default and reverse-list put it
+    // at the bottom (default additionally grows the list upward from it).
+    let reverse = look.layout == crate::fzf::Layout::Reverse;
+    let rows = if reverse {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(info_h),
+            Constraint::Length(header_h),
+            Constraint::Min(0),
+        ])
+        .split(body)
+    } else {
+        Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(header_h),
+            Constraint::Length(info_h),
+            Constraint::Length(1),
+        ])
+        .split(body)
+    };
+    let (prompt_area, info_area, header_area, list_area) = if reverse {
+        (rows[0], rows[1], rows[2], rows[3])
+    } else {
+        (rows[3], rows[2], rows[1], rows[0])
+    };
+    // The mark count is part of the counter whenever multi-select is on — fzf
+    // shows `(0)` too, it isn't hidden until something is marked.
+    let marked = if multi {
+        format!(" ({})", marks.len())
+    } else {
+        String::new()
+    };
+    let counter = format!("{}/{total}{marked}", matched.len());
+    // The rules stop one column short: that lane belongs to the scrollbar. With
+    // `--no-scrollbar` the list (only) gets the column back.
+    let rule = "\u{2500}";
+    let text_w = |a: Rect| (a.width as usize).saturating_sub(1);
+    let list_w = |a: Rect| (a.width as usize).saturating_sub(usize::from(look.scrollbar));
+
+    // Prompt line: `prompt` slot, then the query in the `query` slot, then the
+    // counter when an inline `--info` style asked for it there.
+    let mut prompt_spans = vec![
+        Span::styled(prompt.to_string(), colors.prompt.fg()),
+        Span::styled(filter.to_string(), colors.query.fg()),
+    ];
+    let used = prompt.chars().count() + filter.chars().count();
+    match &look.info {
+        crate::fzf::Info::Inline(prefix) => {
+            // The blank after the query is the cursor cell fzf keeps free; the
+            // separator then runs from the counter to the scrollbar lane.
+            let head = format!(" {prefix}{counter} ");
+            let fill = text_w(prompt_area).saturating_sub(used + head.chars().count());
+            prompt_spans.push(Span::styled(head, colors.info.fg()));
+            prompt_spans.push(Span::styled(rule.repeat(fill), colors.separator.fg()));
+        }
+        crate::fzf::Info::InlineRight(prefix) => {
+            let text = format!("{prefix}{counter}");
+            let pad = text_w(prompt_area).saturating_sub(used + text.chars().count());
+            prompt_spans.push(Span::raw(" ".repeat(pad)));
+            prompt_spans.push(Span::styled(text, colors.info.fg()));
+        }
+        _ => {}
+    }
+    f.render_widget(Paragraph::new(Line::from(prompt_spans)), prompt_area);
+    // A real terminal cursor after the query, like fzf — not a drawn glyph.
+    let cx = prompt_area.x + used as u16;
+    f.set_cursor_position((cx.min(prompt_area.right().saturating_sub(1)), prompt_area.y));
+
+    // Info row: the counter on one end of a horizontal separator that runs to
+    // the scrollbar lane. `hidden` keeps the rule and drops the counter.
+    if info_h == 1 {
+        let w = text_w(info_area);
+        let cw = counter.chars().count();
+        let spans = match look.info {
+            crate::fzf::Info::Hidden => {
+                vec![Span::styled(rule.repeat(w), colors.separator.fg())]
+            }
+            crate::fzf::Info::Right => {
+                let fill = w.saturating_sub(cw + 1);
+                vec![
+                    Span::styled(format!("{} ", rule.repeat(fill)), colors.separator.fg()),
+                    Span::styled(counter.clone(), colors.info.fg()),
+                ]
+            }
+            _ => {
+                let fill = w.saturating_sub(cw + 3);
+                vec![
+                    Span::raw("  "),
+                    Span::styled(counter.clone(), colors.info.fg()),
+                    Span::styled(format!(" {}", rule.repeat(fill)), colors.separator.fg()),
+                ]
+            }
+        };
+        f.render_widget(Paragraph::new(Line::from(spans)), info_area);
+    }
     if !header.is_empty() {
+        // fzf indents the header to clear the pointer + marker columns.
         f.render_widget(
-            Paragraph::new(header).style(Style::default().fg(dim)),
-            chunks[1],
+            Paragraph::new(format!("  {header}")).style(colors.header.fg()),
+            header_area,
         );
     }
 
-    let inner_w = chunks[2].width as usize;
+    let inner_w = list_w(list_area);
     // Only build ListItems for the VISIBLE window around the cursor — not the
     // whole (possibly million-line) match list. This is what keeps arb as fast as
     // fzf: fuzzy-highlighting and allocation happen for ~a screenful, not all rows.
-    let list_h = chunks[2].height as usize;
+    let list_h = list_area.height as usize;
     let n = matched.len();
     let sel = sel.min(n.saturating_sub(1));
-    let start = if list_h > 0 && sel >= list_h {
-        sel + 1 - list_h
-    } else {
-        0
-    };
+    let max_start = n.saturating_sub(list_h);
+    let start = fzf_window_start(prev_start, sel, list_h, n, look.scroll_off);
     let end = (start + list_h.max(1)).min(n);
     let mark_set: std::collections::HashSet<&str> = marks.iter().map(String::as_str).collect();
-    let items: Vec<ListItem> = matched[start..end]
-        .iter()
+    let mut items: Vec<ListItem> = (start..end)
+        // `--tac` walks the ranked list backwards; without it this is `[start..end]`.
+        .filter_map(|pos| matched.get(tac_index(pos, n, look.tac)).map(|m| (pos, m)))
         // Show the projected display; a row is marked when its ORIGINAL is marked.
-        .map(|(disp, orig)| {
-            ListItem::new(fzf_line(
+        .map(|(pos, (disp, orig))| {
+            let current = n > 0 && pos == sel;
+            let row = fzf_line(
                 disp,
                 filter,
                 inner_w,
                 mark_set.contains(orig.as_ref()),
-                base,
-                accent,
-            ))
+                current,
+                look,
+                &colors,
+            );
+            ListItem::new(row).style(colors.bg.bg())
         })
         .collect();
-    let mut state = ListState::default();
-    if n > 0 {
-        state.select(Some(sel - start));
+    // `--layout=default`: the best match sits at the BOTTOM, next to the prompt,
+    // and a short list stays anchored there — so pad the top, not the bottom.
+    if look.layout == crate::fzf::Layout::Default {
+        items.reverse();
+        let pad = list_h.saturating_sub(items.len());
+        let blanks = std::iter::repeat_with(|| ListItem::new("")).take(pad);
+        items = blanks.chain(items).collect();
     }
-    // Cursor line: accent text + the `▶` pointer over a bar in the palette `bg`,
-    // so the selected row reads as themed even before you type a query.
-    let list = List::new(items)
-        .highlight_symbol("\u{25b6} ")
-        .highlight_style(
-            Style::default()
-                .fg(accent)
-                .bg(bar_bg)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_stateful_widget(list, chunks[2], &mut state);
+    f.render_widget(
+        List::new(items),
+        Rect {
+            width: inner_w as u16,
+            ..list_area
+        },
+    );
+    // Scrollbar: fzf keeps the last column of the list for it and draws a thumb
+    // sized and positioned by the visible window — nothing when everything fits.
+    if look.scrollbar && n > list_h && list_h > 0 {
+        let thumb = (list_h * list_h / n).max(1);
+        // Thumb position is proportional to how far the WINDOW has scrolled, so
+        // it parks on the last row at the end of the list (as fzf's does).
+        let top = match max_start {
+            0 => 0,
+            m => start * (list_h - thumb) / m,
+        };
+        // The bottom-up layout mirrors the list, so the thumb mirrors with it.
+        let top = match look.layout {
+            crate::fzf::Layout::Default => list_h - thumb - top,
+            _ => top,
+        };
+        let x = list_area.right().saturating_sub(1);
+        for row in top..top + thumb {
+            let cell = Rect {
+                x,
+                y: list_area.y + row as u16,
+                width: 1,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new("\u{2502}").style(colors.scrollbar.fg()),
+                cell,
+            );
+        }
+    }
     // Publish the list body so a click maps to a cursor row (see dispatch_mouse
     // Select arm). `start` is the scroll offset of the first visible row.
     hitmap.clear();
     hitmap.push(HitTarget {
-        rect: chunks[2],
+        rect: list_area,
         kind: WidgetKind::Select,
         control_name: String::new(),
         meta_index: None,
         tabs: Vec::new(),
     });
-    start
+    (start, list_h)
 }
 
 /// Render the captured downstream output (`arb -- CMD`) as a tailed list pane —
@@ -3234,6 +3716,80 @@ fn treemap_rects(area: Rect, pairs: &[(String, u64)]) -> Vec<Rect> {
 }
 
 #[cfg(test)]
+mod fzf_view_tests {
+    use super::{fzf_key, fzf_row_to_cursor_rev, fzf_window_start, tac_index};
+    use crate::fzf::Key;
+
+    // The expectations below were read off fzf 0.74.2 itself: it was run under a
+    // pty with 20 items, the cursor driven with ctrl-n/ctrl-p, and the top row
+    // of the list recorded at each position.
+    #[test]
+    fn window_scrolls_where_fzf_scrolls() {
+        let (h, n, so) = (6, 20, 3);
+        // Walking down from the top: the window holds until the cursor comes
+        // within the scroll-off margin of the bottom, then follows it.
+        let mut start = 0;
+        let tops: Vec<usize> = (0..8)
+            .map(|sel| {
+                start = fzf_window_start(start, sel, h, n, so);
+                start
+            })
+            .collect();
+        assert_eq!(tops, vec![0, 0, 0, 1, 2, 3, 4, 5]);
+        // At the very end the window parks on the last full screen…
+        let end = fzf_window_start(5, 19, h, n, so);
+        assert_eq!(end, 14);
+        // …and walking back up it stays put until the margin bites (fzf keeps
+        // the cursor on the same row rather than scrolling one line early).
+        assert_eq!(fzf_window_start(14, 18, h, n, so), 14);
+        assert_eq!(fzf_window_start(14, 16, h, n, so), 14);
+        assert_eq!(fzf_window_start(14, 15, h, n, so), 13);
+    }
+
+    #[test]
+    fn window_with_a_taller_list_keeps_the_same_margin() {
+        // list_h = 10: fzf held the top until the cursor hit row 6 (3 rows of
+        // margin below), then scrolled one line per step.
+        assert_eq!(fzf_window_start(0, 5, 10, 20, 3), 0);
+        assert_eq!(fzf_window_start(0, 8, 10, 20, 3), 2);
+        assert_eq!(fzf_window_start(2, 12, 10, 20, 3), 6);
+        // A list that fits never scrolls.
+        assert_eq!(fzf_window_start(0, 4, 10, 5, 3), 0);
+    }
+
+    #[test]
+    fn tac_flips_display_positions_to_ranks() {
+        assert_eq!(tac_index(0, 10, false), 0);
+        assert_eq!(tac_index(0, 10, true), 9);
+        assert_eq!(tac_index(9, 10, true), 0);
+        // An empty list must not underflow.
+        assert_eq!(tac_index(0, 0, true), 0);
+    }
+
+    #[test]
+    fn bottom_up_click_mirrors_the_row() {
+        // 6 visible rows starting at offset 10, list drawn bottom-up: the top
+        // screen row is the LAST of the window.
+        assert_eq!(fzf_row_to_cursor_rev(2, 10, 6, 2), 15);
+        assert_eq!(fzf_row_to_cursor_rev(2, 10, 6, 7), 10);
+    }
+
+    #[test]
+    fn keystrokes_map_to_fzf_key_names() {
+        // Control bytes, escape sequences and Alt-<char>, as `--bind` names them.
+        assert_eq!(fzf_key(b"\x0e", 0), Some((Key::Ctrl('n'), 1)));
+        assert_eq!(fzf_key(b"\t", 0), Some((Key::Tab, 1)));
+        assert_eq!(fzf_key(b"\r", 0), Some((Key::Enter, 1)));
+        assert_eq!(fzf_key(b"\x1b[A", 0), Some((Key::Up, 3)));
+        assert_eq!(fzf_key(b"\x1b[5~", 0), Some((Key::PageUp, 4)));
+        assert_eq!(fzf_key(b"\x1b[Z", 0), Some((Key::BTab, 3)));
+        assert_eq!(fzf_key(b"\x1bx", 0), Some((Key::Alt('x'), 2)));
+        assert_eq!(fzf_key(b"\x1b", 0), Some((Key::Esc, 1)));
+        assert_eq!(fzf_key(b"?", 0), Some((Key::Char('?'), 1)));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::compute_rects;
     use crate::parser::parse;
@@ -3705,9 +4261,15 @@ mod tests {
         use super::{dispatch_mouse, Controls, HitTarget, MouseEvent, MouseKind};
         use crate::spec::WidgetKind;
         use ratatui::layout::Rect;
-        // fzf: clicking a list row sets the cursor via the scroll offset.
+        // fzf: clicking a list row sets the cursor via the scroll offset. This
+        // is the top-down list (`--reverse`, and arb's own `select` widget);
+        // the bottom-up default layout is asserted below.
         let mut c = Controls {
             fzf_list_start: 10,
+            look: crate::fzf::Look {
+                layout: crate::fzf::Layout::Reverse,
+                ..crate::fzf::Look::default()
+            },
             hitmap: vec![HitTarget {
                 rect: Rect {
                     x: 0,
@@ -3735,6 +4297,38 @@ mod tests {
             std::time::Instant::now(),
         );
         assert_eq!(c.cursor, 12); // 10 + (4 - 2)
+                                  // Bottom-up (fzf's default layout): the same
+                                  // click lands on the mirrored row.
+        let mut c = Controls {
+            fzf_list_start: 10,
+            fzf_page: 10,
+            hitmap: vec![HitTarget {
+                rect: Rect {
+                    x: 0,
+                    y: 2,
+                    width: 20,
+                    height: 10,
+                },
+                kind: WidgetKind::Select,
+                control_name: String::new(),
+                meta_index: None,
+                tabs: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        dispatch_mouse(
+            &mut c,
+            MouseEvent {
+                kind: MouseKind::Down,
+                col: 3,
+                row: 4,
+                button: 0,
+                press: true,
+            },
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(c.cursor, 17); // 10 + (10 - 1 - 2)
                                   // tabs: clicking a label selects it.
         let mut c = Controls {
             hitmap: vec![HitTarget {

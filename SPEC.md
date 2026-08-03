@@ -24,6 +24,18 @@ arb -l                        # list presets/packages
 arb save dash.arb as api      # register a user preset
 ```
 
+**fzf drop-in.** `arb --fzf` resolves its options the way the `fzf` binary does —
+`$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the command line, later
+winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
+`--info`, `--color`, `--pointer`, `--marker`, `--ellipsis`, `--scrollbar`,
+`--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`) on top of the
+matching set (`--exact`, `--no-sort`, `--query`, `--multi`, `--prompt`,
+`--header`, `--height`, `--preview`). The picker it draws — layout, separator,
+pointer/marker glyphs, palette, scrollbar, ellipsis, scroll margin, ranking —
+matches what `fzf` draws for the same environment, so `ZPWR_FZF='arb --fzf'`
+changes nothing on screen. Flags with no arb analog are accepted and ignored, and
+a `--bind` naming an unimplemented action is skipped rather than half-applied.
+
 ## 2. Lexical (Tcl-flavored, NOT Tcl)
 
 ```
@@ -483,9 +495,12 @@ swatches). Each is a 6-color palette `(primary, accent, alt, mid, dim, bg)` of
 With a theme active the whole TUI recolors from the palette as one system — a
 widget with no `-color` takes a slot chosen by its kind (value gauges → accent,
 bars → alt, series/plots → mid, text/containers → primary) so a dashboard is
-multi-colored like the iftop/htop HUD rather than monochrome, and the fzf picker
-uses the palette throughout (rows → primary, matches → accent, cursor bar → bg,
-hints → dim). An explicit `-color <slot>` (`accent`/`primary`/`alt`/`mid`/`dim`/
+multi-colored like the iftop/htop HUD rather than monochrome, and a themed fzf
+picker maps the palette onto fzf's own colour slots (rows → primary, matches →
+accent, cursor bar → bg, counter/header/separator → dim). `arb --fzf` starts from
+**fzf's palette**, not the arb theme, unless a theme is asked for explicitly
+(`--theme NAME`, a spec `theme` directive, or the live `Ctrl-T` chooser) — the
+drop-in has to look like `fzf`. An explicit `-color <slot>` (`accent`/`primary`/`alt`/`mid`/`dim`/
 `bg`) resolves through the palette too. The fixed semantic names (`-color green`
 /`red`/…) remain theme-independent explicit overrides.
 
