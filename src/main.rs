@@ -1012,7 +1012,12 @@ fn main() -> io::Result<()> {
         let down_pane = if fzf_mode {
             cli.preview.as_ref().map(|pv| {
                 let pstate = Arc::new(Mutex::new(StreamState::new()));
-                spawn_item_preview(pv.clone(), controls.clone(), pstate.clone());
+                spawn_item_preview(
+                    pv.clone(),
+                    fzf_look.shell(),
+                    controls.clone(),
+                    pstate.clone(),
+                );
                 (pstate, "preview".to_string())
             })
         } else if down_cmd.is_empty() {
@@ -1877,6 +1882,7 @@ fn shell_escape(s: &str) -> String {
 /// preview pane. Debounced; skips re-running on an unchanged line.
 fn spawn_item_preview(
     template: String,
+    shell: Vec<String>,
     controls: Arc<Mutex<tui::Controls>>,
     pstate: Arc<Mutex<StreamState>>,
 ) {
@@ -1899,7 +1905,11 @@ fn spawn_item_preview(
                 continue;
             }
             let cmd = template.replace("{}", &shell_escape(&cur));
-            let output = run_capture(&["sh".to_string(), "-c".to_string(), cmd], &[]);
+            // fzf starts children with `$SHELL -c`; a preview using the user's
+            // shell (zsh's `print`, one of their functions) needs that shell.
+            let mut argv = shell.clone();
+            argv.push(cmd);
+            let output = run_capture(&argv, &[]);
             let mut p = pstate.lock().unwrap();
             *p = StreamState::new();
             for l in output {

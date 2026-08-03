@@ -245,8 +245,11 @@ selection, fzf's tokenizer), `--header-lines`, `--print-query`, `--expect`
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
 `ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,
 `--query`, `-m`/`--multi`, `-f`/`--filter`, `--prompt`, `--header`, `--height`
-(drawn below the cursor, scrolling to make room, with fzf's `--min-height=10+`
-floor on percentages), `--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
+(`100%` means full screen and runs on the alternate screen, as in fzf, so
+quitting restores the terminal; anything smaller draws below the cursor,
+scrolling to make room, with fzf's `--min-height=10+` floor on percentages),
+`--preview 'CMD {}'` (run with `$SHELL -c`, or `--with-shell`, so a preview
+written against your shell works). A binding naming an action arb has no equivalent for
 (`execute(…)`, preview control, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.

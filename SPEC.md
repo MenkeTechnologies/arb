@@ -32,13 +32,15 @@ winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
 `--ansi`) on top of the matching and I/O set (`--exact`, `--no-sort`, `--query`,
 `--multi`, `--prompt`, `--header`, `--header-lines`, `--height`, `--preview`,
 `-f`/`--filter`, `-d`/`--delimiter`, `-n`/`--nth`, `--with-nth`,
-`--print-query`, `--expect`). A repeated option takes its LAST value, as fzf
-does — `$FZF_DEFAULT_OPTS` and the call site both setting `--prompt` is the
+`--print-query`, `--expect`, `--with-shell`). Child processes (a `--preview`
+command) start with `$SHELL -c` like fzf's, not `sh -c`. A repeated option takes
+its LAST value, as fzf does — `$FZF_DEFAULT_OPTS` and the call site both setting `--prompt` is the
 normal case, not an error. Matching
 itself is fzf's algorithm, ported from `src/algo/algo.go` into `src/algo.rs`
 (`FuzzyMatchV2` + `ExactMatchNaive`), so rankings are identical line for line —
 verifiable with `--filter`, which prints the ranked matches without a UI.
-`--height` draws below the
+`--height 100%` is fzf's full-screen form and runs on the alternate screen, so
+quitting restores the terminal untouched; a smaller `--height` draws below the
 cursor and scrolls the terminal to make room, sized like fzf's (percentages get
 the `--min-height=10+` floor); arb places that viewport itself rather than
 asking crossterm, whose cursor query writes to stdout — arb's data channel — and

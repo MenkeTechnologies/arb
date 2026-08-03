@@ -18,7 +18,8 @@ use ratatui::crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, size, Clear as TermClear, ClearType,
+        EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -62,6 +63,14 @@ fn parse_height(spec: &str) -> Option<(u16, bool)> {
     let s = spec.trim();
     if let Some(p) = s.strip_suffix('%') {
         let pct: u32 = p.trim().parse().ok()?;
+        // `--height 100%` is fzf's way of saying FULL SCREEN, and fzf runs that
+        // on the alternate screen — which is why quitting restores whatever was
+        // on the terminal before. An inline viewport of the same size would wipe
+        // it instead. (An absolute height equal to the row count stays inline,
+        // as it does in fzf.)
+        if pct >= 100 {
+            return None;
+        }
         let rows = size().map(|(_, h)| h).unwrap_or(24) as u32;
         Some(((rows * pct / 100).clamp(3, rows) as u16, true))
     } else {
@@ -1603,11 +1612,15 @@ pub fn run(
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
     if let Some(area) = inline {
-        // Inline mode never entered the alternate screen; clear the viewport
-        // region so the UI doesn't linger, and leave the cursor at its top row
-        // so the next shell prompt lands where the picker was.
-        terminal.clear()?;
-        let _ = execute!(terminal.backend_mut(), MoveTo(0, area.y));
+        // Inline mode never entered the alternate screen. Put the cursor back at
+        // the picker's top-left and clear from there to the end of the screen —
+        // one erase, the way fzf does it, so the next shell prompt lands exactly
+        // where the picker started and nothing above it is touched.
+        let _ = execute!(
+            terminal.backend_mut(),
+            MoveTo(0, area.y),
+            TermClear(ClearType::FromCursorDown)
+        );
     } else {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }

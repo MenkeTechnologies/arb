@@ -613,6 +613,11 @@ pub struct Look {
     pub with_nth: Vec<Nth>,
     /// `--header-lines`: the first N input lines are a header, not candidates.
     pub header_lines: usize,
+    /// `--with-shell`: how child processes (a `--preview` command, an `execute`
+    /// binding) are started. fzf defaults to `$SHELL -c`, NOT `sh -c` — a
+    /// preview written against the user's shell (zsh's `print`, a function from
+    /// their rc) fails outright under `sh`.
+    pub with_shell: Option<String>,
     /// `--print-query`: the query is written before the selection.
     pub print_query: bool,
     /// `--expect=KEYS`: these keys also accept, and the one that did is written
@@ -656,6 +661,7 @@ impl Default for Look {
             nth: Vec::new(),
             with_nth: Vec::new(),
             header_lines: 0,
+            with_shell: None,
             print_query: false,
             expect: Vec::new(),
             min_height: 10,
@@ -964,6 +970,11 @@ impl Look {
                 "--tac" => look.tac = true,
                 "--ansi" => look.ansi = true,
                 "--print-query" => look.print_query = true,
+                "--with-shell" => {
+                    let (v, sep) = flag_value(a, next);
+                    look.with_shell = v.filter(|v| !v.is_empty());
+                    i += usize::from(sep);
+                }
                 "--expect" => {
                     let (v, sep) = flag_value(a, next);
                     if let Some(v) = v {
@@ -1032,6 +1043,22 @@ impl Look {
             i += 1;
         }
         look
+    }
+
+    /// The command and flags a child process starts with: `--with-shell` if
+    /// given, else `$SHELL -c`, else `sh -c` — fzf's rule, so a preview that
+    /// works under `fzf` works here.
+    pub fn shell(&self) -> Vec<String> {
+        if let Some(w) = &self.with_shell {
+            let words = shell_split(w);
+            if !words.is_empty() {
+                return words;
+            }
+        }
+        match std::env::var("SHELL") {
+            Ok(sh) if !sh.is_empty() => vec![sh, "-c".to_string()],
+            _ => vec!["sh".to_string(), "-c".to_string()],
+        }
     }
 
     /// The actions bound to `key`, if any. Later bindings win, so the command

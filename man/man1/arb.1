@@ -273,7 +273,20 @@ Render inline in
 .I N
 rows (or
 .IR N% )
-at the bottom instead of full\-screen, keeping the scrollback.
+below the cursor instead of full\-screen, keeping the scrollback.
+.B 100%
+is fzf's full\-screen form: it uses the alternate screen, so quitting restores
+the terminal.
+.TP
+.BI \-\-with\-shell \ STR
+Command and flags to start child processes with (a
+.B \-\-preview
+command). Defaults to
+.B $SHELL \-c
+when
+.B SHELL
+is set, else
+.BR "sh \-c" .
 .TP
 .BI \-\- \ CMD \ \[u2026]
 Trailing preview command: re\-run over
