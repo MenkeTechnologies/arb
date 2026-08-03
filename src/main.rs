@@ -271,6 +271,7 @@ struct Cli {
     #[arg(
         long = "preview",
         value_name = "CMD",
+        overrides_with = "preview",
         help = "\x1b[32m//\x1b[0m fzf preview: run CMD on the cursor line ({}), output in a pane"
     )]
     preview: Option<String>,
@@ -278,6 +279,7 @@ struct Cli {
     #[arg(
         long = "prompt",
         value_name = "STR",
+        overrides_with = "prompt",
         help = "\x1b[32m//\x1b[0m fzf prompt string (default '> ')"
     )]
     prompt: Option<String>,
@@ -285,6 +287,7 @@ struct Cli {
     #[arg(
         long = "header",
         value_name = "STR",
+        overrides_with = "header",
         help = "\x1b[32m//\x1b[0m fzf header line shown above the list"
     )]
     header: Option<String>,
@@ -297,12 +300,14 @@ struct Cli {
     /// is rewritten to this; arb's own `-e` is `--eval`.)
     #[arg(
         long = "exact",
+        overrides_with = "exact",
         help = "\x1b[32m//\x1b[0m fzf: exact substring match (not fuzzy)"
     )]
     exact: bool,
     /// fzf compat: don't sort by score — keep input order.
     #[arg(
         long = "no-sort",
+        overrides_with = "no_sort",
         help = "\x1b[32m//\x1b[0m fzf: keep input order (no score sort)"
     )]
     no_sort: bool,
@@ -310,6 +315,7 @@ struct Cli {
     #[arg(
         long = "query",
         value_name = "STR",
+        overrides_with = "query",
         help = "\x1b[32m//\x1b[0m fzf: initial query"
     )]
     query: Option<String>,
@@ -317,6 +323,7 @@ struct Cli {
     #[arg(
         short = 'm',
         long = "multi",
+        overrides_with = "multi",
         help = "\x1b[32m//\x1b[0m fzf: multi-select (Tab marks)"
     )]
     multi: bool,
@@ -326,6 +333,7 @@ struct Cli {
         short = 'f',
         long = "filter",
         value_name = "STR",
+        overrides_with = "filter",
         help = "\x1b[32m//\x1b[0m fzf: print ranked matches for STR and exit (no UI)"
     )]
     filter: Option<String>,
@@ -334,6 +342,7 @@ struct Cli {
     #[arg(
         long = "height",
         value_name = "N|N%",
+        overrides_with = "height",
         help = "\x1b[32m//\x1b[0m fzf height: inline in N rows or N% (not full-screen)"
     )]
     height: Option<String>,
@@ -436,6 +445,7 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--border-label",
         "--border-label-pos",
         "--color",
+        "--delimiter",
         "--ellipsis",
         "--expect",
         "--footer",
@@ -552,11 +562,19 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &arb::fzf::Look) -> i
     if lines.last() == Some(&"") {
         lines.pop();
     }
-    let order = arb::tui::rank(&lines, pat, exact, no_sort, look.tiebreak_length, look.tac);
+    let order = arb::tui::rank(
+        &lines,
+        pat,
+        exact,
+        no_sort,
+        look.tiebreak_length,
+        look.tac,
+        look,
+    );
     let out = io::stdout();
     let mut out = BufWriter::new(out.lock());
     for i in order {
-        writeln!(out, "{}", lines[i])?;
+        writeln!(out, "{}", arb::tui::item_text(lines[i], look))?;
     }
     out.flush()
 }
@@ -1128,6 +1146,15 @@ fn main() -> io::Result<()> {
                     Some(cons) => run_capture(&["sh".into(), "-c".into(), cons.clone()], &c.result),
                     None => c.result.clone(),
                 };
+                // fzf's output contract: `--print-query` writes the query first,
+                // then `--expect` writes the key that accepted (blank for plain
+                // Enter), then the selection. fzf-tab parses exactly this.
+                if fzf_look.print_query {
+                    println!("{}", c.filter);
+                }
+                if !fzf_look.expect.is_empty() {
+                    println!("{}", c.expect_key.clone().unwrap_or_default());
+                }
                 for line in out {
                     println!("{line}");
                 }

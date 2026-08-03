@@ -92,7 +92,8 @@ fn rank_orders_by_score_then_trimmed_length_then_input() {
         "Makefile",         // 'm' at the start of the line
         "docs/manual.md  ", // boundary too, but longer — and padded
     ];
-    let order = rank(&lines, "ma", false, false, true, false);
+    let look = arb::fzf::Look::default();
+    let order = rank(&lines, "ma", false, false, true, false, &look);
     // This is `fzf --filter ma` on the same four lines, verbatim: a
     // start-of-line match first, then the boundary match after `/`, then the
     // mid-word one, then the longer boundary match.
@@ -105,12 +106,12 @@ fn rank_orders_by_score_then_trimmed_length_then_input() {
     // `TrimLength`), so the padded line ties on its trimmed width of 14.
     assert_eq!(arb::tui::trim_length("docs/manual.md  "), 14);
     // `--no-sort` keeps input order for the same match set.
-    let unsorted = rank(&lines, "ma", false, true, true, false);
+    let unsorted = rank(&lines, "ma", false, true, true, false, &look);
     let mut expected = unsorted.clone();
     expected.sort_unstable();
     assert_eq!(unsorted, expected);
     // `--tac` walks the same matches backwards.
-    let tac = rank(&lines, "ma", false, true, true, true);
+    let tac = rank(&lines, "ma", false, true, true, true, &look);
     let mut rev = unsorted.clone();
     rev.reverse();
     assert_eq!(tac, rev);
@@ -122,10 +123,97 @@ fn rank_orders_by_score_then_trimmed_length_then_input() {
 fn exact_mode_is_substring_but_still_ranked() {
     use arb::tui::rank;
     let lines = vec!["unbarred", "foo/bar", "bar"];
-    let order = rank(&lines, "bar", true, false, true, false);
+    let order = rank(
+        &lines,
+        "bar",
+        true,
+        false,
+        true,
+        false,
+        &arb::fzf::Look::default(),
+    );
     assert_eq!(lines[order[0]], "bar");
     assert_eq!(lines[order[order.len() - 1]], "unbarred");
     // A subsequence that isn't a substring doesn't match at all in exact mode.
-    assert!(rank(&["b-a-r"], "bar", true, false, true, false).is_empty());
-    assert_eq!(rank(&["b-a-r"], "bar", false, false, true, false), vec![0]);
+    assert!(rank(
+        &["b-a-r"],
+        "bar",
+        true,
+        false,
+        true,
+        false,
+        &arb::fzf::Look::default()
+    )
+    .is_empty());
+    assert_eq!(
+        rank(
+            &["b-a-r"],
+            "bar",
+            false,
+            false,
+            true,
+            false,
+            &arb::fzf::Look::default()
+        ),
+        vec![0]
+    );
+}
+
+/// fzf's field selection: `--nth` restricts what the query matches (the row
+/// still shows the whole line), `--with-nth` restricts what it shows, and the
+/// field text follows fzf's tokenizer — with an explicit delimiter a single
+/// field excludes its trailing delimiter, while a range keeps the internal ones.
+/// Verified against `fzf --filter` on the same fixtures.
+#[test]
+fn nth_selects_the_fields_fzf_selects() {
+    use arb::fzf::{tokenize, transform, Nth};
+    // Explicit delimiter: tokens keep their trailing delimiter…
+    let toks = tokenize("alpha:beta:gamma", Some(":"));
+    assert_eq!(toks, vec!["alpha:", "beta:", "gamma"]);
+    // …but a selected range drops the one that trails the whole range.
+    assert_eq!(transform(&toks, &Nth::parse_list("1"), Some(":")), "alpha");
+    assert_eq!(
+        transform(&toks, &Nth::parse_list("1..2"), Some(":")),
+        "alpha:beta"
+    );
+    assert_eq!(transform(&toks, &Nth::parse_list("-1"), Some(":")), "gamma");
+    assert_eq!(
+        transform(&toks, &Nth::parse_list("2.."), Some(":")),
+        "beta:gamma"
+    );
+    // AWK-style: a token is a word plus the whitespace after it, leading
+    // whitespace belongs to no token, and nothing is stripped.
+    let toks = tokenize("  aa bb  cc", None);
+    assert_eq!(toks, vec!["aa ", "bb  ", "cc"]);
+    assert_eq!(transform(&toks, &Nth::parse_list("1"), None), "aa ");
+    assert_eq!(transform(&toks, &Nth::parse_list("2.."), None), "bb  cc");
+    // Range syntax fzf rejects yields no ranges (the option is ignored).
+    assert!(Nth::parse_list("0").is_empty());
+    assert!(Nth::parse_list("-1..2").is_empty());
+}
+
+/// `--ansi`: the colour codes are metadata. What the query matches, and what a
+/// selection emits, is the text without them.
+#[test]
+fn ansi_codes_are_colour_not_content() {
+    use arb::fzf::{strip_ansi, Look};
+    let line = "\x1b[32malpha\x1b[0m:beta";
+    assert_eq!(strip_ansi(line), "alpha:beta");
+    let ansi = Look {
+        ansi: true,
+        ..Look::default()
+    };
+    assert_eq!(arb::tui::search_key(line, &ansi), "alpha:beta");
+    assert_eq!(arb::tui::item_text(line, &ansi), "alpha:beta");
+    // Without `--ansi` the escapes are part of the text, as in fzf.
+    let plain = Look::default();
+    assert_eq!(arb::tui::item_text(line, &plain), line);
+    // `--nth` composes with it: field 1 of the stripped line.
+    let both = Look {
+        ansi: true,
+        delimiter: Some(":".into()),
+        nth: arb::fzf::Nth::parse_list("1"),
+        ..Look::default()
+    };
+    assert_eq!(arb::tui::search_key(line, &both), "alpha");
 }

@@ -236,7 +236,11 @@ a wrapper at it (e.g. `ZPWR_FZF='arb --fzf'`) and nothing else changes.
 Honored: `--layout`/`--reverse`, `--border[=STYLE]`, `--info=STYLE`, `--color`
 (`dark`/`light`/`16`/`bw` plus per-slot overrides), `--pointer`, `--marker`,
 `--ellipsis`, `--scrollbar`/`--no-scrollbar`, `--scroll-off`, `--cycle`, `--tac`,
-`--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
+`--ansi` (the input's own colours render; matching and output use the text
+without the codes), `-d`/`--delimiter` + `-n`/`--nth` + `--with-nth` (field
+selection, fzf's tokenizer), `--header-lines`, `--print-query`, `--expect`
+(fzf's output contract: query line, accepting key, then the selection — what
+`fzf-tab` parses), `--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
 `ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,

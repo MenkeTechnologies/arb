@@ -28,9 +28,13 @@ arb save dash.arb as api      # register a user preset
 `$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the command line, later
 winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
 `--info`, `--color`, `--pointer`, `--marker`, `--ellipsis`, `--scrollbar`,
-`--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`, `--min-height`) on
-top of the matching set (`--exact`, `--no-sort`, `--query`, `--multi`,
-`--prompt`, `--header`, `--height`, `--preview`, `-f`/`--filter`). Matching
+`--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`, `--min-height`,
+`--ansi`) on top of the matching and I/O set (`--exact`, `--no-sort`, `--query`,
+`--multi`, `--prompt`, `--header`, `--header-lines`, `--height`, `--preview`,
+`-f`/`--filter`, `-d`/`--delimiter`, `-n`/`--nth`, `--with-nth`,
+`--print-query`, `--expect`). A repeated option takes its LAST value, as fzf
+does — `$FZF_DEFAULT_OPTS` and the call site both setting `--prompt` is the
+normal case, not an error. Matching
 itself is fzf's algorithm, ported from `src/algo/algo.go` into `src/algo.rs`
 (`FuzzyMatchV2` + `ExactMatchNaive`), so rankings are identical line for line —
 verifiable with `--filter`, which prints the ranked matches without a UI.

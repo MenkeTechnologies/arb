@@ -268,6 +268,9 @@ pub struct Controls {
     /// A `toggle-all` binding fired; the run loop marks (or clears) every match,
     /// since only it holds the filtered list.
     pub toggle_all: bool,
+    /// Which `--expect` key accepted the selection, if one did. `main` prints it
+    /// ahead of the result, as fzf does.
+    pub expect_key: Option<String>,
 }
 
 /// The megafilter predicate: a line is kept iff it matches the interactive
@@ -303,6 +306,35 @@ pub fn trim_length(s: &str) -> usize {
     s.trim().chars().count()
 }
 
+/// What a line IS once fzf has read it: the text with the SGR codes removed
+/// under `--ansi` (they become colour, not content), the line itself otherwise.
+/// This is what a selection emits and what `--filter` prints.
+pub fn item_text<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow<'a, str> {
+    match look.ansi {
+        true => std::borrow::Cow::Owned(crate::fzf::strip_ansi(line)),
+        false => std::borrow::Cow::Borrowed(line),
+    }
+}
+
+/// What a query matches against for one line: the whole line by default, the
+/// `--nth` fields when asked, with the SGR codes removed under `--ansi`.
+pub fn search_key(line: &str, look: &crate::fzf::Look) -> String {
+    let plain = |s: &str| match look.ansi {
+        true => crate::fzf::strip_ansi(s),
+        false => s.to_string(),
+    };
+    if look.nth.is_empty() && look.with_nth.is_empty() {
+        return plain(line);
+    }
+    let delim = look.delimiter.as_deref();
+    let tokens = crate::fzf::tokenize(line, delim);
+    let ranges = match look.nth.is_empty() {
+        true => &look.with_nth,
+        false => &look.nth,
+    };
+    plain(&crate::fzf::transform(&tokens, ranges, delim))
+}
+
 /// Rank a whole corpus against one query the way the picker does: score across
 /// cores, then order by score, then fzf's `--tiebreak=length`, with the stable
 /// sort leaving anything still equal in input order (fzf's `index` criterion).
@@ -315,11 +347,12 @@ pub fn rank(
     no_sort: bool,
     tiebreak_length: bool,
     tac: bool,
+    look: &crate::fzf::Look,
 ) -> Vec<usize> {
     let mut hits: Vec<(i32, usize)> = lines
         .par_iter()
         .enumerate()
-        .filter_map(|(i, line)| score_line(line, pat, exact).map(|s| (s, i)))
+        .filter_map(|(i, line)| score_line(&search_key(line, look), pat, exact).map(|s| (s, i)))
         .collect();
     hits.par_sort_by_key(|(_, i)| *i);
     // `--tac` reversed the input, so every order derived from it reverses too.
@@ -676,6 +709,23 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
                         }
                         i += 1;
                         continue;
+                    }
+                    // `--expect` keys accept the selection and report themselves.
+                    if fzf && !c.look.expect.is_empty() {
+                        if let Some((key, used)) = fzf_key(&buf[..n], i) {
+                            if let Some(name) = c
+                                .look
+                                .expect
+                                .iter()
+                                .find(|(k, _)| *k == key)
+                                .map(|(_, name)| name.clone())
+                            {
+                                c.expect_key = Some(name);
+                                c.submit = true;
+                                let _ = used;
+                                break 'read;
+                            }
+                        }
                     }
                     // fzf `--bind` wins over arb's built-in picker keys, so the
                     // bindings in a user's `$FZF_DEFAULT_OPTS` (`tab:toggle+down`,
@@ -1171,6 +1221,42 @@ pub fn run(
                         break;
                     }
                     let raw = &st.lines[i];
+                    // `--header-lines N`: the first N lines are a header, not
+                    // candidates (fzf reads them off the same stream).
+                    if i < fzf_look.header_lines {
+                        continue;
+                    }
+                    // `--with-nth` reshapes what the row SHOWS, `--nth` what the
+                    // query matches, and `--ansi` matches the text with the SGR
+                    // codes removed. Each is a per-line derivation, so it lives
+                    // beside the projection pipeline rather than inside it.
+                    if !fzf_look.nth.is_empty() || !fzf_look.with_nth.is_empty() || fzf_look.ansi {
+                        let delim = fzf_look.delimiter.as_deref();
+                        let tokens = crate::fzf::tokenize(raw, delim);
+                        let disp: Arc<str> = match fzf_look.with_nth.is_empty() {
+                            true => Arc::clone(raw),
+                            false => Arc::from(
+                                crate::fzf::transform(&tokens, &fzf_look.with_nth, delim).as_str(),
+                            ),
+                        };
+                        let key_src = match fzf_look.nth.is_empty() {
+                            true => disp.to_string(),
+                            false => crate::fzf::transform(&tokens, &fzf_look.nth, delim),
+                        };
+                        let key: Arc<str> = match fzf_look.ansi {
+                            true => Arc::from(crate::fzf::strip_ansi(&key_src).as_str()),
+                            false => Arc::from(key_src.as_str()),
+                        };
+                        // Under `--ansi` the codes are METADATA: fzf's item text
+                        // — what it matches, prints on Enter and writes under
+                        // `--filter` — is the line without them.
+                        let orig: Arc<str> = match fzf_look.ansi {
+                            true => Arc::from(crate::fzf::strip_ansi(raw).as_str()),
+                            false => Arc::clone(raw),
+                        };
+                        fzf_cands.push(FzfCand::Proj(Box::new([disp, key, orig])));
+                        continue;
+                    }
                     // Identity fast-path: display, key and original are all the
                     // line the stream already holds — one shared handle.
                     if proj.is_empty() && search_proj.is_empty() {
@@ -2578,6 +2664,21 @@ fn fzf_line(
     let ptr_w = look.pointer.chars().count();
     let mark_w = look.marker.chars().count();
     let avail = width.saturating_sub(ptr_w + mark_w);
+    // `--ansi`: the line's own SGR colours are part of the row. Decode them
+    // once, then work with the plain text — matching, truncation and the
+    // highlight all count CHARACTERS, and an escape sequence isn't one.
+    let ansi_spans = look
+        .ansi
+        .then(|| ansi_line(line))
+        .filter(|l| l.spans.len() > 1 || line.contains('\u{1b}'));
+    let line = &match &ansi_spans {
+        Some(l) => l
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        None => line.to_string(),
+    };
     // Overlong rows end in the `--ellipsis` glyphs, like fzf's `··`.
     let text: String = if line.chars().count() > avail {
         let ell = look.ellipsis.chars().count();
@@ -2594,7 +2695,50 @@ fn fzf_line(
     let base_style = if current { colors.fg_plus } else { colors.fg }
         .fg()
         .patch(row_bg);
-    let base_span = |s: String| Span::styled(s, base_style);
+    // Each row character's own colour (from `--ansi`), by character index.
+    let ansi_at: Vec<Style> = match &ansi_spans {
+        Some(l) => l
+            .spans
+            .iter()
+            .flat_map(|sp| {
+                // A `\x1b[0m` reset decodes as an explicit `Reset` colour; that
+                // means "no colour of its own", so the row's own `fg`/`fg+`
+                // must show through rather than being overridden by it.
+                let keep = match sp.style.fg {
+                    Some(Color::Reset) | None => Style::default(),
+                    Some(c) => Style::default().fg(c),
+                };
+                let keep = keep.add_modifier(sp.style.add_modifier);
+                std::iter::repeat_n(keep, sp.content.chars().count())
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    // A run of text keeps the line's own colour where `--ansi` gave it one; the
+    // current row's `fg+`/`bg+` still wins, as it does in fzf.
+    let styled_run = |from: usize, s: String, over: Style| -> Vec<Span<'static>> {
+        if ansi_at.is_empty() {
+            return vec![Span::styled(s, over)];
+        }
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_style: Option<Style> = None;
+        for (k, ch) in s.chars().enumerate() {
+            let st = over.patch(*ansi_at.get(from + k).unwrap_or(&Style::default()));
+            if cur_style != Some(st) && !cur.is_empty() {
+                out.push(Span::styled(
+                    std::mem::take(&mut cur),
+                    cur_style.unwrap_or(over),
+                ));
+            }
+            cur_style = Some(st);
+            cur.push(ch);
+        }
+        if !cur.is_empty() {
+            out.push(Span::styled(cur, cur_style.unwrap_or(over)));
+        }
+        out
+    };
     // Current row: the `--pointer` glyph. Every other row: fzf's fixed gutter
     // block — it does NOT follow `--pointer`, it is the bar down the left edge.
     let pointer = if current {
@@ -2611,7 +2755,9 @@ fn fzf_line(
         Span::styled(" ".repeat(mark_w), row_bg)
     };
     if filter.is_empty() {
-        return Line::from(vec![pointer, gutter, base_span(text)]);
+        let mut spans = vec![pointer, gutter];
+        spans.extend(styled_run(0, text, base_style));
+        return Line::from(spans);
     }
     let pos: std::collections::HashSet<usize> =
         match_positions(&text, filter).into_iter().collect();
@@ -2622,25 +2768,27 @@ fn fzf_line(
     let mut spans = vec![pointer, gutter];
     let mut cur = String::new();
     let mut cur_hl = false;
+    let mut run_start = 0usize;
     for (i, ch) in text.chars().enumerate() {
         let h = pos.contains(&i);
         if h != cur_hl && !cur.is_empty() {
             let s = std::mem::take(&mut cur);
-            spans.push(if cur_hl {
-                Span::styled(s, hl)
-            } else {
-                base_span(s)
-            });
+            match cur_hl {
+                // A matched run always takes the `hl` colour; an unmatched one
+                // keeps whatever `--ansi` painted it.
+                true => spans.push(Span::styled(s, hl)),
+                false => spans.extend(styled_run(run_start, s, base_style)),
+            }
+            run_start = i;
         }
         cur_hl = h;
         cur.push(ch);
     }
     if !cur.is_empty() {
-        spans.push(if cur_hl {
-            Span::styled(cur, hl)
-        } else {
-            base_span(cur)
-        });
+        match cur_hl {
+            true => spans.push(Span::styled(cur, hl)),
+            false => spans.extend(styled_run(run_start, cur, base_style)),
+        }
     }
     Line::from(spans)
 }

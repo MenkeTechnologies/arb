@@ -228,6 +228,38 @@ picker would rank it (fzf's
 .BR \-f ).
 Scoring runs across all cores.
 .TP
+.B \-\-ansi
+Render the input's own SGR colours. Matching, and what a selection prints, use
+the text with the codes removed.
+.TP
+.BR \-d ", " \-\-delimiter " \fISTR\fR"
+Field separator for
+.BR \-\-nth / \-\-with\-nth
+(default: runs of whitespace, AWK-style).
+.TP
+.BR \-n ", " \-\-nth " \fIRANGES\fR"
+Restrict matching to these fields (\fB1\fR, \fB2..\fR, \fB..3\fR, \fB-1\fR,
+comma-separated). The row still shows, and Enter still emits, the whole line.
+.TP
+.BI \-\-with\-nth \ RANGES
+Show only these fields.
+.TP
+.BI \-\-header\-lines \ N
+Treat the first
+.I N
+input lines as a header instead of candidates.
+.TP
+.B \-\-print\-query
+Print the query before the selection.
+.TP
+.BI \-\-expect " " KEYS
+These keys also accept; the one that did is printed before the selection (an
+empty line for plain Enter). With
+.B \-\-print\-query
+this is the output contract
+.B fzf\-tab
+parses.
+.TP
 .BI \-\-query \ STR
 Start with this query in the filter.
 .TP

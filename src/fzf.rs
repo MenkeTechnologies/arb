@@ -403,6 +403,159 @@ fn apply_color_spec(colors: &mut Colors, spec: &str) {
     }
 }
 
+/// One `--nth`/`--with-nth` field range. `1` is the first field, `-1` the last,
+/// and [`Nth::ELLIPSIS`] is the open end of `2..` / `..3` / `..`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nth {
+    pub begin: i32,
+    pub end: i32,
+}
+
+impl Nth {
+    pub const ELLIPSIS: i32 = i32::MIN;
+
+    /// Parse one range in fzf's syntax (`ParseRange` in tokenizer.go).
+    pub fn parse(s: &str) -> Option<Nth> {
+        let n = |v: &str| v.parse::<i32>().ok().filter(|n| *n != 0);
+        if s == ".." {
+            return Some(Nth {
+                begin: Nth::ELLIPSIS,
+                end: Nth::ELLIPSIS,
+            });
+        }
+        if let Some(rest) = s.strip_prefix("..") {
+            return n(rest).map(|end| Nth {
+                begin: Nth::ELLIPSIS,
+                end,
+            });
+        }
+        if let Some(rest) = s.strip_suffix("..") {
+            return n(rest).map(|begin| Nth {
+                begin,
+                end: Nth::ELLIPSIS,
+            });
+        }
+        if let Some((a, b)) = s.split_once("..") {
+            let (begin, end) = (n(a)?, n(b)?);
+            // fzf rejects a negative start paired with a positive end.
+            return (!(begin < 0 && end > 0)).then_some(Nth { begin, end });
+        }
+        n(s).map(|v| Nth { begin: v, end: v })
+    }
+
+    /// Parse a comma-separated list (`--nth 1,3..`). Any bad entry drops the
+    /// whole list, as fzf treats it as an option error.
+    pub fn parse_list(s: &str) -> Vec<Nth> {
+        let mut out = Vec::new();
+        for part in s.split(',').filter(|p| !p.is_empty()) {
+            match Nth::parse(part) {
+                Some(r) => out.push(r),
+                None => return Vec::new(),
+            }
+        }
+        out
+    }
+}
+
+/// Split a line into fields the way fzf's `Tokenize` does: with no
+/// `--delimiter`, AWK-style — each token is a run of non-space plus the
+/// whitespace that follows it, and leading whitespace belongs to no token. With
+/// a delimiter, each token keeps its trailing delimiter so ranges rejoin
+/// exactly as they appeared.
+pub fn tokenize<'a>(text: &'a str, delimiter: Option<&str>) -> Vec<&'a str> {
+    let Some(d) = delimiter else {
+        let mut out = Vec::new();
+        let bytes = text.as_bytes();
+        let (mut start, mut i) = (0usize, 0usize);
+        // Skip the leading whitespace — fzf counts it as a prefix, not a token.
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        start = start.max(i);
+        while i < bytes.len() {
+            // A token runs to the end of the whitespace that follows it.
+            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                i += 1;
+            }
+            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+                i += 1;
+            }
+            out.push(&text[start..i]);
+            start = i;
+        }
+        return out;
+    };
+    if d.is_empty() {
+        return vec![text];
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(d) {
+        let (head, tail) = rest.split_at(pos + d.len());
+        out.push(head);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+/// The text a `--nth`/`--with-nth` range selects: the chosen tokens rejoined.
+/// With an explicit delimiter the trailing one is dropped (`--nth 1` on
+/// `a:b:c` matches `a`, not `a:`, while `--nth 1..2` matches `a:b`); AWK-style
+/// tokens keep their trailing whitespace.
+pub fn transform(tokens: &[&str], ranges: &[Nth], delimiter: Option<&str>) -> String {
+    if ranges.is_empty() {
+        return tokens.concat();
+    }
+    let n = tokens.len() as i32;
+    let resolve = |v: i32| if v < 0 { v + n + 1 } else { v };
+    let mut out = String::new();
+    for r in ranges {
+        let (begin, end) = match (r.begin, r.end) {
+            (Nth::ELLIPSIS, Nth::ELLIPSIS) => (1, n),
+            (Nth::ELLIPSIS, e) => (1, resolve(e)),
+            (b, Nth::ELLIPSIS) => (resolve(b), n),
+            (b, e) => (resolve(b), resolve(e)),
+        };
+        let mut part = String::new();
+        for idx in begin.max(1)..=end.min(n) {
+            part.push_str(tokens[(idx - 1) as usize]);
+        }
+        match delimiter {
+            Some(d) => out.push_str(part.strip_suffix(d).unwrap_or(&part)),
+            None => out.push_str(&part),
+        }
+    }
+    out
+}
+
+/// Strip SGR escape sequences, leaving the text `--ansi` should match against.
+pub fn strip_ansi(s: &str) -> String {
+    if !s.contains('\u{1b}') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // `ESC [ … <final>` — drop the whole sequence.
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for t in chars.by_ref() {
+            if t.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Where the prompt sits relative to the list (fzf `--layout`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -447,6 +600,25 @@ pub struct Look {
     pub cycle: bool,
     /// `--tac`: present the list in reverse input order.
     pub tac: bool,
+    /// `--ansi`: the input carries SGR colour codes — render them, and match
+    /// against the text with the codes removed.
+    pub ansi: bool,
+    /// `--delimiter`: what splits a line into fields. `None` = fzf's AWK-style
+    /// splitting (a run of non-space plus the whitespace after it).
+    pub delimiter: Option<String>,
+    /// `--nth`: which fields the query matches against (the row still shows,
+    /// and Enter still emits, the whole line).
+    pub nth: Vec<Nth>,
+    /// `--with-nth`: which fields the row SHOWS (and, absent `--nth`, matches).
+    pub with_nth: Vec<Nth>,
+    /// `--header-lines`: the first N input lines are a header, not candidates.
+    pub header_lines: usize,
+    /// `--print-query`: the query is written before the selection.
+    pub print_query: bool,
+    /// `--expect=KEYS`: these keys also accept, and the one that did is written
+    /// before the selection (an empty line when plain Enter accepted). This is
+    /// how fzf-tab drives continuous completion.
+    pub expect: Vec<(Key, String)>,
     /// `--min-height=N[+]`: the floor for a percentage `--height`. fzf's default
     /// is `10+` — ten LIST rows, with the chrome added on top (the `+`).
     pub min_height: u16,
@@ -479,6 +651,13 @@ impl Default for Look {
             colors: Colors::dark(),
             cycle: false,
             tac: false,
+            ansi: false,
+            delimiter: None,
+            nth: Vec::new(),
+            with_nth: Vec::new(),
+            header_lines: 0,
+            print_query: false,
+            expect: Vec::new(),
             min_height: 10,
             min_height_plus: true,
             scrollbar: true,
@@ -684,7 +863,17 @@ impl Look {
         let mut i = 0;
         while i < args.len() {
             let a = args[i].as_str();
-            let key = a.split('=').next().unwrap_or(a);
+            // fzf's short flags take an attached value (`-d:`, `-n3..`), so the
+            // key is just the flag itself and the rest is the value.
+            let key = match a.as_bytes() {
+                [b'-', b'd', rest @ ..] if !rest.is_empty() => "-d",
+                [b'-', b'n', rest @ ..] if !rest.is_empty() && rest[0] != b'o' => "-n",
+                _ => a.split('=').next().unwrap_or(a),
+            };
+            let attached = match key {
+                "-d" | "-n" if a.len() > 2 => Some(a[2..].to_string()),
+                _ => None,
+            };
             let next = args.get(i + 1);
             match key {
                 "--reverse" => look.layout = Layout::Reverse,
@@ -773,6 +962,52 @@ impl Look {
                 "--cycle" => look.cycle = true,
                 "--no-cycle" => look.cycle = false,
                 "--tac" => look.tac = true,
+                "--ansi" => look.ansi = true,
+                "--print-query" => look.print_query = true,
+                "--expect" => {
+                    let (v, sep) = flag_value(a, next);
+                    if let Some(v) = v {
+                        look.expect = v
+                            .split(',')
+                            .filter(|k| !k.is_empty())
+                            .filter_map(|k| parse_key(k).map(|p| (p, k.to_string())))
+                            .collect();
+                    }
+                    i += usize::from(sep);
+                }
+                "--no-ansi" => look.ansi = false,
+                "--delimiter" | "-d" => {
+                    let (v, sep) = match attached {
+                        Some(v) => (Some(v), false),
+                        None => flag_value(a, next),
+                    };
+                    look.delimiter = v.filter(|v| !v.is_empty());
+                    i += usize::from(sep);
+                }
+                "--nth" | "-n" => {
+                    let (v, sep) = match attached {
+                        Some(v) => (Some(v), false),
+                        None => flag_value(a, next),
+                    };
+                    if let Some(v) = v {
+                        look.nth = Nth::parse_list(&v);
+                    }
+                    i += usize::from(sep);
+                }
+                "--with-nth" => {
+                    let (v, sep) = flag_value(a, next);
+                    if let Some(v) = v {
+                        look.with_nth = Nth::parse_list(&v);
+                    }
+                    i += usize::from(sep);
+                }
+                "--header-lines" => {
+                    let (v, sep) = flag_value(a, next);
+                    if let Some(n) = v.and_then(|v| v.parse::<usize>().ok()) {
+                        look.header_lines = n;
+                    }
+                    i += usize::from(sep);
+                }
                 "--min-height" => {
                     let (v, sep) = flag_value(a, next);
                     if let Some(v) = v {
