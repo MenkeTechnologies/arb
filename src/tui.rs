@@ -2886,19 +2886,9 @@ fn render_fzf(
     if let (Some(ea), Some((lines, label))) = (err_area, err) {
         render_err_pane(f, ea, label, lines);
     }
-    // With `--preview`, split the top: the select list on the left, the preview
-    // pane (command output for the cursor line) on the right.
-    let (main_top, prev_area) = match preview {
-        Some(_) => {
-            let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(top);
-            (cols[0], Some(cols[1]))
-        }
-        None => (top, None),
-    };
-    if let (Some(pa), Some((lines, label))) = (prev_area, preview) {
-        render_output_pane(f, pa, label, lines);
-    }
+    // fzf's `--border` wraps the WHOLE picker — list and preview together — so
+    // the box is drawn first and everything else is laid out inside it.
+    let main_top = top;
     // fzf's `--border`: the whole picker lives inside the box, so everything
     // below measures against the block's inner area.
     let body = match look.border {
@@ -2965,6 +2955,30 @@ fn render_fzf(
             }
         }
         None => look.colors,
+    };
+
+    // With `--preview`, the body splits: the select list on the left, the
+    // preview box (command output for the cursor line) on the right. It takes
+    // the same palette as the picker — fzf draws it in the `border` colour, not
+    // a widget accent.
+    let body = match preview {
+        Some((lines, _)) => {
+            // Inside a `--border` box fzf keeps a padding column to the RIGHT of
+            // the preview as well, mirroring the one on the left; unboxed, the
+            // preview runs to the last column.
+            let area = match look.border.is_some() {
+                true => Rect {
+                    width: body.width.saturating_sub(1),
+                    ..body
+                },
+                false => body,
+            };
+            let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            render_preview_pane(f, cols[1], lines, &colors);
+            cols[0]
+        }
+        None => body,
     };
 
     let header_h: u16 = u16::from(!header.is_empty());
@@ -3184,6 +3198,44 @@ fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) 
         .map(|l| ListItem::new(ansi_line(l)))
         .collect();
     f.render_widget(List::new(items).block(block), area);
+}
+
+/// The `--preview` pane as fzf draws it: a rounded box in the palette's border
+/// colour with no title, its text inset one column. arb's own `-- CMD` pane
+/// (the DSL's downstream view) keeps its label; this one has to look like fzf's,
+/// which labels nothing unless `--preview-label` says so.
+fn render_preview_pane(f: &mut Frame, area: Rect, lines: &[String], colors: &crate::fzf::Colors) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(colors.border.fg());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // fzf leaves the box's top-left corner blank when the box touches the top of
+    // the screen — with an outer `--border` above it, the corner is drawn. Match
+    // both, or the two pickers differ by exactly one glyph.
+    if area.y == 0 {
+        f.render_widget(
+            Paragraph::new(" "),
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
+    let items: Vec<ListItem> = lines
+        .iter()
+        .take(inner.height as usize)
+        .map(|l| ListItem::new(ansi_line(l)))
+        .collect();
+    f.render_widget(List::new(items), inner);
 }
 
 /// Map a [`Track`] to its ratatui `Constraint`.
