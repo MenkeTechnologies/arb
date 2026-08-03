@@ -6,13 +6,15 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
+    cursor::MoveTo,
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{
@@ -53,17 +55,96 @@ pub fn events_available() -> bool {
         .is_ok()
 }
 
-/// Parse a `--height` spec into inline viewport rows: `N` (absolute) or `N%` of
-/// the terminal height. `None` (doesn't parse) → full-screen.
-fn parse_height(spec: &str) -> Option<u16> {
+/// Parse a `--height` spec into inline viewport rows plus whether it was a
+/// PERCENTAGE — `--min-height` applies to the percentage form only, as in fzf.
+/// `None` (doesn't parse) → full-screen.
+fn parse_height(spec: &str) -> Option<(u16, bool)> {
     let s = spec.trim();
     if let Some(p) = s.strip_suffix('%') {
         let pct: u32 = p.trim().parse().ok()?;
         let rows = size().map(|(_, h)| h).unwrap_or(24) as u32;
-        Some((rows * pct / 100).clamp(3, rows) as u16)
+        Some(((rows * pct / 100).clamp(3, rows) as u16, true))
     } else {
-        s.parse::<u16>().ok().map(|n| n.max(3))
+        s.parse::<u16>().ok().map(|n| (n.max(3), false))
     }
+}
+
+/// fzf's `--min-height` floor for a percentage `--height`. The default `10+`
+/// means "10 rows of LIST", so the chrome around it (prompt, info rule, header,
+/// border) is added on top; a bare number is the total instead. Never taller
+/// than the terminal.
+pub fn min_height_rows(min: u16, plus: bool, chrome: u16, total: u16) -> u16 {
+    let want = if plus {
+        min.saturating_add(chrome)
+    } else {
+        min
+    };
+    want.min(total.max(1))
+}
+
+/// Parse a cursor-position report (`ESC [ row ; col R`) into a 0-based row.
+/// The LAST report in the buffer wins — a keystroke typed before the terminal
+/// answered can sit in front of it.
+pub fn parse_cursor_report(buf: &[u8]) -> Option<u16> {
+    let start = buf.windows(2).rposition(|w| w == b"\x1b[").map(|i| i + 2)?;
+    let end = start + buf[start..].iter().position(|b| *b == b'R')?;
+    let body = std::str::from_utf8(&buf[start..end]).ok()?;
+    let row: u16 = body.split(';').next()?.parse().ok()?;
+    Some(row.saturating_sub(1))
+}
+
+/// Ask the terminal where the cursor is, over the `/dev/tty` handle arb already
+/// owns. crossterm's `position()` can't be used for this: it writes the query to
+/// STDOUT — which is arb's DATA channel, and a pipe whenever a consumer is
+/// attached, so the request never reaches the terminal — and then loops forever
+/// when no reply arrives. That is what made `--height` (and therefore any
+/// `$FZF_DEFAULT_OPTS` containing it) hang before the first frame.
+fn tty_cursor_row(tty: &mut File) -> Option<u16> {
+    tty.write_all(b"\x1b[6n").ok()?;
+    tty.flush().ok()?;
+    let fd = tty.as_raw_fd();
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let mut buf = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // A terminal that never answers costs one blink, not the session.
+        if unsafe { libc::poll(&mut pfd, 1, (left.as_millis() as i32).max(1)) } <= 0 {
+            break;
+        }
+        let mut chunk = [0u8; 32];
+        match tty.read(&mut chunk) {
+            Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+        if let Some(row) = parse_cursor_report(&buf) {
+            return Some(row);
+        }
+    }
+    None
+}
+
+/// Where an inline (`--height`) picker sits, and how many lines the terminal
+/// must scroll first to make room: fzf draws below the cursor, scrolling only
+/// when the picker would run off the bottom.
+pub fn inline_rect(cur_row: u16, rows: u16, cols: u16, total: u16) -> (Rect, u16) {
+    let h = rows.clamp(1, total.max(1));
+    let (y, scroll) = match cur_row.saturating_add(h) > total {
+        true => (total.saturating_sub(h), cur_row + h - total),
+        false => (cur_row, 0),
+    };
+    (
+        Rect {
+            x: 0,
+            y,
+            width: cols,
+            height: h,
+        },
+        scroll,
+    )
 }
 
 /// Interactive control state shared between the key reader, the render loop, and
@@ -785,18 +866,57 @@ pub fn run(
     fzf: bool,
     height: Option<String>,
 ) -> io::Result<()> {
-    let tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+    let mut tty: File = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     enable_raw_mode()?;
-    // `--height`: render inline (a viewport of N rows at the bottom, keeping the
-    // scrollback) instead of taking over the whole screen with the alternate
-    // buffer. `N%` is a fraction of the terminal height.
-    let inline = height.as_deref().and_then(parse_height);
+    // `--height`: render inline (a viewport of N rows below the cursor, keeping
+    // the scrollback) instead of taking over the whole screen with the alternate
+    // buffer. `N%` is a fraction of the terminal height. The viewport is placed
+    // by hand — ratatui's `Viewport::Inline` would ask CROSSTERM for the cursor
+    // position, and that query goes to stdout (arb's data channel) and never
+    // returns when stdout is a pipe.
+    // The look is fixed before the first frame (env + argv), so reading it once
+    // here is enough to size the viewport the way fzf sizes it.
+    let (look0, header0) = {
+        let c = controls.lock().unwrap();
+        (c.look.clone(), c.header.clone())
+    };
+    let inline = height.as_deref().and_then(parse_height).map(|(rows, pct)| {
+        let (cols, total) = size().unwrap_or((80, 24));
+        // fzf's `--min-height` floor, percentage heights only. `10+` counts LIST
+        // rows, so the prompt, info rule, header and border are added on top.
+        let rows = match pct {
+            true => {
+                let chrome =
+                    1 + u16::from(!matches!(
+                        look0.info,
+                        crate::fzf::Info::Inline(_) | crate::fzf::Info::InlineRight(_)
+                    )) + u16::from(!header0.is_empty())
+                        + look0.border.map_or(0, |_| 2);
+                rows.max(min_height_rows(
+                    look0.min_height,
+                    look0.min_height_plus,
+                    chrome,
+                    total,
+                ))
+            }
+            false => rows,
+        };
+        let cur = tty_cursor_row(&mut tty).unwrap_or(total.saturating_sub(rows));
+        let (area, scroll) = inline_rect(cur, rows, cols, total);
+        // Scroll the terminal up by writing the missing lines, as fzf does, so
+        // the picker never overwrites what is already on screen.
+        if scroll > 0 {
+            let _ = tty.write_all("\n".repeat(scroll as usize).as_bytes());
+            let _ = tty.flush();
+        }
+        area
+    });
     let backend = CrosstermBackend::new(tty);
     let mut terminal = match inline {
-        Some(rows) => Terminal::with_options(
+        Some(area) => Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(rows),
+                viewport: Viewport::Fixed(area),
             },
         )?,
         None => {
@@ -1298,10 +1418,12 @@ pub fn run(
 
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
-    if inline.is_some() {
+    if let Some(area) = inline {
         // Inline mode never entered the alternate screen; clear the viewport
-        // region so the UI doesn't linger in the scrollback.
+        // region so the UI doesn't linger, and leave the cursor at its top row
+        // so the next shell prompt lands where the picker was.
         terminal.clear()?;
+        let _ = execute!(terminal.backend_mut(), MoveTo(0, area.y));
     } else {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
@@ -3772,6 +3894,44 @@ mod fzf_view_tests {
         // screen row is the LAST of the window.
         assert_eq!(fzf_row_to_cursor_rev(2, 10, 6, 2), 15);
         assert_eq!(fzf_row_to_cursor_rev(2, 10, 6, 7), 10);
+    }
+
+    #[test]
+    fn inline_viewport_sits_below_the_cursor_and_scrolls_when_it_must() {
+        use super::inline_rect;
+        // Room below the cursor: the picker starts right there, no scrolling.
+        let (area, scroll) = inline_rect(4, 6, 80, 24);
+        assert_eq!((area.y, area.height, scroll), (4, 6, 0));
+        // Not enough room: scroll by the shortfall and pin it to the bottom.
+        let (area, scroll) = inline_rect(20, 6, 80, 24);
+        assert_eq!((area.y, area.height, scroll), (18, 6, 2));
+        // A picker taller than the terminal is capped, not wrapped.
+        let (area, _) = inline_rect(0, 40, 80, 24);
+        assert_eq!(area.height, 24);
+    }
+
+    #[test]
+    fn min_height_counts_list_rows_when_it_ends_in_plus() {
+        use super::min_height_rows;
+        // fzf's default `10+`: ten LIST rows plus the chrome around them —
+        // prompt + info rule + border = 4 here, so 14 rows total.
+        assert_eq!(min_height_rows(10, true, 4, 40), 14);
+        // A bare number is the whole picker.
+        assert_eq!(min_height_rows(10, false, 4, 40), 10);
+        // Never taller than the terminal.
+        assert_eq!(min_height_rows(10, true, 4, 12), 12);
+    }
+
+    #[test]
+    fn cursor_report_parses_the_row() {
+        use super::parse_cursor_report;
+        assert_eq!(parse_cursor_report(b"\x1b[12;40R"), Some(11));
+        assert_eq!(parse_cursor_report(b"\x1b[1;1R"), Some(0));
+        // A keystroke can arrive before the reply; the last report wins.
+        assert_eq!(parse_cursor_report(b"q\x1b[7;3R"), Some(6));
+        // Nothing usable yet.
+        assert_eq!(parse_cursor_report(b"\x1b[7;3"), None);
+        assert_eq!(parse_cursor_report(b""), None);
     }
 
     #[test]

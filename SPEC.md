@@ -28,9 +28,13 @@ arb save dash.arb as api      # register a user preset
 `$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the command line, later
 winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
 `--info`, `--color`, `--pointer`, `--marker`, `--ellipsis`, `--scrollbar`,
-`--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`) on top of the
-matching set (`--exact`, `--no-sort`, `--query`, `--multi`, `--prompt`,
-`--header`, `--height`, `--preview`). The picker it draws — layout, separator,
+`--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`, `--min-height`) on
+top of the matching set (`--exact`, `--no-sort`, `--query`, `--multi`,
+`--prompt`, `--header`, `--height`, `--preview`). `--height` draws below the
+cursor and scrolls the terminal to make room, sized like fzf's (percentages get
+the `--min-height=10+` floor); arb places that viewport itself rather than
+asking crossterm, whose cursor query writes to stdout — arb's data channel — and
+never returns when stdout is a pipe. The picker it draws — layout, separator,
 pointer/marker glyphs, palette, scrollbar, ellipsis, scroll margin, ranking —
 matches what `fzf` draws for the same environment, so `ZPWR_FZF='arb --fzf'`
 changes nothing on screen. Flags with no arb analog are accepted and ignored, and

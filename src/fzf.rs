@@ -447,6 +447,10 @@ pub struct Look {
     pub cycle: bool,
     /// `--tac`: present the list in reverse input order.
     pub tac: bool,
+    /// `--min-height=N[+]`: the floor for a percentage `--height`. fzf's default
+    /// is `10+` — ten LIST rows, with the chrome added on top (the `+`).
+    pub min_height: u16,
+    pub min_height_plus: bool,
     /// `--no-scrollbar`: give the list its last column back.
     pub scrollbar: bool,
     /// `--scroll-off`: screen lines kept above/below the cursor while scrolling
@@ -475,6 +479,8 @@ impl Default for Look {
             colors: Colors::dark(),
             cycle: false,
             tac: false,
+            min_height: 10,
+            min_height_plus: true,
             scrollbar: true,
             scroll_off: 3,
             tiebreak_length: true,
@@ -767,6 +773,17 @@ impl Look {
                 "--cycle" => look.cycle = true,
                 "--no-cycle" => look.cycle = false,
                 "--tac" => look.tac = true,
+                "--min-height" => {
+                    let (v, sep) = flag_value(a, next);
+                    if let Some(v) = v {
+                        let plus = v.ends_with('+');
+                        if let Ok(n) = v.trim_end_matches('+').parse::<u16>() {
+                            look.min_height = n;
+                            look.min_height_plus = plus;
+                        }
+                    }
+                    i += usize::from(sep);
+                }
                 "--no-scrollbar" => look.scrollbar = false,
                 "--bind" => {
                     let (v, sep) = flag_value(a, next);

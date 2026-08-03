@@ -235,8 +235,9 @@ Honored: `--layout`/`--reverse`, `--border[=STYLE]`, `--info=STYLE`, `--color`
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
 `ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,
-`--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height`,
-`--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
+`--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height` (drawn below the
+cursor, scrolling to make room, with fzf's `--min-height=10+` floor on
+percentages), `--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
 (`execute(…)`, preview control, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.
