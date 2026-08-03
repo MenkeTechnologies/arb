@@ -100,10 +100,25 @@ pub fn parse_cursor_report(buf: &[u8]) -> Option<u16> {
 /// when no reply arrives. That is what made `--height` (and therefore any
 /// `$FZF_DEFAULT_OPTS` containing it) hang before the first frame.
 fn tty_cursor_row(tty: &mut File) -> Option<u16> {
+    let fd = tty.as_raw_fd();
+    // Non-blocking for the duration of the query: a terminal that answers
+    // nothing (or answers something else) must cost one blink, never a blocked
+    // read — `poll` alone isn't enough, since it can report readable for a
+    // condition that yields no bytes.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return None;
+    }
+    let row = read_cursor_report(tty, fd, Duration::from_millis(300));
+    unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+    row
+}
+
+/// The query/read half of [`tty_cursor_row`], with the fd already non-blocking.
+fn read_cursor_report(tty: &mut File, fd: i32, budget: Duration) -> Option<u16> {
     tty.write_all(b"\x1b[6n").ok()?;
     tty.flush().ok()?;
-    let fd = tty.as_raw_fd();
-    let deadline = Instant::now() + Duration::from_millis(300);
+    let deadline = Instant::now() + budget;
     let mut buf = Vec::new();
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         let mut pfd = libc::pollfd {
@@ -111,14 +126,16 @@ fn tty_cursor_row(tty: &mut File) -> Option<u16> {
             events: libc::POLLIN,
             revents: 0,
         };
-        // A terminal that never answers costs one blink, not the session.
         if unsafe { libc::poll(&mut pfd, 1, (left.as_millis() as i32).max(1)) } <= 0 {
             break;
         }
         let mut chunk = [0u8; 32];
         match tty.read(&mut chunk) {
             Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
-            _ => break,
+            // Readable but empty (EAGAIN / EOF): keep waiting out the budget.
+            Ok(_) => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(_) => break,
         }
         if let Some(row) = parse_cursor_report(&buf) {
             return Some(row);
@@ -127,24 +144,19 @@ fn tty_cursor_row(tty: &mut File) -> Option<u16> {
     None
 }
 
-/// Where an inline (`--height`) picker sits, and how many lines the terminal
-/// must scroll first to make room: fzf draws below the cursor, scrolling only
-/// when the picker would run off the bottom.
-pub fn inline_rect(cur_row: u16, rows: u16, cols: u16, total: u16) -> (Rect, u16) {
+/// The inline (`--height`) viewport, given the row the cursor sits on AFTER the
+/// room has been reserved — that row is the picker's last line, so the viewport
+/// is the `rows` lines ending there. Asking the terminal where it ended up beats
+/// predicting whether it scrolled, which is also why fzf re-queries.
+pub fn inline_rect(bottom_row: u16, rows: u16, cols: u16, total: u16) -> Rect {
     let h = rows.clamp(1, total.max(1));
-    let (y, scroll) = match cur_row.saturating_add(h) > total {
-        true => (total.saturating_sub(h), cur_row + h - total),
-        false => (cur_row, 0),
-    };
-    (
-        Rect {
-            x: 0,
-            y,
-            width: cols,
-            height: h,
-        },
-        scroll,
-    )
+    let bottom = bottom_row.min(total.saturating_sub(1));
+    Rect {
+        x: 0,
+        y: bottom.saturating_sub(h - 1),
+        width: cols,
+        height: h,
+    }
 }
 
 /// Interactive control state shared between the key reader, the render loop, and
@@ -901,24 +913,33 @@ pub fn run(
             }
             false => rows,
         };
-        let cur = tty_cursor_row(&mut tty).unwrap_or(total.saturating_sub(rows));
-        let (area, scroll) = inline_rect(cur, rows, cols, total);
-        // Scroll the terminal up by writing the missing lines, as fzf does, so
-        // the picker never overwrites what is already on screen.
-        if scroll > 0 {
-            let _ = tty.write_all("\n".repeat(scroll as usize).as_bytes());
-            let _ = tty.flush();
-        }
-        area
+        // Reserve the room exactly as fzf does: wipe from the cursor down, then
+        // print one newline per picker row after the first — the terminal
+        // scrolls by itself when the picker would run off the bottom. Then ask
+        // where the cursor ended up; that row is the picker's LAST line, so no
+        // arithmetic has to guess whether a scroll happened.
+        let _ = tty.write_all(b"\x1b[J");
+        let _ = tty.write_all("\n".repeat(rows.saturating_sub(1) as usize).as_bytes());
+        let _ = tty.flush();
+        let bottom = tty_cursor_row(&mut tty).unwrap_or(total.saturating_sub(1));
+        inline_rect(bottom, rows, cols, total)
     });
     let backend = CrosstermBackend::new(tty);
     let mut terminal = match inline {
-        Some(area) => Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Fixed(area),
-            },
-        )?,
+        Some(area) => {
+            let mut t = Terminal::with_options(
+                backend,
+                TerminalOptions {
+                    viewport: Viewport::Fixed(area),
+                },
+            )?;
+            // Wipe the region before the first frame. A fixed viewport starts
+            // out believing the screen is already blank, so it emits nothing for
+            // the cells it draws blank — leaving whatever the shell left there
+            // showing through the picker.
+            t.clear()?;
+            t
+        }
         None => {
             let mut t = Terminal::new(backend)?;
             execute!(t.backend_mut(), EnterAlternateScreen)?;
@@ -1181,6 +1202,12 @@ pub fn run(
                 let now = Instant::now();
                 if now.duration_since(fzf_last_sort) >= Duration::from_millis(100) {
                     let mut h = fzf_hits.clone();
+                    // `--tac` reversed the input, so every order derived from it
+                    // reverses too: the whole list under `--no-sort`, and the
+                    // `index` tie-break under a normal ranking.
+                    if fzf_look.tac {
+                        h.reverse();
+                    }
                     // `--no-sort` keeps the input (scan) order; else rank
                     // best-first, breaking ties fzf's way: `--tiebreak=length`
                     // (its default) puts the shorter match first, and the sort
@@ -1204,7 +1231,12 @@ pub fn run(
             let matched = &fzf_matched;
             let sel = cursor.min(matched.len().saturating_sub(1));
             // The cursor is a DISPLAY position; `--tac` flips it to a rank.
-            let rank = |pos: usize| tac_index(pos, matched.len(), fzf_look.tac);
+            // `--tac` reverses the INPUT order, so it only flips the view while
+            // the list is still in input order (no query). Once a query ranks
+            // the matches, it survives as the tie-break direction instead — the
+            // hit set is reversed before the stable sort below.
+            let tac_view = fzf_look.tac && filter.is_empty();
+            let rank = |pos: usize| tac_index(pos, matched.len(), tac_view);
 
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
@@ -1279,6 +1311,7 @@ pub fn run(
                     fzf_start,
                     &marks,
                     fzf_multi,
+                    tac_view,
                     total,
                     err_ref,
                     prev_ref,
@@ -2602,6 +2635,9 @@ fn render_fzf(
     prev_start: usize,
     marks: &[String],
     multi: bool,
+    // `tac`: whether the display is the ranked list read backwards. Not taken
+    // from `look` — it only applies while the list is still in input order.
+    tac: bool,
     total: u64,
     err: Option<(&[String], &str)>,
     preview: Option<(&[String], &str)>,
@@ -2830,7 +2866,7 @@ fn render_fzf(
     let mark_set: std::collections::HashSet<&str> = marks.iter().map(String::as_str).collect();
     let mut items: Vec<ListItem> = (start..end)
         // `--tac` walks the ranked list backwards; without it this is `[start..end]`.
-        .filter_map(|pos| matched.get(tac_index(pos, n, look.tac)).map(|m| (pos, m)))
+        .filter_map(|pos| matched.get(tac_index(pos, n, tac)).map(|m| (pos, m)))
         // Show the projected display; a row is marked when its ORIGINAL is marked.
         .map(|(pos, (disp, orig))| {
             let current = n > 0 && pos == sel;
@@ -3897,17 +3933,17 @@ mod fzf_view_tests {
     }
 
     #[test]
-    fn inline_viewport_sits_below_the_cursor_and_scrolls_when_it_must() {
+    fn inline_viewport_ends_on_the_row_the_terminal_reported() {
         use super::inline_rect;
-        // Room below the cursor: the picker starts right there, no scrolling.
-        let (area, scroll) = inline_rect(4, 6, 80, 24);
-        assert_eq!((area.y, area.height, scroll), (4, 6, 0));
-        // Not enough room: scroll by the shortfall and pin it to the bottom.
-        let (area, scroll) = inline_rect(20, 6, 80, 24);
-        assert_eq!((area.y, area.height, scroll), (18, 6, 2));
-        // A picker taller than the terminal is capped, not wrapped.
-        let (area, _) = inline_rect(0, 40, 80, 24);
-        assert_eq!(area.height, 24);
+        // The reported row is the picker's last line: 6 rows ending at row 9.
+        let area = inline_rect(9, 6, 80, 24);
+        assert_eq!((area.y, area.height), (4, 6));
+        // Reserved room ran to the bottom of the screen.
+        let area = inline_rect(23, 6, 80, 24);
+        assert_eq!((area.y, area.height), (18, 6));
+        // A picker taller than the terminal is capped, and never starts above 0.
+        let area = inline_rect(23, 40, 80, 24);
+        assert_eq!((area.y, area.height), (0, 24));
     }
 
     #[test]
