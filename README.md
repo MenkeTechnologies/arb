@@ -213,9 +213,14 @@ vim "$(git ls-files | arb --fzf)"          # single select
 ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
 ```
 
-- **Fuzzy match** — pattern chars match in order (subsequence); results ranked
-  best-first (contiguous runs + word-boundary starts win). **Smart-case**:
-  lowercase query is case-insensitive, any uppercase makes it case-sensitive.
+- **Fuzzy match** — fzf's own algorithm (`FuzzyMatchV2`, ported from the Go
+  source in `src/algo.rs`): the same score matrix, boundary/camelCase bonuses,
+  gap penalties and `--tiebreak=length` ordering, so a query returns the same
+  ranking `fzf` returns, down to the line order. **Smart-case**: a lowercase
+  query is case-insensitive, any uppercase makes it case-sensitive.
+- **`-f`/`--filter STR`** — the matcher without the UI: print the ranked matches
+  and exit. Scored across cores, so a million-line corpus filters in a fraction
+  of a second (`find / | arb --fzf --filter conf`).
 - **Navigate** — `↑`/`↓`, `Ctrl-J`/`Ctrl-N` down, `Ctrl-K`/`Ctrl-P` up.
 - **Multi-select** — with `-m`/`--multi`, `Tab` marks lines (`┃` in the mark
   column) and moves down; Enter emits all marked.
@@ -235,9 +240,9 @@ Honored: `--layout`/`--reverse`, `--border[=STYLE]`, `--info=STYLE`, `--color`
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
 `ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,
-`--query`, `-m`/`--multi`, `--prompt`, `--header`, `--height` (drawn below the
-cursor, scrolling to make room, with fzf's `--min-height=10+` floor on
-percentages), `--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
+`--query`, `-m`/`--multi`, `-f`/`--filter`, `--prompt`, `--header`, `--height`
+(drawn below the cursor, scrolling to make room, with fzf's `--min-height=10+`
+floor on percentages), `--preview 'CMD {}'`. A binding naming an action arb has no equivalent for
 (`execute(…)`, preview control, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.

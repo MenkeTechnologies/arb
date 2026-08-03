@@ -2,10 +2,14 @@
 //! shared buffer (per-widget transforms/queries arrive with the query engine).
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct StreamState {
-    pub lines: VecDeque<String>,
+    /// Lines are `Arc<str>`, not `String`, so a consumer that needs to keep its
+    /// own list — fzf mode builds a candidate per line — shares this allocation
+    /// instead of copying the text. At a million lines that copy was ~113MB.
+    pub lines: VecDeque<Arc<str>>,
     pub total: u64,
     pub start: Instant,
     cap: usize,
@@ -29,9 +33,23 @@ impl StreamState {
     }
 
     /// Append a line, dropping the oldest beyond the retention cap.
-    pub fn push(&mut self, line: String) {
-        self.lines.push_back(line);
+    pub fn push(&mut self, line: impl Into<Arc<str>>) {
+        self.lines.push_back(line.into());
         self.total += 1;
+        self.trim();
+    }
+
+    /// Append a whole batch under one lock — the reader hands lines over in
+    /// chunks, so a fast producer doesn't pay a mutex round trip per line.
+    pub fn extend<I: IntoIterator<Item = Arc<str>>>(&mut self, batch: I) {
+        for line in batch {
+            self.lines.push_back(line);
+            self.total += 1;
+        }
+        self.trim();
+    }
+
+    fn trim(&mut self) {
         while self.lines.len() > self.cap {
             self.lines.pop_front();
         }
@@ -62,8 +80,8 @@ mod tests {
         }
         // Only the last `cap` lines are retained (oldest dropped)...
         assert_eq!(s.lines.len(), 3);
-        assert_eq!(s.lines.front().map(String::as_str), Some("line7"));
-        assert_eq!(s.lines.back().map(String::as_str), Some("line9"));
+        assert_eq!(s.lines.front().map(|l| &**l), Some("line7"));
+        assert_eq!(s.lines.back().map(|l| &**l), Some("line9"));
         // ...but `total` counts every line ever pushed, so a finite cap bounds
         // memory without losing the cumulative count.
         assert_eq!(s.total, 10);

@@ -319,7 +319,7 @@ fn data_json(
     let (raw, elapsed): (Vec<String>, f64) = {
         let st = state.lock().unwrap();
         (
-            st.lines.iter().cloned().collect(),
+            st.lines.iter().map(|l| l.to_string()).collect(),
             st.start.elapsed().as_secs_f64(),
         )
     };

@@ -10,6 +10,7 @@
 //! milestones — not stubbed here as if present.
 
 pub mod actor;
+pub mod algo;
 pub mod ast;
 pub mod banner;
 pub mod cache;

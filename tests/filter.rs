@@ -78,3 +78,54 @@ fn match_positions_marks_matched_chars() {
     // empty pattern → nothing highlighted
     assert_eq!(match_positions("anything", ""), Vec::<usize>::new());
 }
+
+/// The ranking `--filter` prints (and the picker's list) follows fzf's order:
+/// score first, then `--tiebreak=length` on the TRIMMED length, then input
+/// order. These are the three rules that make arb's output match `fzf`'s
+/// line for line on a real corpus.
+#[test]
+fn rank_orders_by_score_then_trimmed_length_then_input() {
+    use arb::tui::rank;
+    let lines = vec![
+        "src/main.rs",      // 'm' mid-path
+        "man/arb.1",        // 'm' at a boundary after '/'
+        "Makefile",         // 'm' at the start of the line
+        "docs/manual.md  ", // boundary too, but longer — and padded
+    ];
+    let order = rank(&lines, "ma", false, false, true, false);
+    // This is `fzf --filter ma` on the same four lines, verbatim: a
+    // start-of-line match first, then the boundary match after `/`, then the
+    // mid-word one, then the longer boundary match.
+    let ranked: Vec<&str> = order.iter().map(|i| lines[*i]).collect();
+    assert_eq!(
+        ranked,
+        vec!["Makefile", "man/arb.1", "src/main.rs", "docs/manual.md  "]
+    );
+    // Trailing whitespace is not counted by the length tiebreak (fzf compares
+    // `TrimLength`), so the padded line ties on its trimmed width of 14.
+    assert_eq!(arb::tui::trim_length("docs/manual.md  "), 14);
+    // `--no-sort` keeps input order for the same match set.
+    let unsorted = rank(&lines, "ma", false, true, true, false);
+    let mut expected = unsorted.clone();
+    expected.sort_unstable();
+    assert_eq!(unsorted, expected);
+    // `--tac` walks the same matches backwards.
+    let tac = rank(&lines, "ma", false, true, true, true);
+    let mut rev = unsorted.clone();
+    rev.reverse();
+    assert_eq!(tac, rev);
+}
+
+/// `--exact` uses fzf's `ExactMatchNaive`: substring only, but still scored, so
+/// a boundary occurrence outranks one buried inside a word.
+#[test]
+fn exact_mode_is_substring_but_still_ranked() {
+    use arb::tui::rank;
+    let lines = vec!["unbarred", "foo/bar", "bar"];
+    let order = rank(&lines, "bar", true, false, true, false);
+    assert_eq!(lines[order[0]], "bar");
+    assert_eq!(lines[order[order.len() - 1]], "unbarred");
+    // A subsequence that isn't a substring doesn't match at all in exact mode.
+    assert!(rank(&["b-a-r"], "bar", true, false, true, false).is_empty());
+    assert_eq!(rank(&["b-a-r"], "bar", false, false, true, false), vec![0]);
+}

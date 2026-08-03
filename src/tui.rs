@@ -278,68 +278,70 @@ pub fn filter_matches(line: &str, filter: &str) -> bool {
     filter.is_empty() || line.to_lowercase().contains(&filter.to_lowercase())
 }
 
-/// Fuzzy match (fzf-style, smart-case): the pattern chars must appear in `line`
-/// in order but not necessarily contiguously. Returns `None` if not a match, else
-/// a score where higher is better — contiguous runs and word-boundary starts are
-/// rewarded, gaps penalized. An empty pattern matches everything with score 0.
+/// Fuzzy match, scored by the port of fzf's own `FuzzyMatchV2`
+/// ([`crate::algo`]) — same ranking as `fzf` for the same query, smart-case
+/// included. An empty pattern matches everything with score 0.
 pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
-    if pat.is_empty() {
-        return Some(0);
-    }
-    // Smart case: a pattern with any uppercase is case-sensitive, else insensitive.
-    let cased = pat.chars().any(|c| c.is_uppercase());
-    let norm = |c: char| if cased { c } else { c.to_ascii_lowercase() };
-    let l: Vec<char> = line.chars().collect();
-    let p: Vec<char> = pat.chars().collect();
-    let mut score = 0i32;
-    let mut li = 0usize;
-    let mut prev: Option<usize> = None;
-    for &pc in &p {
-        let target = norm(pc);
-        let idx = loop {
-            if li >= l.len() {
-                return None;
-            }
-            if norm(l[li]) == target {
-                break li;
-            }
-            li += 1;
-        };
-        if let Some(pi) = prev {
-            if idx == pi + 1 {
-                score += 15; // consecutive
-            } else {
-                score -= (idx - pi - 1).min(10) as i32; // gap penalty (bounded)
-            }
-        }
-        if idx == 0 || !l[idx - 1].is_alphanumeric() {
-            score += 10; // word-boundary / start bonus
-        }
-        prev = Some(idx);
-        li = idx + 1;
-    }
-    Some(score)
+    let (p, cased) = crate::algo::prepare_pattern(pat);
+    crate::algo::fuzzy_match_v2(cased, &crate::algo::Text::new(line), &p, false)
+        .map(|(m, _)| m.score)
 }
 
-/// fzf `--exact`/`-e` scoring: case-insensitive substring match (smart-case),
-/// `None` if `line` doesn't contain `pat`; earlier matches score higher. Used in
-/// place of [`fuzzy_score`] when exact mode is on.
+/// fzf `--exact`/`-e`: the best substring occurrence, scored on the same scale
+/// as a fuzzy match (fzf's `ExactMatchNaive`).
 pub fn exact_score(line: &str, pat: &str) -> Option<i32> {
-    if pat.is_empty() {
-        return Some(0);
+    let (p, cased) = crate::algo::prepare_pattern(pat);
+    crate::algo::exact_match_naive(cased, &crate::algo::Text::new(line), &p, false)
+        .map(|(m, _)| m.score)
+}
+
+/// The length fzf's `--tiebreak=length` compares: character count with the
+/// surrounding whitespace trimmed (fzf's `Chars.TrimLength`). Trailing
+/// whitespace is real in file lists — macOS `Icon\r` entries tie with their
+/// neighbours and land in a different order if it is counted.
+pub fn trim_length(s: &str) -> usize {
+    s.trim().chars().count()
+}
+
+/// Rank a whole corpus against one query the way the picker does: score across
+/// cores, then order by score, then fzf's `--tiebreak=length`, with the stable
+/// sort leaving anything still equal in input order (fzf's `index` criterion).
+/// Returns the matching line indices, best first. Shared by `--filter` so the
+/// two surfaces can't drift apart.
+pub fn rank(
+    lines: &[&str],
+    pat: &str,
+    exact: bool,
+    no_sort: bool,
+    tiebreak_length: bool,
+    tac: bool,
+) -> Vec<usize> {
+    let mut hits: Vec<(i32, usize)> = lines
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, line)| score_line(line, pat, exact).map(|s| (s, i)))
+        .collect();
+    hits.par_sort_by_key(|(_, i)| *i);
+    // `--tac` reversed the input, so every order derived from it reverses too.
+    if tac {
+        hits.reverse();
     }
-    let cased = pat.chars().any(|c| c.is_uppercase());
-    if cased {
-        line.find(pat).map(|i| -(i as i32))
-    } else {
-        line.to_lowercase()
-            .find(&pat.to_lowercase())
-            .map(|i| -(i as i32))
+    if !no_sort {
+        hits.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| match tiebreak_length {
+                true => trim_length(lines[a.1]).cmp(&trim_length(lines[b.1])),
+                false => std::cmp::Ordering::Equal,
+            })
+        });
     }
+    hits.into_iter().map(|(_, i)| i).collect()
 }
 
 /// Score a line against the query with the active mode (exact substring or fuzzy).
-fn score_line(line: &str, pat: &str, exact: bool) -> Option<i32> {
+pub fn score_line(line: &str, pat: &str, exact: bool) -> Option<i32> {
+    if pat.is_empty() {
+        return Some(0);
+    }
     if exact {
         exact_score(line, pat)
     } else {
@@ -863,11 +865,44 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
 /// the pipeline: the caller tees stdin→stdout live in a separate thread while
 /// this loop draws. The terminal is always restored (raw mode off, alternate
 /// screen left, cursor shown) before returning, even on a draw error.
-/// One fzf candidate: `(display, search_key, original)`, all `Arc<str>` so the
-/// identity projection shares a single allocation across the three handles.
-type FzfCand = (Arc<str>, Arc<str>, Arc<str>);
-/// A scored candidate: `(score, display, search_key, original)`.
-type FzfHit = (i32, Arc<str>, Arc<str>, Arc<str>);
+/// One fzf candidate. Identity — no `--with-nth` projection, no `search` key,
+/// i.e. `find / | arb --fzf` — is the overwhelmingly common case and keeps ONE
+/// handle to the line the stream already allocated: display, key and original
+/// are the same string. A projection stores the three separately, boxed, so the
+/// common case doesn't pay for it (24 bytes a candidate instead of 48).
+#[derive(Clone)]
+pub enum FzfCand {
+    Ident(Arc<str>),
+    Proj(Box<[Arc<str>; 3]>),
+}
+
+impl FzfCand {
+    /// What the row shows.
+    fn disp(&self) -> &Arc<str> {
+        match self {
+            FzfCand::Ident(a) => a,
+            FzfCand::Proj(p) => &p[0],
+        }
+    }
+    /// What the query matches against (`search`/`--nth`).
+    fn key(&self) -> &Arc<str> {
+        match self {
+            FzfCand::Ident(a) => a,
+            FzfCand::Proj(p) => &p[1],
+        }
+    }
+    /// What Enter emits.
+    fn orig(&self) -> &Arc<str> {
+        match self {
+            FzfCand::Ident(a) => a,
+            FzfCand::Proj(p) => &p[2],
+        }
+    }
+}
+/// A scored candidate: `(score, candidate index)`. The match and hit lists hold
+/// INDICES, not clones: at a million lines a `(score, Arc, Arc, Arc)` hit was
+/// 56 bytes against 8, and the ranking sort moved all of it.
+type FzfHit = (i32, u32);
 
 pub fn run(
     spec: &Spec,
@@ -990,7 +1025,7 @@ pub fn run(
     let mut fzf_filter = String::from("\u{0}"); // sentinel: forces initial reset
     let mut fzf_processed = 0usize; // candidates already scored
     let mut fzf_hits: Vec<FzfHit> = Vec::new();
-    let mut fzf_matched: Vec<(Arc<str>, Arc<str>)> = Vec::new(); // display list (display, original)
+    let mut fzf_matched: Vec<u32> = Vec::new(); // display order, as candidate indices
     let mut fzf_last_sort = Instant::now() - Duration::from_secs(1);
     // `expect /re/ …` reactions: total stream lines already checked against the
     // patterns. Tracked by `total` (lines-ever), not a deque index, because the
@@ -1051,7 +1086,7 @@ pub fn run(
                 let take = new_count.min(st.lines.len());
                 let start = st.lines.len() - take;
                 expect_total = st.total;
-                st.lines.iter().skip(start).cloned().collect()
+                st.lines.iter().skip(start).map(|l| l.to_string()).collect()
             };
             if !new_lines.is_empty() {
                 let mut c = controls.lock().unwrap();
@@ -1097,7 +1132,7 @@ pub fn run(
                 .lines
                 .iter()
                 .skip(n.saturating_sub(200))
-                .cloned()
+                .map(|l| l.to_string())
                 .collect();
             (tail, format!("{label} ({})", e.total))
         });
@@ -1119,21 +1154,30 @@ pub fn run(
                 // is derived per raw line (shared across its display rows); with no
                 // `search` pipeline it defaults to the display so match == what you see.
                 //
-                // Cap the batch so a firehose producer (`find /`) can't make one
-                // frame do unbounded work while holding the stream lock — the rest
-                // ingests over the next frames, keeping the UI responsive.
-                const MAX_INGEST_PER_FRAME: usize = 50_000;
-                let ingest_end = st.lines.len().min(fzf_raw_done + MAX_INGEST_PER_FRAME);
-                for i in fzf_raw_done..ingest_end {
+                // Time-box the batch so a firehose producer (`find /`) can't make
+                // one frame do unbounded work while holding the stream lock. A
+                // budget rather than a line count: the point is to bound the
+                // frame, and a fixed count also capped THROUGHPUT (50k per 20ms
+                // frame put a 2.5M lines/s ceiling on ingest, which a million-line
+                // stream noticed).
+                const INGEST_BUDGET: Duration = Duration::from_millis(8);
+                let ingest_started = Instant::now();
+                let mut ingest_end = st.lines.len();
+                for i in fzf_raw_done..st.lines.len() {
+                    // Check the clock every 4k lines — `Instant::now()` per line
+                    // would cost more than the work it guards.
+                    if i % 4096 == 0 && ingest_started.elapsed() >= INGEST_BUDGET {
+                        ingest_end = i;
+                        break;
+                    }
                     let raw = &st.lines[i];
-                    // Identity fast-path (no projection, no search key): the whole
-                    // line is display, key and original at once — one allocation.
+                    // Identity fast-path: display, key and original are all the
+                    // line the stream already holds — one shared handle.
                     if proj.is_empty() && search_proj.is_empty() {
-                        let a: Arc<str> = Arc::from(raw.as_str());
-                        fzf_cands.push((a.clone(), a.clone(), a));
+                        fzf_cands.push(FzfCand::Ident(Arc::clone(raw)));
                         continue;
                     }
-                    let orig: Arc<str> = Arc::from(raw.as_str());
+                    let orig: Arc<str> = Arc::clone(raw);
                     let key: Option<Arc<str>> = if search_proj.is_empty() {
                         None
                     } else {
@@ -1144,7 +1188,7 @@ pub fn run(
                     for disp in project_line(&proj, raw) {
                         let d: Arc<str> = Arc::from(disp.as_str());
                         let k = key.clone().unwrap_or_else(|| d.clone());
-                        fzf_cands.push((d, k, orig.clone()));
+                        fzf_cands.push(FzfCand::Proj(Box::new([d, k, orig.clone()])));
                     }
                 }
                 fzf_raw_done = ingest_end;
@@ -1166,19 +1210,20 @@ pub fn run(
                         let old = std::mem::take(&mut fzf_hits);
                         fzf_hits = old
                             .into_iter()
-                            .filter_map(|(_, d, k, o)| {
-                                score_line(&k, &filter, fzf_exact).map(|s| (s, d, k, o))
+                            .filter_map(|(_, i)| {
+                                score_line(fzf_cands[i as usize].key(), &filter, fzf_exact)
+                                    .map(|s| (s, i))
                             })
                             .collect();
                         // keep fzf_processed — new candidates scored below
                     } else {
                         // Full rescan across cores (rayon) — first char / backspace.
-                        // Match on the search key `k`, carry the display `d`.
+                        // Match on the search key; the index carries everything else.
                         fzf_hits = fzf_cands
                             .par_iter()
-                            .filter_map(|(d, k, o)| {
-                                score_line(k, &filter, fzf_exact)
-                                    .map(|s| (s, d.clone(), k.clone(), o.clone()))
+                            .enumerate()
+                            .filter_map(|(i, cand)| {
+                                score_line(cand.key(), &filter, fzf_exact).map(|s| (s, i as u32))
                             })
                             .collect();
                         fzf_processed = n;
@@ -1187,11 +1232,11 @@ pub fn run(
                     fzf_last_sort = Instant::now() - Duration::from_secs(1);
                 }
                 // Incorporate new candidates since the last frame.
-                for (d, k, o) in fzf_cands.iter().take(n).skip(fzf_processed) {
+                for (i, cand) in fzf_cands.iter().enumerate().take(n).skip(fzf_processed) {
                     if empty {
-                        fzf_matched.push((d.clone(), o.clone()));
-                    } else if let Some(sc) = score_line(k, &filter, fzf_exact) {
-                        fzf_hits.push((sc, d.clone(), k.clone(), o.clone()));
+                        fzf_matched.push(i as u32);
+                    } else if let Some(sc) = score_line(cand.key(), &filter, fzf_exact) {
+                        fzf_hits.push((sc, i as u32));
                     }
                 }
                 fzf_processed = n;
@@ -1217,14 +1262,15 @@ pub fn run(
                         h.par_sort_by(|a, b| {
                             b.0.cmp(&a.0).then_with(|| {
                                 if fzf_look.tiebreak_length {
-                                    a.2.chars().count().cmp(&b.2.chars().count())
+                                    trim_length(fzf_cands[a.1 as usize].disp())
+                                        .cmp(&trim_length(fzf_cands[b.1 as usize].disp()))
                                 } else {
                                     std::cmp::Ordering::Equal
                                 }
                             })
                         });
                     }
-                    fzf_matched = h.into_iter().map(|(_, d, _k, o)| (d, o)).collect();
+                    fzf_matched = h.into_iter().map(|(_, i)| i).collect();
                     fzf_last_sort = now;
                 }
             }
@@ -1238,25 +1284,30 @@ pub fn run(
             let tac_view = fzf_look.tac && filter.is_empty();
             let rank = |pos: usize| tac_index(pos, matched.len(), tac_view);
 
+            // A display row's ORIGINAL line, resolved through the candidate list.
+            let original = |pos: usize| -> Option<&str> {
+                matched
+                    .get(pos)
+                    .map(|i| fzf_cands[*i as usize].orig().as_ref())
+            };
+
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
             // what would be emitted, not the projected display.
-            c.current = matched
-                .get(rank(sel))
-                .map(|(_, o)| o.to_string())
-                .unwrap_or_default();
+            c.current = original(rank(sel)).unwrap_or_default().to_string();
             // `toggle`: flip each pending row's original in the mark set. Every
             // press queued its own row, so a burst of Tabs marks every one of
             // them, and the cursor move fzf pairs with `toggle+down` has already
             // been applied by the key handler.
             for at in std::mem::take(&mut c.toggles) {
                 let at = rank(at.min(matched.len().saturating_sub(1)));
-                if let Some((_, orig)) = matched.get(at).filter(|_| c.multi) {
-                    match c.marks.iter().position(|m| m.as_str() == orig.as_ref()) {
+                let orig = original(at).filter(|_| c.multi).map(str::to_string);
+                if let Some(orig) = orig {
+                    match c.marks.iter().position(|m| *m == orig) {
                         Some(pos) => {
                             c.marks.remove(pos);
                         }
-                        None => c.marks.push(orig.to_string()),
+                        None => c.marks.push(orig),
                     }
                 }
             }
@@ -1269,7 +1320,10 @@ pub fn run(
                 } else if c.marks.len() == matched.len() {
                     c.marks.clear();
                 } else {
-                    c.marks = matched.iter().map(|(_, o)| o.to_string()).collect();
+                    c.marks = matched
+                        .iter()
+                        .map(|i| fzf_cands[*i as usize].orig().to_string())
+                        .collect();
                 }
             }
             // Publish the match count so `--cycle` wraps against a real length.
@@ -1277,9 +1331,8 @@ pub fn run(
             if submit {
                 // Emit the marks if any (multi-select), else the cursor original.
                 c.result = if c.marks.is_empty() {
-                    matched
-                        .get(rank(sel))
-                        .map(|(_, o)| o.to_string())
+                    original(rank(sel))
+                        .map(str::to_string)
                         .into_iter()
                         .collect()
                 } else {
@@ -1295,7 +1348,10 @@ pub fn run(
             // Snapshot the `--preview` pane (command output for the cursor line).
             let prev_snap: Option<(Vec<String>, String)> = down.as_ref().map(|(ds, label)| {
                 let d = ds.lock().unwrap();
-                (d.lines.iter().cloned().collect(), label.clone())
+                (
+                    d.lines.iter().map(|l| l.to_string()).collect(),
+                    label.clone(),
+                )
             });
             let prev_ref = prev_snap
                 .as_ref()
@@ -1306,6 +1362,7 @@ pub fn run(
                 (fzf_start, fzf_rows) = render_fzf(
                     f,
                     matched,
+                    &fzf_cands,
                     &filter,
                     sel,
                     fzf_start,
@@ -1353,7 +1410,7 @@ pub fn run(
                 .lines
                 .iter()
                 .skip(n.saturating_sub(1000))
-                .cloned()
+                .map(|l| l.to_string())
                 .collect();
             (tail, label.clone())
         });
@@ -1365,7 +1422,7 @@ pub fn run(
         {
             let lines: Vec<String> = {
                 let st = state.lock().unwrap();
-                st.lines.iter().cloned().collect()
+                st.lines.iter().map(|l| l.to_string()).collect()
             };
             let mut c = controls.lock().unwrap();
             update_sel_controls(spec, &lines, &mut c);
@@ -1448,6 +1505,14 @@ pub fn run(
         }
         thread::sleep(Duration::from_millis(120));
     };
+
+    // Hand the candidate/match lists to the OS instead of walking a million
+    // `Arc` drops on the way out: the picker is exiting, and freeing one line at
+    // a time is time the user spends staring at a dead terminal. (The stream
+    // buffer still owns the text; this only skips the refcount teardown.)
+    std::mem::forget(fzf_cands);
+    std::mem::forget(fzf_hits);
+    std::mem::forget(fzf_matched);
 
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
@@ -1543,7 +1608,7 @@ fn render(
         .lines
         .iter()
         .filter(|l| filter_matches(l, filter))
-        .cloned()
+        .map(|l| l.to_string())
         .collect();
 
     if spec.widgets.is_empty() {
@@ -2480,23 +2545,20 @@ pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
     if pat.is_empty() {
         return Vec::new();
     }
-    let cased = pat.chars().any(|c| c.is_uppercase());
-    let norm = |c: char| if cased { c } else { c.to_ascii_lowercase() };
-    let l: Vec<char> = line.chars().collect();
-    let mut positions = Vec::new();
-    let mut li = 0;
-    for pc in pat.chars() {
-        let target = norm(pc);
-        while li < l.len() {
-            if norm(l[li]) == target {
-                positions.push(li);
-                li += 1;
-                break;
-            }
-            li += 1;
+    // The positions come from the SAME alignment that produced the score
+    // (fzf's backtrace), so the highlight always marks the characters the
+    // ranking was based on — a greedy left-to-right scan can mark others.
+    let (p, cased) = crate::algo::prepare_pattern(pat);
+    let text = crate::algo::Text::new(line);
+    let hit = crate::algo::fuzzy_match_v2(cased, &text, &p, true)
+        .or_else(|| crate::algo::exact_match_naive(cased, &text, &p, true));
+    match hit {
+        Some((_, Some(mut pos))) => {
+            pos.sort_unstable();
+            pos
         }
+        _ => Vec::new(),
     }
-    positions
 }
 
 /// Build one styled picker row in fzf's exact shape — `[pointer][marker][text]`,
@@ -2627,7 +2689,10 @@ pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
 #[allow(clippy::too_many_arguments)]
 fn render_fzf(
     f: &mut Frame,
-    matched: &[(Arc<str>, Arc<str>)],
+    // The display order, as indices into `cands` — the picker never holds a
+    // second copy of the lines it is showing.
+    matched: &[u32],
+    cands: &[FzfCand],
     filter: &str,
     sel: usize,
     // `prev_start`: the previous frame's scroll offset, so the window slides
@@ -2866,7 +2931,12 @@ fn render_fzf(
     let mark_set: std::collections::HashSet<&str> = marks.iter().map(String::as_str).collect();
     let mut items: Vec<ListItem> = (start..end)
         // `--tac` walks the ranked list backwards; without it this is `[start..end]`.
-        .filter_map(|pos| matched.get(tac_index(pos, n, tac)).map(|m| (pos, m)))
+        .filter_map(|pos| {
+            matched
+                .get(tac_index(pos, n, tac))
+                .and_then(|i| cands.get(*i as usize))
+                .map(|cand| (pos, (cand.disp(), cand.orig())))
+        })
         // Show the projected display; a row is marked when its ORIGINAL is marked.
         .map(|(pos, (disp, orig))| {
             let current = n > 0 && pos == sel;

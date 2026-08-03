@@ -220,6 +220,14 @@ is
 .B \-\-no\-sort
 Keep input order (no score sort).
 .TP
+.BI \-f ", " \-\-filter " STR"
+Print the lines matching
+.I STR
+best\-first and exit \(em the matcher without the UI, ranked exactly as the
+picker would rank it (fzf's
+.BR \-f ).
+Scoring runs across all cores.
+.TP
 .BI \-\-query \ STR
 Start with this query in the filter.
 .TP

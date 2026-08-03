@@ -320,6 +320,15 @@ struct Cli {
         help = "\x1b[32m//\x1b[0m fzf: multi-select (Tab marks)"
     )]
     multi: bool,
+    /// fzf `-f`/`--filter`: no UI — print the matching lines, best-first, and
+    /// exit. Same matcher, sort and tiebreak as the picker.
+    #[arg(
+        short = 'f',
+        long = "filter",
+        value_name = "STR",
+        help = "\x1b[32m//\x1b[0m fzf: print ranked matches for STR and exit (no UI)"
+    )]
+    filter: Option<String>,
     /// fzf height: render inline in N rows (or `N%` of the terminal) at the
     /// bottom instead of full-screen, keeping the scrollback. E.g. `--height 40%`.
     #[arg(
@@ -521,6 +530,37 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
     out
 }
 
+/// `--filter STR`: score every input line, print the matches best-first. Uses
+/// the same scorer, sort and `--tiebreak` as the interactive picker, so the two
+/// can never drift apart.
+fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &arb::fzf::Look) -> io::Result<()> {
+    use std::io::Read;
+    use std::io::{BufWriter, Write};
+    let stdin = io::stdin();
+    let mut reader = io::BufReader::new(stdin.lock());
+    // Read the whole stream, then rank it across cores — the matching is the
+    // work here, and it parallelizes perfectly.
+    let mut blob = Vec::new();
+    reader.read_to_end(&mut blob)?;
+    let mut lines: Vec<&str> = blob
+        .split(|b| *b == b'\n')
+        // Split on `\n` only: a trailing `\r` belongs to the line (macOS `Icon\r`
+        // entries are real, and fzf scores them with the CR in place).
+        .map(|l| std::str::from_utf8(l).unwrap_or(""))
+        .collect();
+    // A trailing newline yields one empty tail element that was never a line.
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let order = arb::tui::rank(&lines, pat, exact, no_sort, look.tiebreak_length, look.tac);
+    let out = io::stdout();
+    let mut out = BufWriter::new(out.lock());
+    for i in order {
+        writeln!(out, "{}", lines[i])?;
+    }
+    out.flush()
+}
+
 fn main() -> io::Result<()> {
     // Registry verbs (`arb install|add|search|update|publish|uninstall NAME`) are
     // handled before clap so a bare verb isn't mistaken for a spec file.
@@ -549,6 +589,14 @@ fn main() -> io::Result<()> {
     if cli.repl {
         arb::repl::run();
         return Ok(());
+    }
+
+    // `--filter STR` (fzf's `-f`): the matcher without the UI — read stdin,
+    // rank, print. No terminal is touched, so it works in a pipeline and in a
+    // script, and it is the surface that makes arb's ranking directly
+    // comparable to `fzf --filter`.
+    if let Some(pat) = cli.filter.as_deref() {
+        return run_filter(pat, cli.exact, cli.no_sort, &fzf_look);
     }
 
     // Editor frontends over stdio (stdin is a pipe, so this must come before the
@@ -1243,7 +1291,7 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
 
 fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
     let st = state.lock().unwrap();
-    let raw: Vec<String> = st.lines.iter().cloned().collect();
+    let raw: Vec<String> = st.lines.iter().map(|l| l.to_string()).collect();
     let elapsed = st.start.elapsed().as_secs_f64();
     let result = query::eval(ops, &raw, elapsed);
     let mut out = io::stdout().lock();
@@ -1664,16 +1712,40 @@ fn spawn_reader(
         let mut last_inputs: Option<Vec<(String, String)>> = None;
         let mut resolved: Vec<QueryOp> = Vec::new();
         let mut resolved_ok = false;
-        // Replay any sniff-peeked lines first, then the rest of stdin.
-        let feed = prelude
-            .into_iter()
-            .map(Ok::<_, io::Error>)
-            .chain(io::stdin().lock().lines());
-        for line in feed {
-            let l = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
+        // Replay any sniff-peeked lines first, then the rest of stdin. Lines are
+        // read into ONE reused buffer and handed on as `Arc<str>`: `lines()`
+        // would allocate a `String` per line that the stream then copies again.
+        // Lock stdin ONCE: `read_until` on the unlocked handle takes the stdin
+        // mutex per call, which at a million lines costs more than the read.
+        let mut stdin = io::BufReader::with_capacity(256 * 1024, io::stdin().lock());
+        let mut raw = Vec::new();
+        let mut prelude = prelude.into_iter();
+        let feed = std::iter::from_fn(move || -> Option<std::sync::Arc<str>> {
+            if let Some(p) = prelude.next() {
+                return Some(std::sync::Arc::from(p.as_str()));
+            }
+            raw.clear();
+            match stdin.read_until(b'\n', &mut raw) {
+                Ok(0) | Err(_) => None,
+                Ok(_) => {
+                    if raw.last() == Some(&b'\n') {
+                        raw.pop();
+                    }
+                    // Straight from the read buffer into the shared handle: one
+                    // allocation per line, no intermediate `String`.
+                    Some(std::sync::Arc::from(String::from_utf8_lossy(&raw).as_ref()))
+                }
+            }
+        });
+        // Lines are handed to the shared stream in batches: one mutex round trip
+        // per line costs more than the read itself on a `find /`-sized stream.
+        // The batch is flushed on size or on a short idle, so a slow trickle
+        // still shows up immediately.
+        const BATCH: usize = 512;
+        const FLUSH_AFTER: std::time::Duration = std::time::Duration::from_millis(15);
+        let mut batch: Vec<std::sync::Arc<str>> = Vec::with_capacity(BATCH);
+        let mut last_flush = std::time::Instant::now();
+        for l in feed {
             if let Some(o) = out.as_mut() {
                 // One lock: snapshot the live filter and input values together.
                 let (filter, inputs) = {
@@ -1696,7 +1768,7 @@ fn spawn_reader(
                         let outs = if resolved_ok {
                             tui::project_line(&resolved, &l)
                         } else {
-                            vec![l.clone()]
+                            vec![l.to_string()]
                         };
                         for ol in outs {
                             if writeln!(o, "{ol}").and_then(|()| o.flush()).is_err() {
@@ -1709,7 +1781,14 @@ fn spawn_reader(
                     }
                 }
             }
-            state.lock().unwrap().push(l);
+            batch.push(l);
+            if batch.len() >= BATCH || last_flush.elapsed() >= FLUSH_AFTER {
+                state.lock().unwrap().extend(batch.drain(..));
+                last_flush = std::time::Instant::now();
+            }
+        }
+        if !batch.is_empty() {
+            state.lock().unwrap().extend(batch.drain(..));
         }
     });
 }
@@ -1747,7 +1826,7 @@ fn spawn_preview(
                 s.lines
                     .iter()
                     .filter(|l| tui::filter_matches(l, &filter))
-                    .cloned()
+                    .map(|l| l.to_string())
                     .collect()
             };
             let output = run_capture(&cmd, &input);
@@ -1851,7 +1930,7 @@ fn read_stdin_sync(state: &Arc<Mutex<StreamState>>, prelude: &[String]) {
 
 fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
     let st = state.lock().unwrap();
-    let raw: Vec<String> = st.lines.iter().cloned().collect();
+    let raw: Vec<String> = st.lines.iter().map(|l| l.to_string()).collect();
     let elapsed = st.start.elapsed().as_secs_f64();
     let mut out = io::stdout().lock();
     writeln!(

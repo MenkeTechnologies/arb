@@ -30,7 +30,11 @@ winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
 `--info`, `--color`, `--pointer`, `--marker`, `--ellipsis`, `--scrollbar`,
 `--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`, `--min-height`) on
 top of the matching set (`--exact`, `--no-sort`, `--query`, `--multi`,
-`--prompt`, `--header`, `--height`, `--preview`). `--height` draws below the
+`--prompt`, `--header`, `--height`, `--preview`, `-f`/`--filter`). Matching
+itself is fzf's algorithm, ported from `src/algo/algo.go` into `src/algo.rs`
+(`FuzzyMatchV2` + `ExactMatchNaive`), so rankings are identical line for line —
+verifiable with `--filter`, which prints the ranked matches without a UI.
+`--height` draws below the
 cursor and scrolls the terminal to make room, sized like fzf's (percentages get
 the `--min-height=10+` floor); arb places that viewport itself rather than
 asking crossterm, whose cursor query writes to stdout — arb's data channel — and
