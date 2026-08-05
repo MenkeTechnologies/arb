@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -647,274 +647,402 @@ fn tick_timeouts(
 /// Read key bytes from `/dev/tty` and drive `Controls`: printable chars build
 /// the filter live, Backspace/Ctrl-U edit it, Esc clears it (or quits when it is
 /// already empty), Ctrl-C quits. Raw mode delivers each keypress immediately.
+///
+/// Reads are chunked and the terminal splits a burst at an arbitrary byte — a
+/// trackpad-momentum scroll emits `ESC[<64;…M` wheel reports faster than the
+/// reader drains them — so a truncated tail is carried into the next read
+/// instead of being decoded (see `feed_keys`/`partial_escape`). Without the
+/// carry, the remainder of a split report typed itself into the filter as
+/// `[<64;33;10M`.
 fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
     if let Ok(mut tty) = OpenOptions::new().read(true).open("/dev/tty") {
         thread::spawn(move || {
-            // Read several bytes at once so a `\x1b[A/B` arrow escape (which the
-            // terminal delivers as one burst) is parsed as a unit, while a lone
-            // Esc (1 byte) still reads as Esc. Fast typing/paste is handled too.
-            let mut buf = [0u8; 32];
-            'read: loop {
+            let fd = tty.as_raw_fd();
+            // Big enough that a whole wheel burst normally lands in one read;
+            // the carry covers the bursts that still straddle a boundary.
+            let mut buf = [0u8; 4096];
+            let mut pend: Vec<u8> = Vec::new();
+            loop {
                 let n = match tty.read(&mut buf) {
-                    Ok(n) if n > 0 => n,
-                    _ => break,
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    // A signal (SIGWINCH on resize, SIGCHLD from a `spawn`
+                    // source) interrupts the read. Retry: bailing kills the only
+                    // key reader and wedges the UI with no working keys at all,
+                    // not even Esc/Ctrl-C (raw mode already disabled SIGINT).
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 };
-                let mut c = controls.lock().unwrap();
-                let fzf = c.fzf;
-                // Form mode: `input` widgets present (and not fzf) — typing edits
-                // the focused input, Tab cycles focus.
-                let form = !fzf && !c.inputs.is_empty();
-                let mut i = 0;
-                while i < n {
-                    let b = buf[i];
-                    // The focused control's kind (form mode) drives key handling.
-                    let fk = if form {
-                        c.control_meta
-                            .get(c.focus)
-                            .map(|m| m.kind)
-                            .unwrap_or(ControlKind::Text)
-                    } else {
-                        ControlKind::Text
-                    };
-                    // SGR mouse report `ESC[<…M/m` — must precede the arrow branch,
-                    // which would otherwise swallow the `[`. Click/scroll/drag are
-                    // hit-tested + dispatched; a truncated report re-syncs on `i+=1`.
-                    if b == 0x1b && buf.get(i + 1) == Some(&b'[') && buf.get(i + 2) == Some(&b'<') {
-                        if let Some((ev, used)) = parse_sgr_mouse(&buf[..n], i) {
-                            dispatch_mouse(&mut c, ev, fzf, Instant::now());
-                            if c.quit {
-                                break 'read;
-                            }
-                            i += used;
-                            continue;
-                        }
-                        i += 1;
-                        continue;
-                    }
-                    // Theme chooser (Ctrl-T popup): while open it captures all keys
-                    // — arrows/j/k navigate + live-preview, Enter saves, Esc/q
-                    // cancels, Ctrl-C still quits. Everything else is swallowed.
-                    if c.theme_picker_open {
-                        if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
-                            match buf[i + 2] {
-                                b'A' => theme_picker_move(&mut c, -1),
-                                b'B' => theme_picker_move(&mut c, 1),
-                                _ => {}
-                            }
-                            i += 3;
-                            continue;
-                        }
-                        match b {
-                            b'k' | 0x10 => theme_picker_move(&mut c, -1), // k / Ctrl-P
-                            b'j' | 0x0e => theme_picker_move(&mut c, 1),  // j / Ctrl-N
-                            0x0d => theme_picker_accept(&mut c),          // Enter
-                            0x1b | b'q' => theme_picker_cancel(&mut c),   // Esc / q
-                            0x14 => theme_picker_cancel(&mut c),          // Ctrl-T toggles closed
-                            0x03 => {
-                                c.quit = true;
-                                break 'read;
-                            }
-                            _ => {}
-                        }
-                        i += 1;
-                        continue;
-                    }
-                    // `--expect` keys accept the selection and report themselves.
-                    if fzf && !c.look.expect.is_empty() {
-                        if let Some((key, used)) = fzf_key(&buf[..n], i) {
-                            if let Some(name) = c
-                                .look
-                                .expect
-                                .iter()
-                                .find(|(k, _)| *k == key)
-                                .map(|(_, name)| name.clone())
-                            {
-                                c.expect_key = Some(name);
-                                c.submit = true;
-                                let _ = used;
-                                break 'read;
-                            }
-                        }
-                    }
-                    // fzf `--bind` wins over arb's built-in picker keys, so the
-                    // bindings in a user's `$FZF_DEFAULT_OPTS` (`tab:toggle+down`,
-                    // `ctrl-n:page-down`, …) behave exactly as they do under fzf.
-                    if fzf && !c.look.binds.is_empty() {
-                        if let Some((key, used)) = fzf_key(&buf[..n], i) {
-                            if let Some(acts) = c.look.bound(key).map(<[_]>::to_vec) {
-                                if fzf_action(&mut c, &acts) {
-                                    break 'read;
-                                }
-                                i += used;
-                                continue;
-                            }
-                        }
-                    }
-                    // Arrow keys: ESC [ A/B/C/D. fzf moves the cursor; a form slider
-                    // adjusts on Left/Right, a facet moves its cursor on Up/Down.
-                    if b == 0x1b && i + 2 < n && buf[i + 1] == b'[' {
-                        match buf[i + 2] {
-                            // Movement goes through the fzf action path so the
-                            // bottom-up layout flips it exactly once.
-                            b'A' if fzf => {
-                                fzf_action(&mut c, &[crate::fzf::Action::Up]);
-                            }
-                            b'B' if fzf => {
-                                fzf_action(&mut c, &[crate::fzf::Action::Down]);
-                            }
-                            // Facet and Sel both move a row cursor with Up/Down.
-                            b'A' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
-                                let f = c.focus;
-                                c.control_meta[f].cursor =
-                                    c.control_meta[f].cursor.saturating_sub(1);
-                            }
-                            b'B' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
-                                let f = c.focus;
-                                c.control_meta[f].cursor =
-                                    c.control_meta[f].cursor.saturating_add(1);
-                            }
-                            b'C' if fk == ControlKind::Slider => slider_key(&mut c, true),
-                            b'D' if fk == ControlKind::Slider => slider_key(&mut c, false),
-                            _ => {}
-                        }
-                        i += 3;
-                        continue;
-                    }
-                    match b {
-                        // A declared `bind` wins over the hardwired editing/control
-                        // keys for any control byte (C-u/C-h/Esc/…) — otherwise
-                        // e.g. `bind C-u …` (documented in the README) is silently
-                        // shadowed by the clear-input handler and never fires.
-                        // Printable bytes (>= 0x20) still fall through so filter and
-                        // input typing is never shadowed.
-                        _ if b < 0x20 && c.binds.iter().any(|bd| bd.key == b) => {
-                            let action = c
-                                .binds
-                                .iter()
-                                .find(|bd| bd.key == b)
-                                .map(|bd| bd.action.clone());
-                            if let Some(action) = action {
-                                apply_bind_action(&mut c, &action);
-                                if c.quit {
-                                    break 'read;
-                                }
-                            }
-                        }
-                        0x03 => {
-                            c.quit = true;
-                            break 'read;
-                        }
-                        // fzf select: Enter submits; Ctrl-N/J = down, Ctrl-P/K = up.
-                        0x0d if fzf => {
-                            c.submit = true;
-                            break 'read;
-                        }
-                        0x0e | 0x0a if fzf => {
-                            fzf_action(&mut c, &[crate::fzf::Action::Down]);
-                        }
-                        0x10 | 0x0b if fzf => {
-                            fzf_action(&mut c, &[crate::fzf::Action::Up]);
-                        }
-                        // Tab: fzf's own default binding is `toggle+down` —
-                        // mark the row, then move to the next one.
-                        0x09 if fzf => {
-                            fzf_action(
-                                &mut c,
-                                &[crate::fzf::Action::Toggle, crate::fzf::Action::Down],
-                            );
-                        }
-                        0x09 if form => {
-                            // Tab: cycle focus between inputs.
-                            let nlen = c.inputs.len();
-                            c.focus = (c.focus + 1) % nlen;
-                        }
-                        0x1b => {
-                            if c.help_open {
-                                // Esc closes the help overlay first, before quit/clear.
-                                c.help_open = false;
-                            } else if form {
-                                let f = c.focus;
-                                c.inputs[f].1.clear();
-                            } else if fzf || c.filter.is_empty() {
-                                c.quit = true;
-                                break 'read;
-                            } else {
-                                c.filter.clear();
-                                c.cursor = 0;
-                            }
-                        }
-                        0x08 | 0x7f => {
-                            if form {
-                                let f = c.focus;
-                                c.inputs[f].1.pop();
-                            } else {
-                                c.filter.pop();
-                                c.cursor = 0;
-                            }
-                        }
-                        0x15 => {
-                            if form {
-                                let f = c.focus;
-                                c.inputs[f].1.clear();
-                            } else {
-                                c.filter.clear();
-                                c.cursor = 0;
-                            }
-                        }
-                        // Slider: `+`/`=`/`l` up, `-`/`h` down (by one step).
-                        b'+' | b'=' | b'l' if fk == ControlKind::Slider => slider_key(&mut c, true),
-                        b'-' | b'h' if fk == ControlKind::Slider => slider_key(&mut c, false),
-                        // Check: Space/Enter toggles the boolean.
-                        0x20 | 0x0d if fk == ControlKind::Check => {
-                            let f = c.focus;
-                            c.inputs[f].1 = toggle_check(&c.inputs[f].1);
-                        }
-                        // Facet: Space toggles the option under the cursor.
-                        0x20 if fk == ControlKind::Facet => {
-                            let f = c.focus;
-                            let cur = c.control_meta[f].cursor;
-                            if let Some(item) = c.control_meta[f].opts.get(cur).cloned() {
-                                c.inputs[f].1 = toggle_set_member(&c.inputs[f].1, &item);
-                            }
-                        }
-                        // Ctrl-T opens the theme chooser popup (works in EVERY
-                        // mode). A bare `c` (iftop's key) can't be used — the
-                        // megafilter, the fzf filter, and `input` controls all
-                        // consume printable bytes as text; a control byte never
-                        // types, so it's safe here, in fzf, and in a form alike.
-                        0x14 => open_theme_picker(&mut c),
-                        // Ctrl-G toggles the global help overlay (works everywhere).
-                        0x07 => c.help_open = !c.help_open,
-                        0x20..=0x7e => {
-                            if form && fk == ControlKind::Text {
-                                let f = c.focus;
-                                c.inputs[f].1.push(b as char);
-                            } else if !form {
-                                c.filter.push(b as char);
-                                c.cursor = 0;
-                            }
-                        }
-                        // A declared `bind C-<letter> …` control key: run its action.
-                        // (Clone the action first so the immutable `binds` borrow
-                        // ends before we mutate `inputs`/`quit`.)
-                        _ => {
-                            if let Some(action) = c
-                                .binds
-                                .iter()
-                                .find(|bd| bd.key == b)
-                                .map(|bd| bd.action.clone())
-                            {
-                                apply_bind_action(&mut c, &action);
-                                if c.quit {
-                                    break 'read;
-                                }
-                            }
-                        }
-                    }
-                    i += 1;
+                pend.extend_from_slice(&buf[..n]);
+                if drain_keys(&controls, &mut pend, true) {
+                    break;
+                }
+                // Leftover bytes = a truncated escape at the tail. Give the rest
+                // of the sequence a moment to arrive; if nothing comes it was a
+                // real Esc keypress, so replay the tail literally rather than
+                // swallowing the key.
+                if !pend.is_empty()
+                    && !tty_readable(fd, ESC_WAIT_MS)
+                    && drain_keys(&controls, &mut pend, false)
+                {
+                    break;
                 }
             }
         });
+    }
+}
+
+/// How long a truncated escape tail waits for the rest of its sequence before it
+/// is treated as a literal Esc keypress — the same ~25-50ms window every
+/// terminal app uses to tell `Esc` from the head of an escape sequence.
+const ESC_WAIT_MS: i32 = 30;
+
+/// Whether `fd` has bytes readable within `ms` — a wait, never a read.
+///
+/// `select(2)`, not `poll(2)`: on Darwin, polling a tty returns `POLLNVAL`
+/// (verified: `rc=1 revents=32` on a pty), so a `rc > 0` test reads as "data
+/// waiting" and the reader blocks in `read` — Esc then does nothing until the
+/// next keypress. `select` reports ttys correctly on both Darwin and Linux.
+fn tty_readable(fd: RawFd, ms: i32) -> bool {
+    if fd < 0 || fd as usize >= libc::FD_SETSIZE {
+        return false; // unrepresentable in an fd_set: don't wait, decode now
+    }
+    unsafe {
+        let mut set: libc::fd_set = std::mem::zeroed();
+        libc::FD_SET(fd, &mut set);
+        let mut tv = libc::timeval {
+            tv_sec: (ms / 1000) as libc::time_t,
+            tv_usec: (ms % 1000 * 1000) as libc::suseconds_t,
+        };
+        libc::select(
+            fd + 1,
+            &mut set,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut tv,
+        ) > 0
+    }
+}
+
+/// Feed `pend` through `feed_keys` and drop what it consumed. Returns `true`
+/// when the reader should stop (quit/submit); whatever is left in `pend` is a
+/// truncated escape sequence to carry into the next read.
+fn drain_keys(controls: &Arc<Mutex<Controls>>, pend: &mut Vec<u8>, defer: bool) -> bool {
+    let (used, stop) = feed_keys(controls, pend, defer);
+    pend.drain(..used);
+    stop
+}
+
+/// Decode one chunk of tty bytes into `Controls`. Returns `(consumed, stop)`:
+/// under `defer` a truncated escape sequence at the tail is left unconsumed for
+/// the caller to carry; without it every byte is decoded (so a tail that is just
+/// `ESC` is the Esc key). `stop` means quit/submit — the reader thread is done.
+fn feed_keys(controls: &Arc<Mutex<Controls>>, buf: &[u8], defer: bool) -> (usize, bool) {
+    let n = buf.len();
+    let mut c = controls.lock().unwrap();
+    let fzf = c.fzf;
+    // Form mode: `input` widgets present (and not fzf) — typing edits
+    // the focused input, Tab cycles focus.
+    let form = !fzf && !c.inputs.is_empty();
+    let mut i = 0;
+    while i < n {
+        // The terminal split an escape sequence across reads: stop
+        // here and let the caller carry the tail into the next
+        // chunk. Decoding it now would type the remainder into the
+        // filter as literal text.
+        if defer && partial_escape(buf, i) {
+            break;
+        }
+        let b = buf[i];
+        // The focused control's kind (form mode) drives key handling.
+        let fk = if form {
+            c.control_meta
+                .get(c.focus)
+                .map(|m| m.kind)
+                .unwrap_or(ControlKind::Text)
+        } else {
+            ControlKind::Text
+        };
+        // SGR mouse report `ESC[<…M/m` — must precede the CSI branch
+        // below, which would otherwise consume it without
+        // dispatching. Click/scroll/drag are hit-tested +
+        // dispatched; a report this parser rejects falls through to
+        // the CSI branch, which swallows it whole rather than
+        // letting its bytes type themselves.
+        if b == 0x1b && buf.get(i + 1) == Some(&b'[') && buf.get(i + 2) == Some(&b'<') {
+            if let Some((ev, used)) = parse_sgr_mouse(&buf[..n], i) {
+                dispatch_mouse(&mut c, ev, fzf, Instant::now());
+                if c.quit {
+                    return (i, true);
+                }
+                i += used;
+                continue;
+            }
+        }
+        // Theme chooser (Ctrl-T popup): while open it captures all keys
+        // — arrows/j/k navigate + live-preview, Enter saves, Esc/q
+        // cancels, Ctrl-C still quits. Everything else is swallowed.
+        if c.theme_picker_open {
+            if let Some(len) = csi_len(buf, i) {
+                match buf[i + len - 1] {
+                    b'A' => theme_picker_move(&mut c, -1),
+                    b'B' => theme_picker_move(&mut c, 1),
+                    _ => {}
+                }
+                i += len;
+                continue;
+            }
+            match b {
+                b'k' | 0x10 => theme_picker_move(&mut c, -1), // k / Ctrl-P
+                b'j' | 0x0e => theme_picker_move(&mut c, 1),  // j / Ctrl-N
+                0x0d => theme_picker_accept(&mut c),          // Enter
+                0x1b | b'q' => theme_picker_cancel(&mut c),   // Esc / q
+                0x14 => theme_picker_cancel(&mut c),          // Ctrl-T toggles closed
+                0x03 => {
+                    c.quit = true;
+                    return (i, true);
+                }
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        // `--expect` keys accept the selection and report themselves.
+        if fzf && !c.look.expect.is_empty() {
+            if let Some((key, used)) = fzf_key(&buf[..n], i) {
+                if let Some(name) = c
+                    .look
+                    .expect
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, name)| name.clone())
+                {
+                    c.expect_key = Some(name);
+                    c.submit = true;
+                    let _ = used;
+                    return (i, true);
+                }
+            }
+        }
+        // fzf `--bind` wins over arb's built-in picker keys, so the
+        // bindings in a user's `$FZF_DEFAULT_OPTS` (`tab:toggle+down`,
+        // `ctrl-n:page-down`, …) behave exactly as they do under fzf.
+        if fzf && !c.look.binds.is_empty() {
+            if let Some((key, used)) = fzf_key(&buf[..n], i) {
+                if let Some(acts) = c.look.bound(key).map(<[_]>::to_vec) {
+                    if fzf_action(&mut c, &acts) {
+                        return (i, true);
+                    }
+                    i += used;
+                    continue;
+                }
+            }
+        }
+        // Any other CSI: dispatch on its final byte (arrows
+        // `ESC[A/B/C/D` move the cursor; a form slider adjusts on
+        // Left/Right, a facet moves its cursor on Up/Down) and
+        // consume the WHOLE sequence. Consuming a fixed 3 bytes left
+        // the tail of a longer report (`ESC[1;5A` for Ctrl-Up,
+        // `ESC[15~` for F5, `ESC[200~` bracketed paste) to type
+        // itself into the filter as `;5A` / `5~`.
+        if let Some(len) = csi_len(buf, i) {
+            match buf[i + len - 1] {
+                // Movement goes through the fzf action path so the
+                // bottom-up layout flips it exactly once.
+                b'A' if fzf => {
+                    fzf_action(&mut c, &[crate::fzf::Action::Up]);
+                }
+                b'B' if fzf => {
+                    fzf_action(&mut c, &[crate::fzf::Action::Down]);
+                }
+                // Facet and Sel both move a row cursor with Up/Down.
+                b'A' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
+                    let f = c.focus;
+                    c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_sub(1);
+                }
+                b'B' if matches!(fk, ControlKind::Facet | ControlKind::Sel) => {
+                    let f = c.focus;
+                    c.control_meta[f].cursor = c.control_meta[f].cursor.saturating_add(1);
+                }
+                b'C' if fk == ControlKind::Slider => slider_key(&mut c, true),
+                b'D' if fk == ControlKind::Slider => slider_key(&mut c, false),
+                _ => {}
+            }
+            i += len;
+            continue;
+        }
+        match b {
+            // A declared `bind` wins over the hardwired editing/control
+            // keys for any control byte (C-u/C-h/Esc/…) — otherwise
+            // e.g. `bind C-u …` (documented in the README) is silently
+            // shadowed by the clear-input handler and never fires.
+            // Printable bytes (>= 0x20) still fall through so filter and
+            // input typing is never shadowed.
+            _ if b < 0x20 && c.binds.iter().any(|bd| bd.key == b) => {
+                let action = c
+                    .binds
+                    .iter()
+                    .find(|bd| bd.key == b)
+                    .map(|bd| bd.action.clone());
+                if let Some(action) = action {
+                    apply_bind_action(&mut c, &action);
+                    if c.quit {
+                        return (i, true);
+                    }
+                }
+            }
+            0x03 => {
+                c.quit = true;
+                return (i, true);
+            }
+            // fzf select: Enter submits; Ctrl-N/J = down, Ctrl-P/K = up.
+            0x0d if fzf => {
+                c.submit = true;
+                return (i, true);
+            }
+            0x0e | 0x0a if fzf => {
+                fzf_action(&mut c, &[crate::fzf::Action::Down]);
+            }
+            0x10 | 0x0b if fzf => {
+                fzf_action(&mut c, &[crate::fzf::Action::Up]);
+            }
+            // Tab: fzf's own default binding is `toggle+down` —
+            // mark the row, then move to the next one.
+            0x09 if fzf => {
+                fzf_action(
+                    &mut c,
+                    &[crate::fzf::Action::Toggle, crate::fzf::Action::Down],
+                );
+            }
+            0x09 if form => {
+                // Tab: cycle focus between inputs.
+                let nlen = c.inputs.len();
+                c.focus = (c.focus + 1) % nlen;
+            }
+            0x1b => {
+                if c.help_open {
+                    // Esc closes the help overlay first, before quit/clear.
+                    c.help_open = false;
+                } else if form {
+                    let f = c.focus;
+                    c.inputs[f].1.clear();
+                } else if fzf || c.filter.is_empty() {
+                    c.quit = true;
+                    return (i, true);
+                } else {
+                    c.filter.clear();
+                    c.cursor = 0;
+                }
+            }
+            0x08 | 0x7f => {
+                if form {
+                    let f = c.focus;
+                    c.inputs[f].1.pop();
+                } else {
+                    c.filter.pop();
+                    c.cursor = 0;
+                }
+            }
+            0x15 => {
+                if form {
+                    let f = c.focus;
+                    c.inputs[f].1.clear();
+                } else {
+                    c.filter.clear();
+                    c.cursor = 0;
+                }
+            }
+            // Slider: `+`/`=`/`l` up, `-`/`h` down (by one step).
+            b'+' | b'=' | b'l' if fk == ControlKind::Slider => slider_key(&mut c, true),
+            b'-' | b'h' if fk == ControlKind::Slider => slider_key(&mut c, false),
+            // Check: Space/Enter toggles the boolean.
+            0x20 | 0x0d if fk == ControlKind::Check => {
+                let f = c.focus;
+                c.inputs[f].1 = toggle_check(&c.inputs[f].1);
+            }
+            // Facet: Space toggles the option under the cursor.
+            0x20 if fk == ControlKind::Facet => {
+                let f = c.focus;
+                let cur = c.control_meta[f].cursor;
+                if let Some(item) = c.control_meta[f].opts.get(cur).cloned() {
+                    c.inputs[f].1 = toggle_set_member(&c.inputs[f].1, &item);
+                }
+            }
+            // Ctrl-T opens the theme chooser popup (works in EVERY
+            // mode). A bare `c` (iftop's key) can't be used — the
+            // megafilter, the fzf filter, and `input` controls all
+            // consume printable bytes as text; a control byte never
+            // types, so it's safe here, in fzf, and in a form alike.
+            0x14 => open_theme_picker(&mut c),
+            // Ctrl-G toggles the global help overlay (works everywhere).
+            0x07 => c.help_open = !c.help_open,
+            0x20..=0x7e => {
+                if form && fk == ControlKind::Text {
+                    let f = c.focus;
+                    c.inputs[f].1.push(b as char);
+                } else if !form {
+                    c.filter.push(b as char);
+                    c.cursor = 0;
+                }
+            }
+            // A declared `bind C-<letter> …` control key: run its action.
+            // (Clone the action first so the immutable `binds` borrow
+            // ends before we mutate `inputs`/`quit`.)
+            _ => {
+                if let Some(action) = c
+                    .binds
+                    .iter()
+                    .find(|bd| bd.key == b)
+                    .map(|bd| bd.action.clone())
+                {
+                    apply_bind_action(&mut c, &action);
+                    if c.quit {
+                        return (i, true);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    (i, false)
+}
+
+/// Length of the complete CSI sequence starting at `i` — `ESC [`, parameter
+/// bytes (`0x30..=0x3f`: digits, `;`, and the `<` of an SGR mouse report),
+/// intermediate bytes (`0x20..=0x2f`), then a final byte (`0x40..=0x7e`).
+/// `None` when the slice holds no complete sequence (truncated or malformed).
+/// Pure — no tty. This is the ECMA-48 CSI shape, so one rule covers arrows,
+/// modified arrows, F-keys, `~`-keys, mouse reports and bracketed paste alike.
+pub fn csi_len(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i)? != &0x1b || bytes.get(i + 1)? != &b'[' {
+        return None;
+    }
+    let mut p = i + 2;
+    while matches!(bytes.get(p), Some(0x30..=0x3f)) {
+        p += 1;
+    }
+    while matches!(bytes.get(p), Some(0x20..=0x2f)) {
+        p += 1;
+    }
+    match bytes.get(p) {
+        Some(0x40..=0x7e) => Some(p + 1 - i),
+        _ => None,
+    }
+}
+
+/// Whether `bytes[i..]` is the truncated head of an escape sequence — the
+/// terminal split the report across reads, so the tail has to be carried into
+/// the next read instead of being decoded now. A bare `ESC` at the very end
+/// counts (it may be the head of a CSI); the caller resolves that ambiguity with
+/// the escape-wait, so a real Esc keypress still lands. Pure — no tty.
+pub fn partial_escape(bytes: &[u8], i: usize) -> bool {
+    match bytes.get(i) {
+        Some(0x1b) => match bytes.get(i + 1) {
+            None => true,
+            Some(b'[') => csi_len(bytes, i).is_none(),
+            Some(_) => false, // ESC + non-CSI (`ESC O …`, Alt-key): decode now
+        },
+        _ => false,
     }
 }
 
@@ -5348,5 +5476,108 @@ mod tests {
         update_sel_controls(&spec, &raw, &mut c);
         assert_eq!(c.inputs[0].1, "carol");
         assert_eq!(c.control_meta[0].cursor, 2);
+    }
+    /// A wheel burst chopped at arbitrary byte boundaries (a trackpad-momentum
+    /// scroll outruns the reader) must decode as wheel events, never as typed
+    /// text. The pre-carry reader dropped the `ESC` of a split report and typed
+    /// the remainder into the fzf filter as `[<64;33;10M`.
+    #[test]
+    fn split_wheel_reports_scroll_instead_of_typing_themselves() {
+        use super::{drain_keys, Controls};
+        use std::sync::{Arc, Mutex};
+        let burst: Vec<u8> = b"\x1b[<64;33;10M".repeat(6);
+        // Every chunk size, not just the old 32, so no boundary is special-cased.
+        for size in [1usize, 3, 5, 8, 12, 32, 64] {
+            let c = Arc::new(Mutex::new(Controls {
+                fzf: true,
+                cursor: 10,
+                ..Default::default()
+            }));
+            let mut pend: Vec<u8> = Vec::new();
+            for chunk in burst.chunks(size) {
+                pend.extend_from_slice(chunk);
+                assert!(!drain_keys(&c, &mut pend, true), "chunk {size}: stopped");
+            }
+            let g = c.lock().unwrap();
+            assert_eq!(g.filter, "", "chunk {size}: mouse bytes leaked as text");
+            assert_eq!(g.cursor, 4, "chunk {size}: 6 wheel-ups not applied");
+            assert!(!g.quit, "chunk {size}: a split report quit the UI");
+            assert!(pend.is_empty(), "chunk {size}: bytes left uncarried");
+        }
+    }
+
+    /// A longer CSI (modified arrow, F-key, `~`-key, bracketed paste) is
+    /// consumed whole. The fixed 3-byte skip typed the rest into the filter:
+    /// Ctrl-Up left `;5A`, F5 left `5~`.
+    #[test]
+    fn long_csi_sequences_are_swallowed_not_typed() {
+        use super::{csi_len, drain_keys, Controls};
+        use std::sync::{Arc, Mutex};
+        assert_eq!(csi_len(b"\x1b[A", 0), Some(3));
+        assert_eq!(csi_len(b"\x1b[1;5A", 0), Some(6));
+        assert_eq!(csi_len(b"\x1b[15~", 0), Some(5));
+        assert_eq!(csi_len(b"\x1b[<64;33;10M", 0), Some(12));
+        assert_eq!(csi_len(b"\x1b[200~", 0), Some(6));
+        assert_eq!(csi_len(b"\x1b[1;5", 0), None); // truncated
+
+        let c = Arc::new(Mutex::new(Controls {
+            fzf: true,
+            cursor: 5,
+            ..Default::default()
+        }));
+        let mut pend = b"\x1b[1;5A\x1b[15~\x1b[1;5B".to_vec();
+        assert!(!drain_keys(&c, &mut pend, true));
+        let g = c.lock().unwrap();
+        assert_eq!(g.filter, "", "CSI tail leaked into the filter");
+        assert_eq!(g.cursor, 5, "Ctrl-Up then Ctrl-Down nets zero movement");
+        assert!(pend.is_empty());
+    }
+
+    /// The carry must not swallow a real Esc: with nothing following it, the
+    /// second pass (`defer = false`, what the reader does after the escape-wait
+    /// poll times out) decodes it as the Esc key and quits fzf mode.
+    #[test]
+    fn lone_esc_still_quits_after_the_escape_wait() {
+        use super::{drain_keys, Controls};
+        use std::sync::{Arc, Mutex};
+        let c = Arc::new(Mutex::new(Controls {
+            fzf: true,
+            ..Default::default()
+        }));
+        let mut pend = b"\x1b".to_vec();
+        assert!(!drain_keys(&c, &mut pend, true)); // deferred, nothing decoded
+        assert_eq!(pend, b"\x1b");
+        assert!(!c.lock().unwrap().quit);
+        assert!(drain_keys(&c, &mut pend, false)); // wait expired: it was Esc
+        assert!(c.lock().unwrap().quit);
+    }
+
+    #[test]
+    fn partial_escape_spots_truncated_sequences_only() {
+        use super::partial_escape;
+        for t in [
+            &b"\x1b"[..],
+            b"\x1b[",
+            b"\x1b[<",
+            b"\x1b[<64",
+            b"\x1b[<64;33;",
+            b"\x1b[<64;33;10",
+        ] {
+            assert!(partial_escape(t, 0), "{t:?} should be carried");
+        }
+        for t in [
+            &b"\x1b[<64;33;10M"[..], // complete press report
+            b"\x1b[<0;1;1m",         // complete release report
+            b"\x1b[A",               // complete arrow
+            b"\x1b[1;5A",            // complete modified arrow
+            b"\x1b[15~",             // complete F5
+            b"abc",                  // plain text
+            b"\x1bO",                // SS3 — not a CSI, decoded as Esc + `O`
+        ] {
+            assert!(!partial_escape(t, 0), "{t:?} should decode now");
+        }
+        // Only the tail is partial; the leading complete report decodes first.
+        assert!(!partial_escape(b"\x1b[<64;33;10M\x1b[<64;3", 0));
+        assert!(partial_escape(b"\x1b[<64;33;10M\x1b[<64;3", 12));
     }
 }
