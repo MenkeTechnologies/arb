@@ -3,7 +3,7 @@
 # stays `arb`.
 [package]
 name = "arblang"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
