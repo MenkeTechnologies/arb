@@ -1877,9 +1877,16 @@ fn pipeline_from_body(
             // Inside a `source` body a leading `.` is unambiguous — widget-path decls
             // never appear here. The whole command text (verb + args) is reconstructed
             // so the jq `|` pipe, which is not an arb separator, can be split by `jq`.
+            // `has(…)` is the jq CALL form and routes here; arb's native
+            // space-separated `has KEY` filter is a different verb and still
+            // matches below. `to_entries`/`values` are jq builtin names the spec
+            // lists as supported but that have no native spelling, so without
+            // this arm they died as `unknown verb`.
             if c.name.starts_with('.')
                 || c.name.starts_with("select(")
                 || c.name.starts_with("map(")
+                || c.name.starts_with("has(")
+                || matches!(c.name.as_str(), "to_entries" | "values")
             {
                 let mut parts = vec![c.name.clone()];
                 parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));

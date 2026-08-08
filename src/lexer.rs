@@ -20,7 +20,13 @@ pub enum Tok {
 
 /// Tokenize a spec source string. Each token carries its start char-offset (used
 /// by the LSP to anchor a diagnostic); errors carry the offending span.
-pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
+///
+/// `jq_ok` says whether a jq literal may start a command here. It is true only
+/// inside a `{ … }` body, where a leading `.` is unambiguous. At top level a
+/// command legitimately starts with a widget path — `.x <- in` (bind shorthand)
+/// and `.g configure -max 200` — so reading `.`-first commands as jq literals
+/// there would swallow those whole.
+pub fn lex(src: &str, jq_ok: bool) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
     use crate::err::SpecError;
     let cs: Vec<char> = src.chars().collect();
     let n = cs.len();
@@ -181,6 +187,37 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
                 }
                 at_cmd_start = false;
             }
+            _ if jq_ok && at_cmd_start && jq_literal_at(&cs, i) => {
+                // A jq literal occupies a whole body command (`.a | select(.k ==
+                // "v")`). Lex it as ONE verbatim atom so `jq::translate` receives
+                // the exact source text. Splitting it into verb + args and
+                // space-joining them back (what the parser would otherwise hand
+                // downstream) is lossy twice over: `Arg::Str` drops its quotes, so
+                // `select(.k == "v")` reconstructs as `select(.k == v )` and
+                // silently compares against a bareword; and the rejoin injects
+                // spaces, so `.["k"]` becomes `.[ "k" ]` and no longer parses as a
+                // path at all. Both are corruptions of a documented construct.
+                //
+                // The scan tracks `"` strings and `(`/`[` depth so a `;` inside
+                // either does not end the command, and stops at a brace so a
+                // block still lexes as a block.
+                let start = i;
+                let mut depth = 0i32;
+                let mut in_str = false;
+                while i < n {
+                    match cs[i] {
+                        '"' => in_str = !in_str,
+                        '(' | '[' if !in_str => depth += 1,
+                        ')' | ']' if !in_str => depth -= 1,
+                        ';' | '\n' | '{' | '}' if !in_str && depth == 0 => break,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                let w: String = cs[start..i].iter().collect();
+                toks.push((Tok::Word(w.trim_end().to_string()), start));
+                at_cmd_start = false;
+            }
             _ => {
                 let start = i;
                 while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {
@@ -193,4 +230,25 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
         }
     }
     Ok(toks)
+}
+
+/// Does a jq literal begin at `cs[i]`, which is at command position inside a
+/// body block? A leading `.` is unambiguous there — a body holds query verbs, and
+/// the widget-path commands that also start with `.` are top-level only, which is
+/// why the caller gates this on `jq_ok`. `select(`, `map(` and `has(` are the jq
+/// call forms the spec documents; the CALL spelling is what distinguishes them,
+/// so arb's native space-separated `map EXPR` and `has KEY` still lex as verbs.
+fn jq_literal_at(cs: &[char], i: usize) -> bool {
+    if cs[i] == '.' {
+        return true;
+    }
+    let mut j = i;
+    while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_') {
+        j += 1;
+    }
+    if cs.get(j) != Some(&'(') {
+        return false;
+    }
+    let name: String = cs[i..j].iter().collect();
+    matches!(name.as_str(), "select" | "map" | "has")
 }

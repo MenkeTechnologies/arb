@@ -21,6 +21,13 @@ use crate::expr::Expr;
 pub enum FieldSel {
     Col(usize),
     Key(Vec<String>),
+    /// A JSON key path reached through the jq front-end (`.a.b`, `.foo[0]`).
+    /// Identical to `Key` except for the miss: jq renders an explicit null, an
+    /// absent key and an out-of-range index all as the literal `null`, where
+    /// arb's native `field` yields "" and falls back to logfmt. Keeping the two
+    /// apart lets a jq path answer like jq without changing what `field NAME`
+    /// does to a plain-text or logfmt stream.
+    JqKey(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +145,11 @@ pub enum QueryOp {
     HasKey(String),
     /// jq to_entries: expand each JSON object line into one `{"key":<k>,"value":<v>}` line per key (BTreeMap key order); non-object lines pass through.
     Entries,
+    /// The jq front-end's `to_entries`. Same mapping as `Entries`, but emits the
+    /// whole result as ONE compact array line, which is what jq returns. Native
+    /// `entries` keeps its documented line-per-key shape (SPEC §8) so specs built
+    /// on it are unaffected; the two spellings are distinct, so they can differ.
+    JqEntries,
     /// jq `flatten`: recursively flatten a JSON-array line to its non-array leaves,
     /// emitting one leaf per line (matching jq's full-depth flatten, unlike `each`
     /// which descends a single level). Non-array lines pass through unchanged.
@@ -338,12 +350,15 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
                     match serde_json::from_str::<Value>(l) {
+                        // `each` IS jq's `.[]` (SPEC §8), so a null ELEMENT keeps
+                        // jq's rendering — dropping it to "" loses the element's
+                        // existence, which is what `[1,null,2]` must not do.
                         Ok(Value::Array(arr)) => {
-                            out.extend(arr.iter().map(json_to_string));
+                            out.extend(arr.iter().map(jq_to_string));
                         }
                         // jq `.[]` over an object iterates its VALUES.
                         Ok(Value::Object(m)) => {
-                            out.extend(m.values().map(json_to_string));
+                            out.extend(m.values().map(jq_to_string));
                         }
                         _ => out.push(l.clone()),
                     }
@@ -710,6 +725,22 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::JqEntries => {
+                for l in cur.iter_mut() {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
+                        let arr: Vec<Value> = m
+                            .into_iter()
+                            .map(|(k, v)| {
+                                let mut e = serde_json::Map::new();
+                                e.insert("key".into(), Value::String(k));
+                                e.insert("value".into(), v);
+                                Value::Object(e)
+                            })
+                            .collect();
+                        *l = Value::Array(arr).to_string();
+                    }
+                }
             }
             QueryOp::Flatten => {
                 // jq `flatten` fully flattens all nesting levels; recurse into
@@ -1393,6 +1424,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Has(_)
                 | QueryOp::HasKey(_)
                 | QueryOp::Entries
+                | QueryOp::JqEntries
                 | QueryOp::Add
                 | QueryOp::Over(_)
                 | QueryOp::Under(_)
@@ -1424,6 +1456,22 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
                 }
             })
             .unwrap_or_default(),
+        // jq: a miss is `null`, and so is an explicit null — the two are
+        // indistinguishable in jq, so both render the same way here.
+        FieldSel::JqKey(path) => serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|v| walk(v, path))
+            .map_or_else(|| "null".to_string(), |v| jq_to_string(&v)),
+    }
+}
+
+/// Render a JSON value the way jq's `-r`/`-c` pair does: a string raw, a null as
+/// the literal `null`, everything else compact. `json_to_string` renders a null
+/// as "" instead, which is right for arb's native text verbs and wrong for jq.
+fn jq_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -1830,6 +1878,19 @@ fn field_str(line: &str, name: &str) -> String {
     logfmt_field(line, name).unwrap_or_default()
 }
 
+/// One side of a string comparison, resolved against the current line: a literal
+/// as itself, a field as its value, and `x`/`.` as the whole line.
+fn cmp_str(e: &crate::expr::Expr, line: &str) -> String {
+    use crate::expr::Expr;
+    match e {
+        Expr::Str(s) => s.clone(),
+        Expr::Field(f) => field_str(line, f),
+        Expr::Var => line.trim().to_string(),
+        Expr::Num(n) => fmt_num(*n),
+        _ => String::new(),
+    }
+}
+
 /// The string value of a substituted string node (`Str`), else "".
 fn str_of(e: &crate::expr::Expr) -> String {
     match e {
@@ -1864,6 +1925,20 @@ fn eval_where(e: &crate::expr::Expr, line: &str) -> bool {
         Expr::Not(a) => !eval_where(a, line),
         Expr::Bin(BinOp::And, a, b) => eval_where(a, line) && eval_where(b, line),
         Expr::Bin(BinOp::Or, a, b) => eval_where(a, line) || eval_where(b, line),
+        // `==`/`!=` where one side is a string literal — jq's
+        // `select(.status == "ok")`. Compared as TEXT: the numeric fallback below
+        // reads a non-numeric field as NaN, and every NaN comparison is false, so
+        // without this arm such a predicate silently matched nothing.
+        Expr::Bin(op @ (BinOp::Eq | BinOp::Ne), a, b)
+            if matches!(**a, Expr::Str(_)) || matches!(**b, Expr::Str(_)) =>
+        {
+            let sa = cmp_str(a, line);
+            let sb = cmp_str(b, line);
+            match op {
+                BinOp::Eq => sa == sb,
+                _ => sa != sb,
+            }
+        }
         // A numeric subtree: evaluate it on fusevm as usual.
         _ => {
             let x = line.trim().parse::<f64>().unwrap_or(f64::NAN);

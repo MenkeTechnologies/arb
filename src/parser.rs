@@ -31,7 +31,9 @@ fn parse_at(src: &str, base: usize, depth: usize) -> Result<Vec<Command>, SpecEr
             span: Some((base, base + 1)),
         });
     }
-    let toks = lex(src)?;
+    // `depth > 0` means this text is a `{ … }` body, the only place a jq literal
+    // may start a command (see `lexer::lex`).
+    let toks = lex(src, depth > 0)?;
     let mut cmds = Vec::new();
     let mut cur: Vec<Arg> = Vec::new();
     let mut cur_pos: Option<usize> = None;

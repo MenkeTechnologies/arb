@@ -85,7 +85,9 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "to_entries" => {
-            ops.push(QueryOp::Entries);
+            // jq returns ONE array; arb's native `entries` verb is the
+            // line-per-key spelling. This front-end answers as jq does.
+            ops.push(QueryOp::JqEntries);
             return Ok(());
         }
         _ => {}
@@ -136,13 +138,27 @@ fn strip_quotes(s: &str) -> String {
         .to_string()
 }
 
-/// A stage is a pure path if every char is a path char (no spaces/operators
-/// outside brackets). `:` and `-` are allowed so slices `.[1:3]` and negative
-/// indices `.[-1]` route here; a bare `-`/`: ` outside a bracket still errors in
-/// `translate_path` (fail-closed), never mis-handles.
+/// A stage is a pure path if every char OUTSIDE a `[…]` subscript is a path char.
+/// Inside a subscript anything is allowed, because that is where a quoted object
+/// key (`.["a b"]` — spaces and punctuation are legal in a JSON key), a slice
+/// (`.[1:3]`) and a negative index (`.[-1]`) all live. A flat whitelist over the
+/// whole string rejected keys holding any char it did not list and then re-routed
+/// the stage to the arithmetic parser, which failed on the `[`.
 fn is_pure_path(s: &str) -> bool {
-    s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '[' | ']' | '"' | '_' | ':' | '-'))
+    let mut depth = 0i32;
+    for c in s.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            _ if depth > 0 => {}
+            _ if c.is_ascii_alphanumeric() || matches!(c, '.' | '"' | '_') => {}
+            _ => return false,
+        }
+        if depth < 0 {
+            return false;
+        }
+    }
+    depth == 0
 }
 
 /// Translate a pure path (`.a.b`, `.foo[]`, `.[0]`, `.["k"]`) into ops.
@@ -155,7 +171,7 @@ fn translate_path(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
     }
     let flush = |key: &mut Vec<String>, ops: &mut Vec<QueryOp>| {
         if !key.is_empty() {
-            ops.push(QueryOp::Field(FieldSel::Key(std::mem::take(key))));
+            ops.push(QueryOp::Field(FieldSel::JqKey(std::mem::take(key))));
         }
     };
     while i < cs.len() {
@@ -465,7 +481,50 @@ mod tests {
         assert!(translate(".foo // 0").is_err()); // alternative
         assert!(translate(".foo?").is_err()); // optional
         assert!(translate("reduce .[] as $x (0; . + $x)").is_err());
-        assert!(translate(r#"select(.status == "ok")"#).is_err()); // string compare
         assert!(translate("select(.a.b > 1)").is_err()); // nested in expr
+    }
+
+    #[test]
+    fn select_string_compare() {
+        // `select(.k == "v")` is a COMPARE, which the spec documents as in-subset.
+        // It used to be rejected outright, and — reached through a `source` body,
+        // where the reconstruction dropped the quotes — silently compared against
+        // a bareword and matched nothing. Real jq keeps only the matching record.
+        let inputs = [r#"{"status":"ok"}"#, r#"{"status":"bad"}"#];
+        assert_eq!(
+            run(r#"select(.status == "ok")"#, &inputs),
+            vec![r#"{"status":"ok"}"#]
+        );
+        assert_eq!(
+            run(r#"select(.status != "ok")"#, &inputs),
+            vec![r#"{"status":"bad"}"#]
+        );
+    }
+
+    #[test]
+    fn nulls_render_like_jq() {
+        // jq makes no distinction between an explicit null, an absent key and an
+        // out-of-range index: all three are the literal `null`. Rendering them as
+        // "" instead loses the OUTPUT ITSELF for `.[]` — `[1,null,2]` has to stay
+        // three values, not two values and a blank.
+        assert_eq!(run(".a", &[r#"{"a":null}"#]), vec!["null"]);
+        assert_eq!(run(".b", &[r#"{"a":1}"#]), vec!["null"]);
+        assert_eq!(run(".a.b", &[r#"{"a":{"b":null}}"#]), vec!["null"]);
+        assert_eq!(run(".[5]", &["[1,2]"]), vec!["null"]);
+        assert_eq!(run(".[-4]", &[r#"["a"]"#]), vec!["null"]);
+        assert_eq!(run(".[]", &["[1,null,2]"]), vec!["1", "null", "2"]);
+        assert_eq!(run(".a[0]", &[r#"{"a":[null]}"#]), vec!["null"]);
+        // A present, non-null value is untouched by the null path.
+        assert_eq!(run(".a", &[r#"{"a":"x"}"#]), vec!["x"]);
+        assert_eq!(run(".a", &[r#"{"a":0}"#]), vec!["0"]);
+    }
+
+    #[test]
+    fn bracket_key_with_spaces() {
+        // A JSON key may hold any character; `.["a b"]` is the only way to reach
+        // one that is not a bare identifier. The old whole-string path whitelist
+        // rejected the space and re-routed the stage to the arithmetic parser.
+        assert_eq!(run(r#".["a b"]"#, &[r#"{"a b":1}"#]), vec!["1"]);
+        assert_eq!(run(r#".["a-b"]"#, &[r#"{"a-b":"v"}"#]), vec!["v"]);
     }
 }

@@ -1456,7 +1456,9 @@ fn finish_dump(r: Result<(), String>) -> io::Result<()> {
 /// source — the same anchor the LSP uses for diagnostics).
 fn dump_tokens(cli: &Cli) -> Result<(), String> {
     let src = dump_src(cli)?;
-    for (tok, off) in arb::lexer::lex(&src).map_err(|e| e.to_string())? {
+    // Top-level tokenization, so jq literals are off — a `{ … }` body arrives here
+    // as one `Block` token whose inner text the parser re-lexes with them on.
+    for (tok, off) in arb::lexer::lex(&src, false).map_err(|e| e.to_string())? {
         println!("{off}\t{tok:?}");
     }
     Ok(())

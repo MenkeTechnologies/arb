@@ -740,6 +740,35 @@ impl Parser {
                 Ok(Expr::Control(self.dotted_ident()))
             }
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
+            // A double-quoted string literal. jq's `select(.status == "ok")` is a
+            // COMPARE, which the spec documents as in-subset, but without a string
+            // atom the predicate could not even parse; `eval_where` gives the
+            // resulting `Str` node its string-comparison semantics.
+            Some('"') => {
+                self.i += 1; // consume the opening quote
+                let mut s = String::new();
+                while let Some(&c) = self.c.get(self.i) {
+                    match c {
+                        '"' => {
+                            self.i += 1;
+                            return Ok(Expr::Str(s));
+                        }
+                        '\\' if self.i + 1 < self.c.len() => {
+                            s.push(match self.c[self.i + 1] {
+                                'n' => '\n',
+                                't' => '\t',
+                                o => o,
+                            });
+                            self.i += 2;
+                        }
+                        _ => {
+                            s.push(c);
+                            self.i += 1;
+                        }
+                    }
+                }
+                Err("calc: unterminated string literal".into())
+            }
             Some(c) => Err(format!("calc: unexpected `{c}`")),
             None => Err("calc: unexpected end of expression".into()),
         }

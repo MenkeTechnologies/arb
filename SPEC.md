@@ -239,6 +239,29 @@ outside the documented subset is a hard error** (`jq: …` / `xpath: …`) ancho
 the offending verb — never silently reinterpreted (no reduce, no arithmetic
 beyond compare, no positional/value predicates, no axes, no union).
 
+A compare may test strings as well as numbers — `select(.status == "ok")` — and a
+key that is not a bare identifier is reachable through the bracket form,
+`.["a b"]`. Path results follow jq on absent data: an explicit null, a missing key
+and an out-of-range index all render as `null`, not as an empty line. (Native
+`field NAME` is unchanged — it still yields "" on a miss and still falls back to
+logfmt, because it runs over plain-text streams as well as JSON.)
+
+**Where a jq literal and a native verb share a spelling.** arb's pipeline is a
+LINE stream, so a jq filter returning one array is emitted as one compact array
+line, while the native verb of the same family emits a line per element. The two
+spellings are kept distinct wherever they differ:
+
+| spelling | shape | note |
+|---|---|---|
+| `to_entries` (jq) | one `[{"key":…,"value":…},…]` line | matches jq |
+| `entries` (native) | one line per key | SPEC §8, unchanged |
+| `keys` | one line per key | **does not match jq**, which returns one array |
+
+`keys` is the one unresolved collision: it is both a native verb and a jq builtin
+under a single spelling, and the native line-per-key shape is load-bearing
+(`stdlib/json.arb` runs `keys; tally`). Reaching jq's array shape would need a
+distinct spelling; until one exists, `keys` is the native verb.
+
 ### In-language unit tests (`arb --test`)
 
 A spec can carry its own tests: a `test "NAME" { … }` block feeds sample lines

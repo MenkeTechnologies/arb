@@ -454,6 +454,11 @@ out { in.html; //a/@href }                               # xpath literal
 
 The jq/xpath literal front-ends cover the common path/filter subset; anything
 outside it is a **hard error** (`jq: …` / `xpath: …`), never silently guessed.
+Inside that subset the answers are checked against real `jq` — `scripts/jq_parity.sh`
+runs both engines over the same input and byte-diffs stdout. Two spelling rules
+fall out of arb's line model and are stated in full in [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats):
+`to_entries` returns jq's array while the native `entries` stays line-per-key, and
+`keys` is the native line-per-key verb, not jq's array.
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML

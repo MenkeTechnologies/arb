@@ -21,7 +21,10 @@ use crate::ast::Command;
 
 /// Bump on any incompatible change to `ast::Command`/`ast::Arg` or the parser
 /// output shape, so old blobs miss instead of decoding wrong.
-const SCHEMA: u64 = 1;
+///
+/// 2: the lexer now reads a jq literal at command position as one verbatim atom,
+/// so the same source parses to a different `Command` split than schema 1 wrote.
+const SCHEMA: u64 = 2;
 
 /// The outer, rkyv-archived shard: a flat list of (key, bincode-blob) entries.
 #[derive(Archive, RkyvSer, RkyvDe, Default)]
@@ -37,10 +40,16 @@ struct Entry {
     blob: Vec<u8>,
 }
 
-/// A stable content key for a source string (schema-salted).
+/// A stable content key for a source string, salted with the schema AND the arb
+/// version. The version salt matters because this caches PARSER OUTPUT: a build
+/// that changes how a source lexes produces a different AST for the same text, and
+/// a key over the source alone would keep serving the pre-change tree from a warm
+/// `~/.arb` — the new behavior would silently not apply on any machine that had
+/// run the spec before. Re-lexing a spec is cheap; serving a stale parse is not.
 pub fn key_for(src: &str) -> u64 {
     let mut h = rustc_hash::FxHasher::default();
     SCHEMA.hash(&mut h);
+    env!("CARGO_PKG_VERSION").hash(&mut h);
     src.hash(&mut h);
     h.finish()
 }
