@@ -27,6 +27,12 @@
 #
 # Exit status is the number of diverging probes (0 = parity). Divergences are
 # only ever reported, never suppressed: there is no allowlist in this script.
+#
+# Recorded measurement, this corpus, both binaries built from the same tree:
+#   cec1d985a2 (before the parity work)  41 pass / 19 diverged / 1 skipped
+#   c952bfce57 (after)                   59 pass /  1 diverged / 1 skipped
+# The one remaining divergence is `keys`, whose shape collision SPEC.md §8
+# documents as an open decision rather than a bug to quietly re-render.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
