@@ -44,8 +44,15 @@
 #   c952bfce57 (after that wave)          59 pass /  1 diverged / 1 skipped
 #   879e61a823 (the previous corpus, before)  128 pass / 26 diverged / 1 skipped
 #   77d4244243 (the previous corpus, after)   153 pass /  1 diverged / 1 skipped
-#   aac6d4eefa (THIS corpus, before)          158 pass / 15 diverged / 1 skipped
-#   HEAD       (THIS corpus, after)           172 pass /  1 diverged / 1 skipped
+#   aac6d4eefa (that corpus, before)          158 pass / 15 diverged / 1 skipped
+#   5ccdf9de36 (that corpus, after)           172 pass /  1 diverged / 1 skipped
+#   HEAD       (THIS corpus)                  173 pass / 11 diverged / 1 skipped
+#
+# The divergence count went UP because the corpus grew, not because anything
+# regressed. The 10 added are two silent reinterpretations no probe had ever
+# covered — `%` on a fractional operand, and arithmetic against a whole object —
+# both measured against jq and both documented at their probes below. A number
+# that only ever falls is a number being managed rather than measured.
 #
 # The 14 this corpus exposed and this tree closed were one blind spot: every
 # numeric probe used a small value, so the corpus only ever exercised the single
@@ -66,7 +73,18 @@
 # exited ZERO with empty output, a jq construct answering "nothing" instead of
 # refusing.
 #
-# The 1 remaining is the bare `keys` SPELLING COLLISION and is expected to stay:
+# Of the 11 remaining, 10 are the two classes named above and are red pending a
+# decision, not pending a fix nobody has written:
+#   5  `%` on a fractional operand. arb's `%` is the f64 remainder and jq's
+#      truncates to integers first. Which rule the JQ CONTEXT should follow is a
+#      language decision (SPEC §6), and the harness reports the difference rather
+#      than picking a side.
+#   5  arithmetic against a whole object, which jq refuses and arb answers `null`
+#      to with exit 0. This one is a contract violation outright — SPEC §8 says
+#      an out-of-subset construct is a hard error — and the probes are `err_probe`
+#      so they turn green the moment it refuses.
+#
+# The last is the bare `keys` SPELLING COLLISION and is expected to stay:
 # `keys` is simultaneously a native verb (line-per-key — `stdlib/json.arb` pipes
 # it into `tally`, and its own in-language test pins that) and a jq builtin (one
 # sorted array). In a body a bare alphanumeric word is a NATIVE verb, so the probe
@@ -91,7 +109,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe` SKIPS silently when xmllint
 # is missing, so without this a machine with no xmllint drops 24 probes and
 # still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=173
+MIN_PROBES=184
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -339,6 +357,30 @@ jq_probe '[1,2,3]'                       'map(. / 3)'
 jq_probe '[1e17,1e17]'                   'add'
 jq_probe '[0.1,0.2]'                     'add'
 
+# ── jq: `%` on a fractional operand ─────────────────────────────────────────
+# `%` reaches the jq front-end (a leading `.` routes the whole body there) and
+# lowers to the same fusevm `Op::Mod` as arb's own expression language, i.e. the
+# f64 remainder. jq's `%` truncates BOTH operands to integers first, so
+# `.n % 3` on 5.5 is 2.5 here and 2 in jq.
+#
+# Every `%` probe in this file's history used an integer, where the two rules
+# coincide exactly — which is why an operator answering differently from jq
+# inside a front-end that promises jq's answers went unmeasured. It is measured
+# now. These probes are RED and stay red until the rule is decided: SPEC §6 keeps
+# the f64 remainder for arb's own `map x % 3` on the grounds that every arb value
+# is an f64, and the open question is only whether the JQ CONTEXT should follow
+# jq the way `keys` / `flatten` / `to_entries` already do (README: "context
+# decides"). Rewording these to match arb would make the harness agree with the
+# thing it exists to check.
+jq_probe '{"n":5.5}'                     '.n % 3'
+jq_probe '{"n":7.25}'                    '.n % 2'
+jq_probe '{"n":-5.5}'                    '.n % 3'
+jq_probe '{"n":0.5}'                     '.n % 2'
+jq_probe '{"n":100.75}'                  '.n % 4'
+# The integer case, which agrees — pinned so a change to either rule has to keep
+# the band the two share.
+jq_probe '{"n":7}'                       '.n % 3'
+
 # ── jq: the hard-error half of the contract (SPEC §8) ───────────────────────
 # Real jq answers every one of these. arb's documented subset does not include
 # them, and SPEC §8 promises a hard error rather than a silent reinterpretation —
@@ -384,6 +426,19 @@ err_probe '.[] | not'
 err_probe 'tostring'
 err_probe 'tonumber'
 err_probe '. as [$a] ?// {$a} | $a'         # optional destructuring
+# Arithmetic against a whole OBJECT. jq refuses every one of these by name
+# ("object and number cannot be divided"), and arb answers `null` with exit 0 —
+# a silent reinterpretation of a construct that has no meaning, which SPEC §8
+# rules out explicitly. This is the `select(.status == "ok")` shape again: not a
+# wrong number, but an answer where there should be a refusal, so nothing in the
+# output says the query did not do what it said. It is not `%`-specific — every
+# arithmetic operator does it, so all five are probed rather than the one that
+# happened to be under the microscope.
+err_probe '. + 3'
+err_probe '. - 3'
+err_probe '. * 3'
+err_probe '. / 3'
+err_probe '. % 3'
 
 # ── xpath / css ─────────────────────────────────────────────────────────────
 XPF=$(mktemp -t arbxp).html

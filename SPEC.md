@@ -161,9 +161,22 @@ One deliberate difference from jq remains:
 
 `%` is the f64 remainder of the two operands: `5.5 % 3` is `2.5`. jq truncates
 both operands to integers first and answers `2`. The two agree on every integer
-input, which is why `scripts/expr_paths.sh` scored parity for `%` until its
-corpus grew a fractional value. The probes for it are red, on purpose, and stay
-that way rather than being reworded to match either side.
+input, which is why both harnesses scored parity for `%` until their corpora grew
+a fractional value. The probes for it are red, on purpose, and stay that way
+rather than being reworded to match either side.
+
+For arb's own expressions (`map x % 3`) the remainder is the settled rule: every
+value here is an f64, and truncating the operands would be the one place the
+language stopped believing that.
+
+What is NOT settled is the jq context. `%` also reaches the jq front-end — a
+leading `.` routes the whole body there — and lowers to the same fusevm op, so
+`out { in.json; .n % 3 }` on `{"n":5.5}` answers `2.5` where jq answers `2`. That
+front-end promises jq's answers, and arb already settles this exact kind of
+collision by CONTEXT rather than by picking one meaning globally: `. | keys` is
+jq's sorted array while bare `keys` is the native verb, and the same split covers
+`flatten` and `to_entries`/`entries`. Whether `%` should join them is open;
+`scripts/jq_parity.sh` probes it so the difference is reported either way.
 
 ## 7. Pipe & sources
 
@@ -314,6 +327,14 @@ strings, no `env`/`$ENV`, no `input`/`inputs`, no positional/text predicates, no
 axes). `scripts/jq_parity.sh` probes BOTH halves of this contract: every claimed
 construct is byte-diffed against the reference tool, and every construct named as
 out-of-subset is asserted to exit non-zero.
+
+One case does NOT hold that contract today, and is stated here rather than left
+for a reader to discover: arithmetic against a whole OBJECT (`. + 3`, `. * 3`,
+`. / 3`, `. % 3`) answers `null` and exits 0, where jq refuses it by name
+("object and number cannot be divided"). That is the silent reinterpretation this
+section rules out, so it is a defect against the contract and not an exception to
+it. All five spellings are probed in `scripts/jq_parity.sh` and are red until
+they refuse.
 
 A compare may test strings as well as numbers — `select(.status == "ok")`, and the
 ordered forms too (`select(.s < "abd")`), which follow jq's codepoint ordering —
