@@ -114,8 +114,9 @@ is also how arb prints one back.
 ### How a computed number prints
 
 A computed value renders the way `jq -r` renders a computed double: the shortest
-digits that round-trip, positional up to the point where jq switches, then
-exponential with a signed two-digit-minimum exponent.
+digits that round-trip and, among those, the ones NEAREST the value, positional
+up to the point where jq switches, then exponential with a signed
+two-digit-minimum exponent.
 
 ```
 1e15 * 1   -> 1000000000000000       1e16 * 1  -> 1e+16
@@ -127,14 +128,34 @@ exponential with a signed two-digit-minimum exponent.
 The switch is on the DIGIT COUNT, not the magnitude — `1e16` is exponential and
 `1.5e16`, one significant digit longer, is not.
 
-Two deliberate differences from jq:
+Shortest and shortest-AND-CLOSEST are different rules, and the difference shows.
+Where neighbouring doubles sit further apart than one unit in the last decimal
+place, several decimals of the shortest length parse back to the same double, and
+only one of them is nearest. `191510495617760.12 * 1` prints those digits because
+they are the nearest; `…13` round-trips just as well and is what stopping at the
+first round-tripping candidate gives. The ties bunch around 1e14..1e17, seldom
+enough that a pool spread evenly across the exponent range almost never lands on
+one.
 
-- **Overflow stays `inf`.** `1e308 * 2` prints `inf`; jq clamps it to
-  `1.7976931348623157e+308`. Clamping would also hide the interp-vs-native split
-  that `scripts/expr_paths.sh` exists to report for a zero divisor.
-- **There is no literal preservation.** jq keeps a number it never computed on
-  as its source text, so `.n` on `{"n":1e17}` gives `1E+17`. Every arb value is
-  an f64 and no literal survives parsing, so arb prints the double.
+A result with no finite value follows jq as well: an infinity CLAMPS to ±DBL_MAX
+(`1e308 * 2` -> `1.7976931348623157e+308`) and a NaN prints as `null`
+(`1e308 * 2 * 0`). Neither has a spelling in JSON.
+
+One deliberate difference from jq remains:
+
+- **There is no literal preservation.** A number jq never computes on is held as
+  a DECIMAL rather than a double and reprinted from that, so `.n` on
+  `{"n":1e17}` gives `1E+17` — and unary `-.` preserves it too, printing `-1E-7`
+  where the computed path gives `-1e-07`. It is not the source text being echoed:
+  `1e17`, `1E17` and `1e+17` all come back as `1E+17`, decNumber's canonical
+  form.
+
+  Matching it is not a formatter change. That decimal holds values no double can
+  — `{"n":1e400}` reprints as `1E+400`, and a 30-digit integer keeps all 30
+  digits, where an f64 overflows and rounds respectively. Following jq here would
+  mean carrying an arbitrary-precision decimal beside every number, which is
+  exactly the "every value is an f64" rule above. So arb prints the double, and
+  `scripts/expr_paths.sh` reports the difference rather than hiding it.
 
 ### `%` takes a remainder, it does not truncate
 
@@ -749,10 +770,12 @@ corpus through both, pinned via `FUSEVM_JIT_BLOCK_THRESHOLD`, because a
 construct the tiers disagree about answers differently for the first row of a
 stream than for the rest. One such disagreement is open and is fusevm's, not
 arb's: `Op::Div` by a zero divisor yields `Value::Undef` (prints `0`) on the
-interpreter and IEEE `inf` in compiled code, so `map x / 0` over a stream prints
-`0` then `inf`, and `where x / 0 > 1` keeps a different subset of identical
-lines. arb does not paper over it locally — the op is shared with every sibling
-frontend.
+interpreter and IEEE infinity in compiled code, so `map x / 0` over a stream
+prints `0` and then `1.7976931348623157e+308` (the infinity, clamped on output
+as above), and `where x / 0 > 1` keeps a different subset of identical lines. arb
+does not paper over it locally — the op is shared with every sibling frontend.
+The clamp does not hide it either: `Value::Undef` never reaches the non-finite
+branch, so clamping moves only the compiled side and the two tiers still differ.
 
 All SPEC modules now have code (script-package registry + the actor system
 included; native/cdylib packages remain future work).

@@ -1895,19 +1895,61 @@ fn nums(lines: &[String]) -> Vec<f64> {
 ///     16 round-trip digits zero-padded. (That cast also saturated outside
 ///     i64's range — `tests/query.rs` still pins that it never reappears.)
 fn fmt_num(v: f64) -> String {
-    // Infinity and NaN have no decimal expansion; keep Rust's spelling rather
-    // than inventing one (jq clamps them to ±DBL_MAX on output, which would
-    // hide, not fix, the divergence the harness reports for a zero divisor).
-    if !v.is_finite() {
-        return format!("{v}");
+    // A non-finite double has no decimal expansion, and neither JSON nor jq has
+    // a spelling for one, so jq maps both onto values that do: an infinity
+    // CLAMPS to ±DBL_MAX and a NaN renders as `null`. This function's contract is
+    // jq's rendering, so it follows jq here too. Measured against jq 1.8.2:
+    // `1e308 * 2` -> `1.7976931348623157e+308`, `-1e308 * 2` -> the negation of
+    // that, and `(1e308 * 2) * 0` -> `null`.
+    //
+    // Rust's own spelling (`inf` / `NaN`) was returned here before. That was a
+    // deviation from the contract, justified in this comment by the claim that
+    // clamping "would hide the divergence the harness reports for a zero
+    // divisor". It does not, and that is checked rather than argued: the split
+    // `scripts/expr_paths.sh` reports for `x / 0` is `Value::Undef` on the
+    // interpreter against an IEEE infinity in compiled code, and `Value::Undef`
+    // renders `0` — not through this branch at all. Clamping moves only the
+    // native side, from `inf` to `1.7976931348623157e+308`, so the two tiers
+    // still disagree and the probe stays red. Both `x / 0` probes are still
+    // listed as divergences by that harness after this change.
+    if v.is_nan() {
+        return "null".to_string();
     }
+    // Clamp the VALUE and fall through to the normal path rather than returning a
+    // literal string, so the digits an infinity prints as are by construction the
+    // ones this formatter gives DBL_MAX — they can never drift apart.
+    let v = v.clamp(-f64::MAX, f64::MAX);
     // `-0.0 == 0.0`, so this is also what keeps a negated zero printing as `0`.
     if v == 0.0 {
         return "0".to_string();
     }
-    // `{:e}` is Rust's shortest round-trip form, i.e. exactly the digit string
-    // and exponent `g_fmt` works from: `d[.ddd]e<exp>`, value = d.ddd × 10^exp.
-    let sci = format!("{v:e}");
+    // `{:e}` is Rust's shortest round-trip form: `d[.ddd]e<exp>`, value =
+    // d.ddd × 10^exp. It gives the DIGIT COUNT to work from, but not always the
+    // right digits — shortest and shortest-AND-CLOSEST are different rules.
+    //
+    // Where a double's neighbours are further apart than one unit in the last
+    // decimal place, SEVERAL decimals of that shortest length parse back to the
+    // same double, and the two rules may pick different ones. jq's dtoa (David
+    // Gay's) emits the closest; Rust emits one that round-trips, which need not
+    // be. `191510495617760.12` came out of Rust as `…13` and `611630169981189.25`
+    // as `…89.3` against jq's `…89.2`. Both of Rust's answers round-trip; neither
+    // is the nearest decimal of that length.
+    //
+    // So: take the LENGTH from Rust's shortest form, then re-render at that many
+    // significant digits with `{:.*e}`, which rounds correctly. That is Gay's
+    // rule, and it cannot cost round-tripping — if some n-digit decimal parses
+    // back to `v` then the CLOSEST n-digit decimal does too, being at least as
+    // near. Measured over 200,000 doubles (150,000 random bit patterns plus
+    // 50,000 in the 1e14..1e17 band where the ties concentrate) against
+    // `jq 1.8.2 -rc '.*1'`: the shortest-only form missed 1,286 of them, this one
+    // misses none. The band matters — a pool spread evenly over the exponent
+    // range hits it so rarely that 33,618 doubles scored clean while 1 in 160 of
+    // the numbers a person actually writes at that magnitude was wrong.
+    let shortest = format!("{v:e}");
+    let ndigits = shortest
+        .split_once('e')
+        .map_or(1, |(m, _)| m.chars().filter(char::is_ascii_digit).count());
+    let sci = format!("{:.*e}", ndigits.saturating_sub(1), v);
     let (mant, exp) = match sci.split_once('e') {
         Some(p) => p,
         None => return sci,
@@ -1917,7 +1959,13 @@ fn fmt_num(v: f64) -> String {
         Err(_) => return sci,
     };
     let sign = if mant.starts_with('-') { "-" } else { "" };
-    let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+    let mut digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+    // Correct rounding can carry into a trailing zero (`…95` at 4 digits becomes
+    // `…0`), and a trailing zero would both lengthen the output and move the
+    // fixed-vs-exponential cutoff below, which counts SIGNIFICANT digits.
+    while digits.len() > 1 && digits.ends_with('0') {
+        digits.pop();
+    }
     let n = digits.len() as i32;
     let decpt = exp + 1;
 
