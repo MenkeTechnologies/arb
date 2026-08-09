@@ -189,7 +189,7 @@ min_by F      return the JSON record whose numeric field F is smallest
 max_by F     emit the record with the largest numeric field F (reducer)
 has KEY          keep only JSON-object lines that contain key KEY
 entries          jq to_entries: emit {"key":k,"value":v} per key of each JSON object line
-flatten          flatten a JSON array, expanding one level of nested arrays
+flatten          flatten a JSON array to its leaves, ALL levels (jq flatten), one leaf per line
 add               jq add: sum a numeric JSON-array line, concat a string array, [] -> ""
 over N          keep numeric lines strictly greater than N (drops non-numeric)
 under N            keep numeric lines strictly less than N
@@ -204,7 +204,7 @@ grepf FIELD /re/   keep lines whose FIELD (json key or 1-based ws column) matche
 flip            reverse the characters of each line (Unicode scalar reversal)
 
 keys  vals        jq keys/values
-map(FN)           transform each
+map(FN)           jq map: `[.[] | FN]` — returns one ARRAY line, scoped per input
 count sum min max avg tally    aggregates
 sort sort_by(FN) group_by(FN) uniq
 over N  under N   numeric threshold
@@ -224,7 +224,7 @@ directly — it compiles to the same ops:
 
 ```
 out { in.json; .users[] | select(.age >= 18) | .name }   # jq: path, iterate, filter
-out { in.json; map(.price); sum }                        # jq map(), then a native verb
+out { in.json; map(.price); add }                        # jq map() -> one array, then a native verb
 out { in.html; //a/@href }                               # xpath: descendant + attribute
 out { in.html; //div[@class]//span/text() }              # xpath: predicate + child + text()
 ```
@@ -232,15 +232,28 @@ out { in.html; //div[@class]//span/text() }              # xpath: predicate + ch
 Supported jq: identity `.`, key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index
 `.[N]` (and negative `.[-1]`), slice `.[a:b]` (bounds optional/negative), pipe
 `|`, `select(…)`, `map(…)`, and the builtins arb already has (`keys`/`values`/
-`length` (JSON-aware — array/object/string/number)/`add`/`has`/`to_entries`). Supported xpath: descendant
-`//tag`, child `/a/b`, chain `//a//b`, the `[@attr]` existence predicate, and the
-`/@attr` / `/text()` accessors, plus a standalone `@attr` step. **Anything
-outside the documented subset is a hard error** (`jq: …` / `xpath: …`) anchored to
-the offending verb — never silently reinterpreted (no reduce, no arithmetic
-beyond compare, no positional/value predicates, no axes, no union).
+`length` (JSON-aware — array/object/string/number)/`add`/`has`/`to_entries`/
+`flatten`). `map(…)` is jq's `map`, so it returns an ARRAY (`map(f)` == `[.[] | f]`)
+and is scoped to one input line; the iterate-without-rewrap reading is jq's own
+`.[] | f`. Per-element arithmetic is supported inside `map`/`select` (`map(. * 2)`,
+`.a + .b`). Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
+`[@attr]` existence, `[@attr='v']`/`[@attr="v"]` equality (either quote) and
+`[contains(@attr,'v')]` substring predicates, union `//a|//b`, and the `/@attr` /
+`/text()` accessors, plus a standalone `@attr` step. **Anything outside the
+documented subset is a hard error** (`jq: …` / `xpath: …`) anchored to the
+offending verb — never silently reinterpreted (no reduce/foreach, no `//`
+alternative, no `?` suppression, no try/catch, no `..` recursive descent, no
+variable binding, no `paths`/`getpath`/`setpath`, no `from_entries`/`with_entries`,
+no `group_by`/`unique_by`/`min_by`/`max_by` in jq spelling, no `range`, no
+regex builtins (`sub`/`gsub`/`splits`), no `@base64`/`@csv`/`@tsv`/`@json` format
+strings, no `env`/`$ENV`, no `input`/`inputs`, no positional/text predicates, no
+axes). `scripts/jq_parity.sh` probes BOTH halves of this contract: every claimed
+construct is byte-diffed against the reference tool, and every construct named as
+out-of-subset is asserted to exit non-zero.
 
-A compare may test strings as well as numbers — `select(.status == "ok")` — and a
-key that is not a bare identifier is reachable through the bracket form,
+A compare may test strings as well as numbers — `select(.status == "ok")`, and the
+ordered forms too (`select(.s < "abd")`), which follow jq's codepoint ordering —
+and a key that is not a bare identifier is reachable through the bracket form,
 `.["a b"]`. Path results follow jq on absent data: an explicit null, a missing key
 and an out-of-range index all render as `null`, not as an empty line. (Native
 `field NAME` is unchanged — it still yields "" on a miss and still falls back to
@@ -255,12 +268,22 @@ spellings are kept distinct wherever they differ:
 |---|---|---|
 | `to_entries` (jq) | one `[{"key":…,"value":…},…]` line | matches jq |
 | `entries` (native) | one line per key | SPEC §8, unchanged |
-| `keys` | one line per key | **does not match jq**, which returns one array |
+| `. \| keys` (jq) | one `["a","b"]` line | matches jq |
+| `keys` (native verb) | one line per key | **does not match jq**, which returns one array |
 
-`keys` is the one unresolved collision: it is both a native verb and a jq builtin
-under a single spelling, and the native line-per-key shape is load-bearing
-(`stdlib/json.arb` runs `keys; tally`). Reaching jq's array shape would need a
-distinct spelling; until one exists, `keys` is the native verb.
+The rule is CONTEXT, not spelling: a body command that begins with a jq literal
+(`.`, `select(`, `map(`, `has(`) is handed to the jq front-end whole, and inside
+it every builtin answers as jq does. A bare alphanumeric word is a native verb.
+So `. | keys` is jq's sorted array while `keys` on its own is arb's line-per-key
+verb — the same gating that already separates jq `to_entries` from native
+`entries`, applied to the one spelling that carries both meanings.
+
+`keys` is therefore resolved in jq context and **unresolved in the bare spelling**,
+which is where `scripts/jq_parity.sh` still reports a divergence every run. Making
+the bare word mean jq's array would break a shipped preset: `stdlib/json.arb` runs
+`keys; tally` over the line-per-key shape and pins it with its own in-language
+test. A distinct native spelling would resolve it, and none exists yet; the probe
+stays red rather than being reworded into a pass.
 
 ### In-language unit tests (`arb --test`)
 

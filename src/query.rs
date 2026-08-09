@@ -68,6 +68,12 @@ pub enum QueryOp {
     Avg,
     /// Flatten a JSON object's keys / values into one line each.
     Keys,
+    /// The jq front-end's `keys`. Same key set as `Keys`, but emitted as ONE
+    /// compact array line, which is what jq returns. The native `keys` verb keeps
+    /// its documented line-per-key shape (SPEC §8) — `stdlib/json.arb` runs
+    /// `keys; tally` over it — so the two are separate ops and only the jq
+    /// literal front-end (`. | keys`, `map(…)`) reaches this one.
+    JqKeys,
     /// Native `vals` verb: expand a JSON object's values, one per line.
     Vals,
     /// jq `values` == `select(. != null)`: drop JSON-null lines, pass every other
@@ -150,6 +156,16 @@ pub enum QueryOp {
     /// `entries` keeps its documented line-per-key shape (SPEC §8) so specs built
     /// on it are unaffected; the two spellings are distinct, so they can differ.
     JqEntries,
+    /// The jq front-end's `flatten`. Same full-depth leaf walk as `Flatten`, but
+    /// emits them as ONE compact array line, which is what jq returns. Native
+    /// `flatten` keeps its line-per-leaf shape — same context gating as
+    /// `JqKeys`/`JqEntries`.
+    JqFlatten,
+    /// jq `map(f)` == `[.[] | f]`: run the inner ops over the ELEMENTS of each
+    /// input line and re-wrap the results as one compact array line — jq's shape.
+    /// Scoped per input line, so two input lines stay two output arrays. (Iterate
+    /// WITHOUT the re-wrap is jq's own `.[] | f`, which arb also accepts.)
+    JqMap(Vec<QueryOp>),
     /// jq `flatten`: recursively flatten a JSON-array line to its non-array leaves,
     /// emitting one leaf per line (matching jq's full-depth flatten, unlike `each`
     /// which descends a single level). Non-array lines pass through unchanged.
@@ -436,6 +452,24 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::JqKeys => {
+                for l in cur.iter_mut() {
+                    // jq `keys` sorts; serde_json's Map is a BTreeMap here, so
+                    // iteration is already sorted. An ARRAY's keys are its indices.
+                    match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Object(m)) => {
+                            let arr: Vec<Value> =
+                                m.keys().map(|k| Value::String(k.clone())).collect();
+                            *l = Value::Array(arr).to_string();
+                        }
+                        Ok(Value::Array(a)) => {
+                            let arr: Vec<Value> = (0..a.len()).map(Value::from).collect();
+                            *l = Value::Array(arr).to_string();
+                        }
+                        _ => {}
+                    }
+                }
             }
             QueryOp::Vals => {
                 let mut out = Vec::new();
@@ -742,6 +776,37 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
             }
+            QueryOp::JqMap(inner) => {
+                // jq `map(f)` is `[.[] | f]` — a per-input SCOPED iterate, so two
+                // input lines stay two output arrays. Running the inner ops over
+                // the whole `cur` instead (which dropping the re-wrap amounts to)
+                // both loses the array and merges the inputs together.
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    let elems: Vec<String> = match serde_json::from_str::<Value>(l) {
+                        Ok(Value::Array(a)) => a.iter().map(jq_to_string).collect(),
+                        // jq `map` over an object maps its VALUES (and still
+                        // returns an array).
+                        Ok(Value::Object(m)) => m.values().map(jq_to_string).collect(),
+                        // Not iterable: real jq errors. A line stream has no way to
+                        // raise per-line, so the line passes through untouched.
+                        _ => {
+                            out.push(l.clone());
+                            continue;
+                        }
+                    };
+                    let mapped = match eval(inner, &elems, elapsed_secs) {
+                        QueryResult::Lines(v) => v,
+                        QueryResult::Scalar(s) => vec![fmt_num(s)],
+                        QueryResult::Pairs(ps) => {
+                            ps.iter().map(|(k, c)| format!("{k}\t{c}")).collect()
+                        }
+                    };
+                    let arr: Vec<Value> = mapped.iter().map(|s| line_to_value(s)).collect();
+                    out.push(Value::Array(arr).to_string());
+                }
+                cur = out;
+            }
             QueryOp::Flatten => {
                 // jq `flatten` fully flattens all nesting levels; recurse into
                 // every sub-array and emit only the non-array leaves.
@@ -759,6 +824,22 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 cur = out;
+            }
+            QueryOp::JqFlatten => {
+                // Same full-depth walk as `Flatten`, re-wrapped as jq's one array.
+                fn leaves(v: &Value, out: &mut Vec<Value>) {
+                    match v {
+                        Value::Array(a) => a.iter().for_each(|e| leaves(e, out)),
+                        other => out.push(other.clone()),
+                    }
+                }
+                for l in cur.iter_mut() {
+                    if let Ok(v @ Value::Array(_)) = serde_json::from_str::<Value>(l) {
+                        let mut out = Vec::new();
+                        leaves(&v, &mut out);
+                        *l = Value::Array(out).to_string();
+                    }
+                }
             }
             QueryOp::Add => {
                 for l in cur.iter_mut() {
@@ -1373,6 +1454,11 @@ pub fn table_ncols(headers: &[String], rows: &[Vec<String>]) -> usize {
 
 pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
     ops.iter().all(|op| {
+        // `map(f)` is scoped to one input line, so it streams exactly when its
+        // inner pipeline does — a reducer inside it (`map(add)`) does not.
+        if let QueryOp::JqMap(inner) = op {
+            return is_line_streamable(inner);
+        }
         matches!(
             op,
             QueryOp::Match(_)
@@ -1381,6 +1467,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Fields(_)
                 | QueryOp::Each
                 | QueryOp::Keys
+                | QueryOp::JqKeys
                 | QueryOp::Vals
                 | QueryOp::NonNull
                 | QueryOp::Pick(_)
@@ -1425,6 +1512,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::HasKey(_)
                 | QueryOp::Entries
                 | QueryOp::JqEntries
+                | QueryOp::JqFlatten
                 | QueryOp::Add
                 | QueryOp::Over(_)
                 | QueryOp::Under(_)
@@ -1473,6 +1561,16 @@ fn jq_to_string(v: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
+}
+
+/// The inverse of `jq_to_string` for re-wrapping a line stream into one JSON value
+/// (`map`'s array). A line that parses as JSON keeps that type; anything else is
+/// the raw string it renders as. This round-trip is lossy in exactly one place —
+/// a STRING whose text is itself valid JSON (`"123"`) comes back as the number —
+/// which is inherent to a raw line stream and is probed, not hidden, by
+/// `scripts/jq_parity.sh`.
+fn line_to_value(s: &str) -> Value {
+    serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.to_string()))
 }
 
 /// Parse the stream as a YAML document (or multi-document) and emit each document
@@ -1925,18 +2023,28 @@ fn eval_where(e: &crate::expr::Expr, line: &str) -> bool {
         Expr::Not(a) => !eval_where(a, line),
         Expr::Bin(BinOp::And, a, b) => eval_where(a, line) && eval_where(b, line),
         Expr::Bin(BinOp::Or, a, b) => eval_where(a, line) || eval_where(b, line),
-        // `==`/`!=` where one side is a string literal — jq's
-        // `select(.status == "ok")`. Compared as TEXT: the numeric fallback below
-        // reads a non-numeric field as NaN, and every NaN comparison is false, so
-        // without this arm such a predicate silently matched nothing.
-        Expr::Bin(op @ (BinOp::Eq | BinOp::Ne), a, b)
-            if matches!(**a, Expr::Str(_)) || matches!(**b, Expr::Str(_)) =>
-        {
+        // A compare where one side is a string literal — jq's `select(.status ==
+        // "ok")`. Compared as TEXT: the numeric fallback below reads a non-numeric
+        // field as NaN, and every NaN comparison is false, so without this arm such
+        // a predicate silently matched NOTHING (a filter that drops every row
+        // rather than erroring). The ORDERED forms belong here for the same reason:
+        // SPEC §8 says "a compare may test strings as well as numbers", and jq
+        // orders strings by codepoint — which is Rust's `str` ordering, since UTF-8
+        // byte order and codepoint order agree.
+        Expr::Bin(
+            op @ (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge),
+            a,
+            b,
+        ) if matches!(**a, Expr::Str(_)) || matches!(**b, Expr::Str(_)) => {
             let sa = cmp_str(a, line);
             let sb = cmp_str(b, line);
             match op {
                 BinOp::Eq => sa == sb,
-                _ => sa != sb,
+                BinOp::Ne => sa != sb,
+                BinOp::Lt => sa < sb,
+                BinOp::Le => sa <= sb,
+                BinOp::Gt => sa > sb,
+                _ => sa >= sb,
             }
         }
         // A numeric subtree: evaluate it on fusevm as usual.

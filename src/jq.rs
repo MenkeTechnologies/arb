@@ -65,7 +65,12 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "keys" => {
-            ops.push(QueryOp::Keys);
+            // jq returns ONE sorted array; arb's native `keys` verb is the
+            // line-per-key spelling that `stdlib/json.arb` pipes into `tally`.
+            // Reaching THIS arm means the stage came through the jq literal
+            // front-end (`. | keys`, `map(keys)`), where jq's shape is the
+            // contract — same context gating as `to_entries` vs `entries`.
+            ops.push(QueryOp::JqKeys);
             return Ok(());
         }
         "values" => {
@@ -81,7 +86,9 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "flatten" => {
-            ops.push(QueryOp::Flatten);
+            // jq returns ONE array of leaves; the native `flatten` verb is the
+            // line-per-leaf spelling. Same context gating as `keys`/`to_entries`.
+            ops.push(QueryOp::JqFlatten);
             return Ok(());
         }
         "to_entries" => {
@@ -97,10 +104,20 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
         return Ok(());
     }
     if let Some(inner) = fn_call(s, "map") {
-        // jq identity: `map(f)` == `[.[] | f]`. arb drops the array rewrap, so
-        // `map(f)` == iterate-then-f over the elements.
-        ops.push(QueryOp::Each);
-        translate_stage(inner.trim(), ops)?;
+        // jq identity: `map(f)` == `[.[] | f]` — including the array rewrap and
+        // the per-input scope. Dropping the rewrap (which arb used to do) makes
+        // every `map` diverge from jq on shape AND merges two input lines' results
+        // into one flat stream. The iterate-WITHOUT-rewrap reading is spelled
+        // `.[] | f`, which is jq's own spelling for it and which arb still accepts.
+        let mut body = Vec::new();
+        for stage in split_pipe(inner)? {
+            let stage = stage.trim();
+            if stage.is_empty() {
+                return Err(format!("jq: empty pipe stage in `{s}`"));
+            }
+            translate_stage(stage, &mut body)?;
+        }
+        ops.push(QueryOp::JqMap(body));
         return Ok(());
     }
     if let Some(inner) = fn_call(s, "has") {
@@ -364,8 +381,9 @@ mod tests {
     fn iterate_object_yields_values() {
         // jq `.[]` over an object iterates its VALUES (not passes it through).
         assert_eq!(run(".[]", &[r#"{"a":1,"b":2}"#]), vec!["1", "2"]);
-        // `map(f)` over an object applies f to each value.
-        assert_eq!(run("map(.+1)", &[r#"{"a":1,"b":2}"#]), vec!["2", "3"]);
+        // `map(f)` over an object applies f to each value and still returns an
+        // ARRAY (`jq -rc 'map(.+1)'` on this input prints `[2,3]`).
+        assert_eq!(run("map(.+1)", &[r#"{"a":1,"b":2}"#]), vec!["[2,3]"]);
     }
 
     #[test]
@@ -405,17 +423,35 @@ mod tests {
     }
 
     #[test]
-    fn map_field() {
-        // map(.price) == .[] | .price
+    fn map_returns_an_array_like_jq() {
+        // jq's `map(f)` is `[.[] | f]` — the array rewrap is part of the builtin.
+        // Verified against the reference: `jq -rc 'map(.price)'` on this input
+        // prints `[3,4]`, and `jq -rc 'map(. * 2)'` on `[1,2,3]` prints `[2,4,6]`.
+        // arb used to drop the rewrap and emit a line per element, which diverged
+        // on EVERY map probe in scripts/jq_parity.sh.
         assert_eq!(
             run("map(.price)", &[r#"[{"price":3},{"price":4}]"#]),
+            vec!["[3,4]"]
+        );
+        assert_eq!(run("map(. * 2)", &["[1,2,3]"]), vec!["[2,4,6]"]);
+        // The iterate-without-rewrap reading is jq's own `.[] | f`, unchanged.
+        assert_eq!(
+            run(".[] | .price", &[r#"[{"price":3},{"price":4}]"#]),
             vec!["3", "4"]
         );
     }
 
     #[test]
-    fn map_arith() {
-        assert_eq!(run("map(. * 2)", &["[1,2,3]"]), vec!["2", "4", "6"]);
+    fn map_is_scoped_per_input_line() {
+        // `map` runs inside ONE input; two inputs stay two arrays. A rewrap-less
+        // implementation merged them into a single flat stream, so this is the
+        // assertion that pins the scope, not just the shape.
+        assert_eq!(
+            run("map(. * 10)", &["[1,2]", "[3]"]),
+            vec!["[10,20]", "[30]"]
+        );
+        // A reducer inside `map` reduces WITHIN each element list.
+        assert_eq!(run("map(add)", &["[[1,2],[3,4]]"]), vec!["[3,7]"]);
     }
 
     #[test]
@@ -436,18 +472,41 @@ mod tests {
 
     #[test]
     fn flatten_is_recursive() {
-        // jq `flatten` flattens ALL nesting levels (real jq: [1,2,3,4]).
-        assert_eq!(
-            run("flatten", &["[1,[2,[3,[4]]]]"]),
-            vec!["1", "2", "3", "4"]
-        );
+        // jq `flatten` flattens ALL nesting levels AND returns one array:
+        // `jq -rc 'flatten'` on this input prints exactly `[1,2,3,4]`. In jq
+        // context arb answers with that array; the native `flatten` verb keeps the
+        // line-per-leaf shape (see `crate::query`).
+        assert_eq!(run("flatten", &["[1,[2,[3,[4]]]]"]), vec!["[1,2,3,4]"]);
     }
 
     #[test]
     fn builtins() {
-        assert_eq!(run("keys", &[r#"{"a":1,"b":2}"#]), vec!["a", "b"]);
+        // In JQ CONTEXT `keys` is jq's builtin and returns one sorted array —
+        // `jq -rc 'keys'` on this input prints `["a","b"]`. Reaching this function
+        // at all means the stage arrived through the jq literal front-end; the
+        // native `keys` VERB is a separate op and keeps its line-per-key shape
+        // (pinned by `crate::query`'s tests and by stdlib/json.arb's own test).
+        assert_eq!(run("keys", &[r#"{"a":1,"b":2}"#]), vec![r#"["a","b"]"#]);
+        // An array's keys are its indices.
+        assert_eq!(run("keys", &["[9,8]"]), vec!["[0,1]"]);
         assert_eq!(run("add", &["[1,2,3]"]), vec!["6"]);
         assert_eq!(run(".[] | length", &[r#"["ab","cde"]"#]), vec!["2", "3"]);
+    }
+
+    #[test]
+    fn select_orders_strings() {
+        // SPEC §8: "a compare may test strings as well as numbers". Only `==`/`!=`
+        // were routed to the text comparator; `<`/`<=`/`>`/`>=` fell through to the
+        // numeric VM, which reads a non-numeric field as NaN — and every NaN
+        // compare is false, so the filter silently dropped EVERY row instead of
+        // erroring. jq orders strings by codepoint: `jq -rc 'select(.s < "abd")'`
+        // on `{"s":"abc"}` prints the record, and `select(.s > "abd")` prints
+        // nothing.
+        let ins = [r#"{"s":"abc"}"#];
+        assert_eq!(run(r#"select(.s < "abd")"#, &ins), vec![r#"{"s":"abc"}"#]);
+        assert!(run(r#"select(.s > "abd")"#, &ins).is_empty());
+        assert_eq!(run(r#"select(.s >= "abc")"#, &ins), vec![r#"{"s":"abc"}"#]);
+        assert!(run(r#"select(.s <= "abb")"#, &ins).is_empty());
     }
 
     #[test]

@@ -1352,7 +1352,12 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
                 writeln!(out, "{l}")?;
             }
         }
-        QueryResult::Scalar(v) => writeln!(out, "{v}")?,
+        // Same formatter the `--test` runner uses. A raw `{v}` printed the empty
+        // `sum` as `-0`, because Rust's `Sum for f64` folds from `-0.0` (the only
+        // identity that preserves the sign of a `+0.0` addend) — so a reducer over
+        // no numeric lines rendered a negative zero, and `-e` disagreed with
+        // `--test` on the same pipeline.
+        QueryResult::Scalar(v) => writeln!(out, "{}", query::fmt_scalar(v))?,
         QueryResult::Pairs(ps) => {
             for (k, c) in ps {
                 writeln!(out, "{k}\t{c}")?;

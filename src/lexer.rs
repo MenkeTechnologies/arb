@@ -143,11 +143,33 @@ pub fn lex(src: &str, jq_ok: bool) -> Result<Vec<(Tok, usize)>, crate::err::Spec
                 // An xpath location path at command position (`/a/b`, `//tag`,
                 // `//a/@href`). Regex literals only ever appear as ARGS, so a
                 // leading `/` here is never a regex — lex the whole path as one
-                // atom (up to the normal word delimiters) so `xpath::translate`
-                // receives an intact token. A stray space ends it, so an
-                // out-of-subset spaced predicate splits and errors downstream.
+                // atom so `xpath::translate` receives an intact token.
+                //
+                // A `[…]` PREDICATE is part of that atom, quotes and spaces
+                // included. XPath accepts either quote for an attribute value, so
+                // `//div[@class="card"]` is as legal as `[@class='card']` — but a
+                // bare stop at `"` split it into `//div[@class=`, a `Str` arg whose
+                // quotes the parser drops, and `]`, which rejoined as
+                // `[@class= card ]` and was rejected as "must be quoted". That is
+                // the same lossy verb+args reconstruction the jq branch below
+                // documents, so it gets the same fix: track quote state and `[`
+                // depth, and only treat a delimiter as one at depth 0.
                 let start = i;
-                while i < n && !matches!(cs[i], ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"') {
+                let mut depth = 0i32;
+                let mut in_str: Option<char> = None;
+                while i < n {
+                    let c = cs[i];
+                    match in_str {
+                        Some(q) if c == q => in_str = None,
+                        Some(_) => {}
+                        None => match c {
+                            '\'' | '"' if depth > 0 => in_str = Some(c),
+                            '[' => depth += 1,
+                            ']' => depth -= 1,
+                            ' ' | '\t' | '\r' | '\n' | ';' | '{' | '"' if depth <= 0 => break,
+                            _ => {}
+                        },
+                    }
                     i += 1;
                 }
                 toks.push((Tok::Word(cs[start..i].iter().collect()), start));

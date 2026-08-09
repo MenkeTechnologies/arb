@@ -25,6 +25,24 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     // A standalone attribute step (`@href`): pulls the attribute off the current
     // element fragments (the twin of the native `attr NAME`).
     if let Some(rest) = s.strip_prefix('@') {
+        // A jq FORMAT STRING also starts with `@`, and the body dispatcher sends
+        // every leading-`@` command here. Read as an attribute step, `@base64`
+        // selects an attribute nobody has and yields an empty result with a ZERO
+        // exit — a jq construct silently answering "nothing" instead of erroring,
+        // which is precisely what SPEC §8 rules out. The format names are a closed
+        // set, so name them and refuse. (An element really carrying an attribute
+        // with one of these names is still reachable through the native `attr`
+        // verb, which is not `@`-dispatched.)
+        const JQ_FORMATS: [&str; 9] = [
+            "text", "json", "html", "uri", "csv", "tsv", "sh", "base64", "base64d",
+        ];
+        if JQ_FORMATS.contains(&rest) {
+            return Err(format!(
+                "xpath: `@{rest}` is a jq format string, which is outside the \
+                 supported subset (a leading `@` here is an xpath attribute step; \
+                 use `attr {rest}` for a literal attribute of that name)"
+            ));
+        }
         return Ok(vec![QueryOp::Attr(validate_name(rest, s)?)]);
     }
     if !s.starts_with('/') {

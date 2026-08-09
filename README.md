@@ -454,11 +454,20 @@ out { in.html; //a/@href }                               # xpath literal
 
 The jq/xpath literal front-ends cover the common path/filter subset; anything
 outside it is a **hard error** (`jq: …` / `xpath: …`), never silently guessed.
-Inside that subset the answers are checked against real `jq` — `scripts/jq_parity.sh`
-runs both engines over the same input and byte-diffs stdout. Two spelling rules
-fall out of arb's line model and are stated in full in [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats):
-`to_entries` returns jq's array while the native `entries` stays line-per-key, and
-`keys` is the native line-per-key verb, not jq's array.
+Both halves of that are checked by `scripts/jq_parity.sh`, which runs arb and the
+reference tool over one corpus and byte-diffs stdout: an in-subset construct must
+match `jq -rc` / `xmllint --xpath`, and an out-of-subset one must exit non-zero.
+It has no allowlist, and the `yq` leg is reported as unverified rather than
+passing while no `yq` is installed.
+
+Where a spelling means one thing to jq and another to arb, **context decides**: a
+body command that begins with a jq literal (`.`, `select(`, `map(`, `has(`) goes
+to the jq front-end and every builtin in it answers as jq does, while a bare
+alphanumeric word is arb's native verb. So `. | keys` is jq's one sorted array and
+`keys` alone is the native line-per-key verb; likewise `. | flatten` vs `flatten`,
+and jq `to_entries` vs native `entries`. The bare `keys` collision is the one that
+stays unresolved — `stdlib/json.arb` pipes the line-per-key shape into `tally` —
+and is stated in full in [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML

@@ -25,14 +25,44 @@
 #   yq       — NOT INSTALLED on this machine. The yq leg of the superset claim is
 #              reported as SKIPPED, never as passing.
 #
+# The contract has TWO halves and this harness probes both. SPEC §8 lists the
+# supported jq/xpath subset, and then says anything OUTSIDE it "is a hard error
+# (`jq: …` / `xpath: …`) … never silently reinterpreted". So:
+#   jq_probe / xp_probe  — an IN-subset construct must byte-match the reference.
+#   err_probe            — an OUT-of-subset construct must EXIT NON-ZERO. Passing
+#                          one silently is the worse failure of the two: a wrong
+#                          answer that looks like an answer. (The earlier
+#                          `select(.status == "ok")` bug was exactly this — the
+#                          quotes were dropped in reconstruction and the filter
+#                          matched nothing instead of erroring.)
+#
 # Exit status is the number of diverging probes (0 = parity). Divergences are
 # only ever reported, never suppressed: there is no allowlist in this script.
 #
 # Recorded measurement, this corpus, both binaries built from the same tree:
-#   cec1d985a2 (before the parity work)  41 pass / 19 diverged / 1 skipped
-#   c952bfce57 (after)                   59 pass /  1 diverged / 1 skipped
-# The one remaining divergence is `keys`, whose shape collision SPEC.md §8
-# documents as an open decision rather than a bug to quietly re-render.
+#   cec1d985a2 (before the parity work)   41 pass / 19 diverged / 1 skipped
+#   c952bfce57 (after that wave)          59 pass /  1 diverged / 1 skipped
+#   879e61a823 (this corpus, before)     128 pass / 26 diverged / 1 skipped
+#   HEAD       (this corpus, after)      153 pass /  1 diverged / 1 skipped
+# The 25 closed were: every `map(…)` probe (jq returns `[…]`; arb dropped the
+# rewrap and also merged two input lines into one flat stream), `keys` and
+# `flatten` reached through the jq front-end, the ordered STRING compares
+# (`select(.s < "abd")` silently matched NOTHING rather than erroring),
+# `[@attr="v"]` with double quotes (as legal as `'v'` in XPath, but the lexer
+# split the token at the quote), and the four jq FORMAT STRINGS
+# `@base64`/`@csv`/`@tsv`/`@json`, which the body dispatcher handed to the xpath
+# front-end as attribute steps — so they selected an attribute nobody has and
+# exited ZERO with empty output, a jq construct answering "nothing" instead of
+# refusing.
+#
+# The 1 remaining is the bare `keys` SPELLING COLLISION and is expected to stay:
+# `keys` is simultaneously a native verb (line-per-key — `stdlib/json.arb` pipes
+# it into `tally`, and its own in-language test pins that) and a jq builtin (one
+# sorted array). In a body a bare alphanumeric word is a NATIVE verb, so the probe
+# below reaches the native one. The jq-context half IS resolved — `. | keys`
+# routes through the jq literal front-end and now answers as jq — but the bare
+# spelling cannot without breaking a shipped preset, so the probe stays red rather
+# than being reworded into a pass. SPEC §8 documents it.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -63,13 +93,46 @@ jq_probe() {
     fi
 }
 
+# err_probe FILTER — the OTHER half of the contract. SPEC §8 says a construct
+# outside the documented subset "is a hard error … never silently reinterpreted",
+# so arb must exit NON-ZERO. There is no reference tool here: real jq ANSWERS
+# these, and arb deliberately does not. What is being checked is that it refuses
+# rather than guesses, which is why a silent pass is reported as a divergence.
+err_probe() {
+    local filter="$1" out rc
+    out=$(printf '%s\n' '{"a":1,"b":2,"foo":null}' | "$ARB" -e "out { in.json; $filter }" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   err  %-32s (refused)\n' "$filter"
+    else
+        fail=$((fail + 1))
+        fails+=("err  $filter — OUT OF SUBSET but accepted silently"$'\n'"       arb: $(printf %s "$out" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF err  %-32s accepted silently: %s\n' \
+            "$filter" "$(printf %s "$out" | tr '\n' '|')"
+    fi
+}
+
 # xp_probe FILE XPATH — compare arb's xpath front-end against xmllint.
 # `@attr` probes normalize the reference from ` name="v"` to `v` (see header).
+
+# Canonicalize element serialization: sort each start tag's attributes. arb parses
+# with html5ever and xmllint with libxml2, and the two emit a multi-attribute tag's
+# attributes in different ORDERS (`<a rel="nf" href="/z">` vs `<a href="/z"
+# rel="nf">`). That is the serializer talking, not the selection — the same class
+# of difference as the `@attr` node-vs-value normalization, and applied to BOTH
+# sides so it can never mask one engine selecting a different node than the other.
+sort_attrs() {
+    perl -pe 's{<([A-Za-z][-\w]*)((?:\s+[-\w:]+(?:="[^"]*")?)+)(\s*/?)>}{
+        "<$1" . join("", sort map { " $_" } ($2 =~ /([-\w:]+(?:="[^"]*")?)/g)) . "$3>"
+    }ge'
+}
+
 xp_probe() {
     local file="$1" xp="$2" a b
     command -v xmllint >/dev/null || { skip=$((skip + 1)); return; }
-    a=$("$ARB" -e "out { in.html; $xp }" <"$file" 2>&1)
-    b=$(xmllint --html --xpath "$xp" "$file" 2>/dev/null)
+    a=$("$ARB" -e "out { in.html; $xp }" <"$file" 2>&1 | sort_attrs)
+    b=$(xmllint --html --xpath "$xp" "$file" 2>/dev/null | sort_attrs)
     # Normalize ONLY when the path SELECTS attributes (a trailing `/@name` or a
     # bare `@name` step). An `@` inside a predicate (`//div[@class]//span`) still
     # selects elements, so its output must be compared unmodified.
@@ -119,14 +182,59 @@ jq_probe '{"amount":50}'                 'select(.amount > 100)'
 jq_probe '{"status":"ok"}'               'select(.status == "ok")'
 jq_probe '{"status":"bad"}'              'select(.status == "ok")'
 jq_probe '{"status":"ok"}'               'select(.status != "ok")'
+# Every comparison operator, on numbers AND on strings. SPEC §8: "a compare may
+# test strings as well as numbers". The ordered string forms used to fall through
+# to the numeric evaluator, which reads a non-numeric field as NaN — and every NaN
+# compare is false, so the filter silently dropped every row instead of erroring.
+jq_probe '{"n":5}'                       'select(.n < 10)'
+jq_probe '{"n":5}'                       'select(.n <= 5)'
+jq_probe '{"n":5}'                       'select(.n >= 6)'
+jq_probe '{"n":5}'                       'select(.n > 5)'
+jq_probe '{"s":"abc"}'                   'select(.s < "abd")'
+jq_probe '{"s":"abc"}'                   'select(.s > "abd")'
+jq_probe '{"s":"b"}'                     'select(.s >= "b")'
+jq_probe '{"s":"b"}'                     'select(.s <= "a")'
+jq_probe '{"s":"b"}'                     'select(.s > "a")'
+jq_probe '{"a":1,"b":2}'                 'select(.a == 1 and .b == 2)'
+jq_probe '{"a":1,"b":2}'                 'select(.a == 9 or .b == 2)'
+jq_probe '[{"s":"a"},{"s":"c"}]'         '.[] | select(.s < "b")'
+
+# ── jq: map(…) — SPEC §8 lists it as supported and shows `map(.price)` ──────
+# jq's `map(f)` IS `[.[] | f]`: the array rewrap and the per-input scope are both
+# part of the builtin. These probe the shape, the element types, a nested filter,
+# a nested reducer, and — the one a single-line corpus cannot see — that two input
+# lines stay two arrays instead of merging into one flat stream.
+jq_probe '[{"price":3},{"price":4}]'     'map(.price)'
+jq_probe '[1,2,3]'                       'map(. * 2)'
+jq_probe '[1,2,3]'                       'map(.)'
+jq_probe '{"a":1,"b":2}'                 'map(.+1)'
+jq_probe '[{"a":1},{"a":2}]'             'map(select(.a > 1))'
+jq_probe '[[1,2],[3]]'                   'map(length)'
+jq_probe '["a","bb"]'                    'map(length)'
+jq_probe '[{"a":{"b":1}}]'               'map(.a)'
+jq_probe '[[1,2],[3,4]]'                 'map(add)'
+jq_probe '[]'                            'map(.x)'
+jq_probe '[{"n":1},{"n":2}]'             'map(.n) | add'
+jq_probe '[1,2,3]'                       'map(. * 2) | length'
+# The iterate-WITHOUT-rewrap reading is jq's own `.[] | f` — it must stay flat.
+jq_probe '[{"price":3},{"price":4}]'     '.[] | .price'
 
 # ── jq: builtins the SPEC claims (keys/values/length/add/has/to_entries) ────
+# `keys` reached through the jq LITERAL front-end (a leading `.` routes the whole
+# command there) must be jq's one sorted array. The bare `keys` probe below is the
+# native VERB of the same spelling and is expected to differ — SPEC §8 documents
+# that collision, and this harness has no allowlist, so it is reported every run.
+jq_probe '{"b":1,"a":2}'                 '. | keys'
+jq_probe '[9,8]'                         '. | keys'
+jq_probe '{"o":{"z":1,"y":2}}'           '.o | keys'
 jq_probe '{"a":1,"b":2}'                 'keys'
 jq_probe '{"a":1,"b":2}'                 'values'
 jq_probe 'null'                          'values'
 jq_probe '{"a":1}'                       'has("a")'
 jq_probe '{"x":2}'                       'has("id")'
 jq_probe '{"a":1,"b":2}'                 'to_entries'
+jq_probe '[1,[2,[3,[4]]]]'               '. | flatten'
+jq_probe '[[1],[2]]'                     '. | flatten'
 jq_probe '[1,2,3]'                       'add'
 jq_probe '["a","b"]'                     'add'
 jq_probe '[1,2,3]'                       'length'
@@ -158,19 +266,106 @@ jq_probe '{"n":3.25}'                    '.n'
 jq_probe '{"n":-0.5}'                    '.n'
 jq_probe '{"s":"has space"}'             '.s'
 
+# ── jq: the hard-error half of the contract (SPEC §8) ───────────────────────
+# Real jq answers every one of these. arb's documented subset does not include
+# them, and SPEC §8 promises a hard error rather than a silent reinterpretation —
+# so the only acceptable behaviour is a non-zero exit. These are the constructs a
+# reader of the README would most plausibly reach for, which is exactly why an
+# accidental silent answer here would be the most damaging kind of gap.
+err_probe '.foo // 0'                      # alternative operator
+err_probe '.foo?'                          # error suppression
+err_probe '..'                             # recursive descent
+err_probe '.a as $x | $x'                  # variable binding
+err_probe 'reduce .[] as $x (0; . + $x)'   # reduce
+err_probe 'foreach .[] as $x (0; .+$x; .)' # foreach
+err_probe 'try .a catch 0'                 # try/catch
+err_probe 'paths'
+err_probe 'leaf_paths'
+err_probe 'getpath(["a"])'
+err_probe 'setpath(["a"];9)'
+err_probe 'delpaths([["a"]])'
+err_probe 'from_entries'
+err_probe 'with_entries(.value += 1)'
+err_probe 'group_by(.a)'
+err_probe 'unique_by(.a)'
+err_probe 'min_by(.a)'
+err_probe 'max_by(.a)'
+err_probe 'any'
+err_probe 'all'
+err_probe 'range(3)'
+err_probe 'splits(",")'
+err_probe 'sub("a";"b")'
+err_probe 'gsub("(?<x>a)";"\(.x)")'
+err_probe 'ascii_downcase'
+err_probe 'env.HOME'
+err_probe '$ENV.HOME'
+err_probe 'input'
+err_probe 'inputs'
+err_probe '@base64'
+err_probe '@csv'
+err_probe '@tsv'
+err_probe '@json'
+err_probe 'first(.[])'
+err_probe 'limit(2;.[])'
+err_probe '.[] | not'
+err_probe 'tostring'
+err_probe 'tonumber'
+err_probe '. as [$a] ?// {$a} | $a'         # optional destructuring
+
 # ── xpath / css ─────────────────────────────────────────────────────────────
 XPF=$(mktemp -t arbxp).html
 cat >"$XPF" <<'EOF'
 <html><body>
 <div class="card"><h2>Title</h2><span>inner</span><a href="/x">X</a></div>
+<div class="other"><h2>Second</h2><a href="/z" rel="nf">Z</a></div>
 <a href="/y">Y</a>
+<ul><li>one</li><li>two</li><li>three</li></ul>
 </body></html>
 EOF
-xp_probe "$XPF" '//a/@href'
+# Element selection and text extraction.
 xp_probe "$XPF" '//a/text()'
 xp_probe "$XPF" '//h2/text()'
-xp_probe "$XPF" '//div[@class]//span/text()'
+xp_probe "$XPF" '//li/text()'
+xp_probe "$XPF" '//span/text()'
+xp_probe "$XPF" '//a'
+xp_probe "$XPF" '//h2'
+# Descendant `//`, child `/`, and a rooted absolute path.
 xp_probe "$XPF" '//div/h2/text()'
+xp_probe "$XPF" '//div//a/text()'
+xp_probe "$XPF" '/html/body/ul/li/text()'
+xp_probe "$XPF" '/html/body/div/h2/text()'
+# Attribute selection (reference normalized from node to value — see header).
+xp_probe "$XPF" '//a/@href'
+xp_probe "$XPF" '//div//a/@href'
+xp_probe "$XPF" '//a/@rel'
+# Predicates: existence, equality (BOTH quote styles — XPath accepts either), and
+# contains(). `[@class="card"]` used to be split by the lexer at the double quote
+# and rejected as unquoted; it is as legal as the single-quoted form.
+xp_probe "$XPF" '//div[@class]//span/text()'
+xp_probe "$XPF" '//a[@href]/text()'
+xp_probe "$XPF" '//a[@rel]/text()'
+xp_probe "$XPF" "//div[@class='card']/h2/text()"
+xp_probe "$XPF" '//div[@class="card"]/h2/text()'
+xp_probe "$XPF" "//div[@class='other']//a/@href"
+xp_probe "$XPF" "//a[contains(@href,'x')]/text()"
+xp_probe "$XPF" "//div[contains(@class,'card')]/h2/text()"
+# Union — SPEC §8's prose says "no union", but the engine implements it and it
+# agrees with xmllint, so the probe pins the behaviour and the prose was corrected.
+xp_probe "$XPF" '//h2|//li'
+
+# xpath: out-of-subset location paths must be a hard error, not a guess. Same
+# reasoning as err_probe above; xmllint answers all of these.
+for xbad in '//a[1]' '//a[position()=1]' '//a/../span' '//a[text()="X"]' '//a/@*' \
+            '//a[last()]' 'ancestor::div' '//a[@href][2]'; do
+    if "$ARB" -e "out { in.html; $xbad }" <"$XPF" >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        fails+=("xp!  $xbad — OUT OF SUBSET but accepted silently")
+        [ "$QUIET" = 1 ] || printf 'DIFF xp!  %-24s accepted silently\n' "$xbad"
+    else
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   xp!  %-24s (refused)\n' "$xbad"
+    fi
+done
 rm -f "$XPF"
 
 # ── yq leg: no reference tool on this machine ───────────────────────────────
