@@ -1696,6 +1696,81 @@ fn computed_numbers_render_like_jq() {
     );
 }
 
+// A result with no finite value. `fmt_num` returned Rust's own spelling here
+// (`inf` / `-inf` / `NaN`), which is not a number JSON or jq can express; jq maps
+// an infinity onto ±DBL_MAX and a NaN onto `null`, and this formatter's contract
+// is jq's rendering. Expectations are `jq -rc` output on the same input.
+//
+// BOTH SIGNS, because a clamp written only for the positive side still passes a
+// single-signed probe. This is also the regression guard for the claim that
+// clamping would hide the interp-vs-native zero-divisor split — it does not, and
+// `scripts/expr_paths.sh` still reports that split every run.
+#[test]
+fn non_finite_results_render_like_jq() {
+    for (expr, input, want) in [
+        // Overflow to ±infinity clamps to ±DBL_MAX.
+        ("x * 2", "1e308", "1.7976931348623157e+308"),
+        ("x * 2", "-1e308", "-1.7976931348623157e+308"),
+        ("x * 7", "1e308", "1.7976931348623157e+308"),
+        ("x + x", "-1e308", "-1.7976931348623157e+308"),
+        // DBL_MAX itself is finite and must be untouched by the clamp.
+        ("x * 1", "1.7976931348623157e308", "1.7976931348623157e+308"),
+        // inf * 0, inf - inf and inf / inf are all NaN, which renders `null`.
+        ("x * 2 * 0", "1e308", "null"),
+        ("x * 2 - x * 2", "1e308", "null"),
+        ("x * 2 / (x * 2)", "1e308", "null"),
+    ] {
+        assert_eq!(
+            eval(
+                &pipeline(&format!("tail .x\nsource .x {{ in; map {expr} }}")),
+                &lines(&[input]),
+                1.0
+            ),
+            QueryResult::Lines(lines(&[want])),
+            "map {expr} on {input}"
+        );
+    }
+}
+
+// Shortest-that-round-trips and shortest-AND-CLOSEST are different rules, and
+// `fmt_num` took its digits from the first. Where neighbouring doubles are
+// further apart than one unit in the last decimal place, several decimals of the
+// shortest length parse back to the same double; jq emits the nearest, Rust's
+// `{:e}` emits one that round-trips, and for these values they differ.
+//
+// The band is why this went unseen: the ties bunch around 1e14..1e17, so a pool
+// spread evenly over the exponent range essentially never lands on one. Over
+// 200,000 doubles the shortest-only rule missed 1,286, and every value here is
+// one of them — expectations are `jq -rc '. * 1'` (jq 1.8.2).
+#[test]
+fn computed_numbers_take_the_closest_digits_not_merely_round_tripping_ones() {
+    let map_x = pipeline("tail .x\nsource .x { in; map x * 1 }");
+    for (input, want) in [
+        ("191510495617760.12", "191510495617760.12"),
+        ("-1227383472771167.2", "-1227383472771167.2"),
+        ("611630169981189.25", "611630169981189.2"),
+        ("-800457946574172.25", "-800457946574172.2"),
+        ("108785101216860.12", "108785101216860.12"),
+        ("31256043711582.562", "31256043711582.562"),
+    ] {
+        let got = eval(&map_x, &lines(&[input]), 1.0);
+        assert_eq!(
+            got,
+            QueryResult::Lines(lines(&[want])),
+            "map x * 1 on {input}"
+        );
+        // Whatever is printed must still parse back to the same double — the
+        // closest candidate is never allowed to cost round-tripping.
+        if let QueryResult::Lines(ls) = &got {
+            assert_eq!(
+                ls[0].parse::<f64>().unwrap(),
+                input.parse::<f64>().unwrap(),
+                "{input} did not round-trip"
+            );
+        }
+    }
+}
+
 // jq's `map(f)` rebuilds an ARRAY. Re-parsing the rendered elements into a
 // serde_json::Value and printing that ran every number through a second,
 // different float formatter, so an array disagreed with the scalar beside it:

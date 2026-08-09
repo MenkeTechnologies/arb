@@ -64,8 +64,10 @@
 # (`ARB=<path> bash scripts/expr_paths.sh` aims it at another build):
 #   b4449e270f (the first corpus)             55 pass / 18 diverged /  7 skipped
 #   77d4244243 (that corpus, after its fixes) 71 pass /  2 diverged /  7 skipped
-#   aac6d4eefa (THIS corpus, before)          71 pass / 26 diverged /  7 skipped
-#   HEAD       (THIS corpus, after)           91 pass /  6 diverged /  7 skipped
+#   aac6d4eefa (that corpus, before)          71 pass / 26 diverged /  7 skipped
+#   5ccdf9de36 (that corpus, after)           91 pass /  6 diverged /  7 skipped
+#   5ccdf9de36 (THIS corpus, before)          91 pass / 12 diverged /  7 skipped
+#   HEAD       (THIS corpus, after)           98 pass /  5 diverged /  7 skipped
 #
 # The earlier 16 were `or` lowering to the SUM of its operands (`map x > 1 or
 # x > 2` printed `2` where both held), `in [list]` lowering to the COUNT of
@@ -84,13 +86,19 @@
 # own expression grammar refusing the exponent literal `1e17` that `fmt_num` now
 # prints.
 #
-# The 6 remaining are three deliberate classes, each on its own labelled probe:
+# The 7 this corpus added were the two `fmt_num` gaps a wider pool exposed: the
+# non-finite results (`inf` / `-inf` / `NaN` where jq renders ±DBL_MAX and
+# `null`), and the shortest-vs-CLOSEST tie band around 1e14..1e17. The overflow
+# probe that used to sit here was single-signed and would have passed a fix that
+# left `-inf` alone.
+#
+# The 5 remaining are two deliberate classes, each on its own labelled probe:
 #   2  fusevm's, not arb's: `Op::Div` by a zero divisor pushes `Value::Undef`
 #      (renders `0`) on the interpreter and IEEE `inf` in compiled code. Working
 #      around it inside arb would mean diverging from the op every sibling
-#      frontend shares, so those probes stay red and say so.
-#   1  overflow: `1e308 * 2` is infinity, which jq clamps to DBL_MAX on output.
-#      Clamping in arb would hide the split above as well.
+#      frontend shares, so those probes stay red and say so. They survived the
+#      DBL_MAX clamp — see the overflow probes for why that was not the blocker
+#      it was recorded as.
 #   3  `%` with a non-integer operand — see the probes at the end of this file.
 
 set -u
@@ -108,7 +116,7 @@ REF_JQ=jq-1.8.2
 JQ=${JQ:-jq}
 # The oracle leg must compare at least this many probes. Raise it whenever the
 # corpus grows; never lower it to make a run pass.
-MIN_ORACLE=95
+MIN_ORACLE=101
 
 [ -x "$ARB" ] || { echo "expr_paths: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -387,12 +395,44 @@ done
 # from the magnitude alone passes the first two and fails the third.
 map_probe $'1e15\n1e16\n1.5e16\n9.99e16\n1.5e17' 'x * 1' '. * 1'
 map_probe $'0.0001\n0.00001\n0.000123' 'x * 1' '. * 1'
-# Overflow. `1e308 * 2` is IEEE infinity, which jq clamps to DBL_MAX on output
-# and arb prints as `inf`. Kept as its own probe rather than mixed into the pool
-# above so that one deliberate deviation cannot be read as the renderer being
-# wrong — and it is deliberate: clamping here would also silently paper over the
-# interp-vs-native zero-divisor split those `x / 0` probes exist to report.
-map_probe $'1e308' 'x * 2' '. * 2'
+# ── results with no finite value: infinity and NaN ──────────────────────────
+# `1e308 * 2` overflows to IEEE infinity and `(1e308 * 2) * 0` is a NaN. Neither
+# has a JSON spelling, so jq maps both onto values that do — an infinity CLAMPS
+# to ±DBL_MAX, a NaN renders as `null` — and `fmt_num`'s contract is jq's
+# rendering. arb printed Rust's `inf` / `-inf` / `NaN` instead.
+#
+# These were argued to be unfixable: clamping "would also silently paper over the
+# interp-vs-native zero-divisor split those `x / 0` probes exist to report". That
+# was wrong, and these probes coexisting with those ones is the proof. The split
+# is `Value::Undef` on the interpreter — which renders `0`, never reaching the
+# non-finite branch — against an infinity in compiled code. Clamping moves only
+# the native side, so the probes above still report `0` vs
+# `1.7976931348623157e+308` and stay red.
+#
+# BOTH SIGNS. The old single probe fed `1e308` only, so a fix that clamped the
+# positive side and left `-inf` alone would have scored clean.
+OVERFLOW=$'1e308\n-1e308'
+map_probe "$OVERFLOW" 'x * 2'          '. * 2'
+map_probe "$OVERFLOW" 'x * 7'          '. * 7'
+map_probe "$OVERFLOW" 'x + x'          '. + .'
+map_probe "$OVERFLOW" 'x * 2 * 0'      '. * 2 * 0'
+map_probe "$OVERFLOW" 'x * 2 - x * 2'  '(. * 2) - (. * 2)'
+
+# ── shortest-vs-CLOSEST: the tie band ───────────────────────────────────────
+# Rust's `{:e}` is the shortest form that ROUND-TRIPS; jq's dtoa is the shortest
+# that is also CLOSEST. Where neighbouring doubles are further apart than one
+# unit in the last decimal place, several decimals of that length parse back to
+# the same double and the two rules disagree — `191510495617760.12` printed as
+# `…13`, `611630169981189.25` as `…89.3` against jq's `…89.2`.
+#
+# The band is the point. These ties concentrate around 1e14..1e17, and a pool
+# spread evenly across the exponent range lands there so seldom that 33,618
+# doubles scored zero mismatches while 1 in 160 of the values a person actually
+# writes at that magnitude was wrong. Measured over 200,000 doubles, the
+# shortest-only renderer missed 1,286; every value below is one it missed.
+TIES=$'191510495617760.12\n611630169981189.25\n-1227383472771167.2\n-800457946574172.25\n108785101216860.12\n31256043711582.562'
+map_probe "$TIES" 'x * 1' '. * 1'
+map_probe "$TIES" 'x + 0' '. + 0'
 
 # Comparison and control flow must still work on values from those pools — a
 # renderer fix must not be mistaken for the arithmetic being exercised. These
