@@ -1604,26 +1604,163 @@ fn unsupported_xpath_errors_at_build_not_silently() {
 
 // Adversarial-audit regression: fmt_num used `v as i64`, which SATURATES for
 // values outside i64's range, so map/floor/etc. silently corrupted large whole
-// numbers to 9223372036854775807. They must now print the full value, matching
-// the Scalar (sum) path.
+// numbers to 9223372036854775807.
+//
+// The expected text changed when fmt_num started rendering the way jq does
+// (`1e19` is past jq's positional cutoff), so this asserts the INVARIANT rather
+// than one spelling of it: never the saturation constant, and always a string
+// that reads back as the same double. Both are checked here and in the
+// jq-verified value below, which `jq -rc '. * 1'` prints for 1e19.
 #[test]
 fn map_does_not_saturate_large_whole_numbers() {
-    let ops = pipeline("tail .x\nsource .x { in; map x }");
-    assert_eq!(
-        eval(&ops, &lines(&["1e19"]), 1.0),
-        QueryResult::Lines(lines(&["10000000000000000000"]))
-    );
-    let floor = pipeline("tail .x\nsource .x { in; floor }");
-    assert_eq!(
-        eval(&floor, &lines(&["1e19"]), 1.0),
-        QueryResult::Lines(lines(&["10000000000000000000"]))
+    const SATURATED: &str = "9223372036854775807";
+    // `denotes` is the double the printed line must parse back to — the
+    // invariant that survives any change of spelling. It is stated per case
+    // because the pipeline is not always the identity.
+    let expect = |ops: &str, input: &str, want: &str, denotes: f64| {
+        let got = match eval(&pipeline(ops), &lines(&[input]), 1.0) {
+            QueryResult::Lines(v) => v,
+            other => panic!("expected lines, got {other:?}"),
+        };
+        assert_eq!(got, lines(&[want]));
+        assert_ne!(got[0], SATURATED, "{ops} saturated on {input}");
+        assert_eq!(
+            got[0].parse::<f64>().unwrap(),
+            denotes,
+            "{ops} on {input} does not round-trip"
+        );
+    };
+    expect("tail .x\nsource .x { in; map x }", "1e19", "1e+19", 1e19);
+    expect("tail .x\nsource .x { in; floor }", "1e19", "1e+19", 1e19);
+    // Past i64's range AND inside jq's positional band (the cutoff is on the
+    // digit count, so 15 significant digits stay positional at 1e20 where a
+    // single digit does not). Pins that the saturation fix survives on the side
+    // of the cutoff where the output is still a long run of digits.
+    expect(
+        "tail .x\nsource .x { in; map x }",
+        "1.23456789012345e20",
+        "123456789012345000000",
+        1.23456789012345e20,
     );
     // In-range whole numbers still print without a decimal point.
-    let ops2 = pipeline("tail .x\nsource .x { in; map x + 1 }");
+    expect("tail .x\nsource .x { in; map x + 1 }", "5", "6", 6.0);
+}
+
+// The corpus that scored 71/73 on `scripts/expr_paths.sh` used only small
+// integers, so `fmt_num` was never observed outside the one decade band where
+// every plausible formatter agrees. These are the bands it was wrong in, each
+// value's expectation taken verbatim from `jq -rc '. * 1'` (jq 1.8.2) — `* 1`
+// so jq COMPUTES rather than reprinting the source literal.
+#[test]
+fn computed_numbers_render_like_jq() {
+    let map_x = pipeline("tail .x\nsource .x { in; map x * 1 }");
+    for (input, want) in [
+        // Positional up to jq's cutoff, exponential past it. The cutoff is on
+        // the DIGIT COUNT, not the magnitude: 1e16 is exponential and 1.5e16,
+        // one significant digit longer, is not.
+        ("1e15", "1000000000000000"),
+        ("1e16", "1e+16"),
+        ("1.5e16", "15000000000000000"),
+        ("9.99e16", "99900000000000000"),
+        ("1.5e17", "1.5e+17"),
+        ("1.23456789012345e20", "123456789012345000000"),
+        ("1e308", "1e+308"),
+        // Small values: positional to 1e-4, exponential from 1e-5, and the
+        // exponent is signed with at least two digits.
+        ("0.0001", "0.0001"),
+        ("0.00001", "1e-05"),
+        ("2e-9", "2e-09"),
+        ("1e-300", "1e-300"),
+        ("5e-324", "5e-324"),
+        // Ordinary values are untouched by any of it.
+        ("0", "0"),
+        ("-0.5", "-0.5"),
+        ("123456.789", "123456.789"),
+        ("1.5", "1.5"),
+    ] {
+        assert_eq!(
+            eval(&map_x, &lines(&[input]), 1.0),
+            QueryResult::Lines(lines(&[want])),
+            "map x * 1 on {input}"
+        );
+    }
+    // Only the round-trip digits, zero-padded — not the exact binary value.
+    // `1e18 / 3` is 333333333333333312 exactly; the double carries 16 digits.
     assert_eq!(
-        eval(&ops2, &lines(&["5"]), 1.0),
-        QueryResult::Lines(lines(&["6"]))
+        eval(
+            &pipeline("tail .x\nsource .x { in; map x / 3 }"),
+            &lines(&["1e18"]),
+            1.0
+        ),
+        QueryResult::Lines(lines(&["333333333333333300"]))
     );
+}
+
+// jq's `map(f)` rebuilds an ARRAY. Re-parsing the rendered elements into a
+// serde_json::Value and printing that ran every number through a second,
+// different float formatter, so an array disagreed with the scalar beside it:
+// `1e-06` came back out as `1e-6` and `1e-05` as `0.00001`. Expectations are
+// `jq -rc` output on the same input.
+#[test]
+fn jq_map_array_keeps_one_number_format() {
+    for (input, filter, want) in [
+        (
+            r#"[1e-5,1e-6,1e-7,2e-9]"#,
+            "map(. * 1)",
+            "[1e-05,1e-06,1e-07,2e-09]",
+        ),
+        (r#"[1e16,1e17,1e18]"#, "map(. * 1)", "[1e+16,1e+17,1e+18]"),
+        (
+            r#"[1.23456789012345e20]"#,
+            "map(. + 0)",
+            "[123456789012345000000]",
+        ),
+        (
+            r#"[1e15,1.5e16,9.99e16]"#,
+            "map(. * 1)",
+            "[1000000000000000,15000000000000000,99900000000000000]",
+        ),
+        // Non-numeric elements keep their JSON quoting and escaping.
+        (r#"["a","b b"]"#, "map(.)", r#"["a","b b"]"#),
+    ] {
+        let ops = pipeline(&format!("tail .x\nsource .x {{ in.json; {filter} }}"));
+        assert_eq!(
+            eval(&ops, &lines(&[input]), 1.0),
+            QueryResult::Lines(lines(&[want])),
+            "{filter} on {input}"
+        );
+    }
+}
+
+// arb prints `1e+17`, so arb's own expression grammar has to read one back.
+// `number()` stopped at the `e` and the parse died with "calc: unexpected `e`",
+// which meant the language could emit a value nobody could type into it.
+#[test]
+fn expression_literals_accept_an_exponent() {
+    use arb::expr;
+    for (src, want) in [
+        ("1e3", 1000.0),
+        ("1E3", 1000.0),
+        ("1e+3", 1000.0),
+        ("2e-3", 0.002),
+        ("1.5e2", 150.0),
+        ("1e17", 1e17),
+    ] {
+        let e = expr::parse(src).unwrap_or_else(|err| panic!("{src}: {err}"));
+        assert_eq!(expr::eval(&e, 0.0).unwrap(), want, "{src}");
+    }
+    // A `.` range still wins over a fractional part, and a bare `e` is still not
+    // an exponent — neither may be swallowed by the new suffix scan.
+    assert_eq!(
+        expr::eval(&expr::parse("x in 1..3").unwrap(), 2.0).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        expr::eval(&expr::parse("x in 1..3").unwrap(), 9.0).unwrap(),
+        0.0
+    );
+    assert!(expr::parse("1e").is_err());
+    assert!(expr::parse("1e+").is_err());
 }
 
 // Round-4 audit regression: pad/lpad width fed into `format!("{:<width$}")` panics

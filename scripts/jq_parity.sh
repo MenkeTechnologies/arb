@@ -44,15 +44,16 @@
 #   c952bfce57 (after that wave)          59 pass /  1 diverged / 1 skipped
 #   879e61a823 (the previous corpus, before)  128 pass / 26 diverged / 1 skipped
 #   77d4244243 (the previous corpus, after)   153 pass /  1 diverged / 1 skipped
-#   HEAD       (THIS corpus, SAME binary)     158 pass / 15 diverged / 1 skipped
+#   aac6d4eefa (THIS corpus, before)          158 pass / 15 diverged / 1 skipped
+#   HEAD       (THIS corpus, after)           172 pass /  1 diverged / 1 skipped
 #
-# The 14 NEW reds are not a regression — the code did not change in this commit.
-# They are one blind spot this corpus removes: every numeric probe used a small
-# value, so the corpus only ever exercised the single decade band where any
-# number formatter agrees with jq's. `1e308 * 1` prints 309 digits, `1e18 / 3`
-# prints `333333333333333312` against jq's `333333333333333300`, and `map(…)`
-# rebuilds its array through a SECOND formatter, so `1e-06` comes back out as
-# `1e-6` while the scalar beside it is right.
+# The 14 this corpus exposed and this tree closed were one blind spot: every
+# numeric probe used a small value, so the corpus only ever exercised the single
+# decade band where any number formatter agrees with jq's. `1e308 * 1` printed
+# 309 digits, `1e18 / 3` printed `333333333333333312` against jq's
+# `333333333333333300`, and `map(…)` rebuilt its array through a SECOND
+# formatter, so `1e-06` came back out as `1e-6` while the scalar beside it was
+# right. See `fmt_num` and `jq_array_json` in `src/query.rs`.
 #
 # The 25 closed before that were: every `map(…)` probe (jq returns `[…]`; arb dropped the
 # rewrap and also merged two input lines into one flat stream), `keys` and

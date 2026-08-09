@@ -108,6 +108,42 @@ holds and `0` when it does not, for `==`/`<`/`and`/`or`/`not`/`in` alike. That
 matters wherever an expression's value is printed rather than tested —
 `map x > 1 or x > 2` emits `1`, never a count of how many sides held.
 
+A number literal may carry an exponent (`1e17`, `2e+2`, `1.5e-6`, `1E3`), which
+is also how arb prints one back.
+
+### How a computed number prints
+
+A computed value renders the way `jq -r` renders a computed double: the shortest
+digits that round-trip, positional up to the point where jq switches, then
+exponential with a signed two-digit-minimum exponent.
+
+```
+1e15 * 1   -> 1000000000000000       1e16 * 1  -> 1e+16
+1.5e16 * 1 -> 15000000000000000      1.5e17 * 1 -> 1.5e+17
+0.0001 * 1 -> 0.0001                 0.00001 * 1 -> 1e-05
+1e18 / 3   -> 333333333333333300     2e-9 * 2  -> 4e-09
+```
+
+The switch is on the DIGIT COUNT, not the magnitude — `1e16` is exponential and
+`1.5e16`, one significant digit longer, is not.
+
+Two deliberate differences from jq:
+
+- **Overflow stays `inf`.** `1e308 * 2` prints `inf`; jq clamps it to
+  `1.7976931348623157e+308`. Clamping would also hide the interp-vs-native split
+  that `scripts/expr_paths.sh` exists to report for a zero divisor.
+- **There is no literal preservation.** jq keeps a number it never computed on
+  as its source text, so `.n` on `{"n":1e17}` gives `1E+17`. Every arb value is
+  an f64 and no literal survives parsing, so arb prints the double.
+
+### `%` takes a remainder, it does not truncate
+
+`%` is the f64 remainder of the two operands: `5.5 % 3` is `2.5`. jq truncates
+both operands to integers first and answers `2`. The two agree on every integer
+input, which is why `scripts/expr_paths.sh` scored parity for `%` until its
+corpus grew a fractional value. The probes for it are red, on purpose, and stay
+that way rather than being reworded to match either side.
+
 ## 7. Pipe & sources
 
 ```

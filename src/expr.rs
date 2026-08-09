@@ -873,6 +873,29 @@ impl Parser {
                 self.i += 1;
             }
         }
+        // An exponent suffix, so a literal can be written the way arb PRINTS one.
+        // `fmt_num` renders a computed number in jq's format, which is
+        // exponential past `1e16` and below `1e-4` — without this, arb emitted
+        // `1e+17` and then rejected `x > 1e+17` with "calc: unexpected `e`", so a
+        // value the language produced could not be typed back into it. The
+        // stream side never had that gap: a DATA line is read with Rust's
+        // `parse::<f64>`, which has always accepted `1e17`.
+        //
+        // Only consume the `e` when what follows really is an exponent — a
+        // digit, or a sign then a digit. A bare trailing `e` stays whatever the
+        // caller meant it to be rather than turning `1 e` into a bad number.
+        if matches!(self.c.get(self.i), Some('e' | 'E')) {
+            let after_sign = match self.c.get(self.i + 1) {
+                Some('+' | '-') => self.i + 2,
+                _ => self.i + 1,
+            };
+            if matches!(self.c.get(after_sign), Some(d) if d.is_ascii_digit()) {
+                self.i = after_sign;
+                while self.i < self.c.len() && self.c[self.i].is_ascii_digit() {
+                    self.i += 1;
+                }
+            }
+        }
         let s: String = self.c[start..self.i].iter().collect();
         s.parse::<f64>()
             .map(Expr::Num)

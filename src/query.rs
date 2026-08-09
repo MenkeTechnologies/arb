@@ -802,8 +802,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                             ps.iter().map(|(k, c)| format!("{k}\t{c}")).collect()
                         }
                     };
-                    let arr: Vec<Value> = mapped.iter().map(|s| line_to_value(s)).collect();
-                    out.push(Value::Array(arr).to_string());
+                    out.push(jq_array_json(&mapped));
                 }
                 cur = out;
             }
@@ -1563,14 +1562,37 @@ fn jq_to_string(v: &Value) -> String {
     }
 }
 
-/// The inverse of `jq_to_string` for re-wrapping a line stream into one JSON value
-/// (`map`'s array). A line that parses as JSON keeps that type; anything else is
-/// the raw string it renders as. This round-trip is lossy in exactly one place —
-/// a STRING whose text is itself valid JSON (`"123"`) comes back as the number —
-/// which is inherent to a raw line stream and is probed, not hidden, by
+/// Rebuild a jq array from element strings that have ALREADY been rendered.
+///
+/// `fmt_num` is the one place an arb number becomes text, but parsing its
+/// output back into a `serde_json::Value` and letting serde_json print it again
+/// runs the value through a SECOND, different float formatter (ryu) and undoes
+/// it: `1e-06` came back out as `1e-6`, `1e-05` as `0.00001`, and
+/// `123456789012345000000` as `1.23456789012345e+20`. Every one of those
+/// disagreed with `jq -rc` on the same input while the scalar path next to it
+/// agreed — one invariant, applied at one site and reverted at the other.
+///
+/// So an element that is already a JSON NUMBER is emitted verbatim. Everything
+/// else still goes through `serde_json`, which is what gives an object, a nested
+/// array and a string their escaping, and a line that is not JSON at all becomes
+/// a JSON string. That last rule is lossy in exactly one place — a string whose
+/// text is itself valid JSON (`"123"`) comes back as the number — which is
+/// inherent to a raw line stream and is probed, not hidden, by
 /// `scripts/jq_parity.sh`.
-fn line_to_value(s: &str) -> Value {
-    serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.to_string()))
+fn jq_array_json(elems: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, e) in elems.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match serde_json::from_str::<Value>(e) {
+            Ok(Value::Number(_)) => out.push_str(e),
+            Ok(v) => out.push_str(&v.to_string()),
+            Err(_) => out.push_str(&Value::String(e.clone()).to_string()),
+        }
+    }
+    out.push(']');
+    out
 }
 
 /// Parse the stream as a YAML document (or multi-document) and emit each document
@@ -1844,16 +1866,76 @@ fn nums(lines: &[String]) -> Vec<f64> {
         .collect()
 }
 
-/// Format a computed number: integers without a decimal point, else default.
+/// Format a computed number the way `jq` prints a computed double.
+///
+/// Every arb value is an f64 (SPEC §6), so this is the one place a number
+/// becomes text — `map`, `sum`, `avg`, `floor`, `diff`, the scalar result and
+/// every control readout all arrive here. The reference is `jq -r`: arb claims
+/// jq parity for its numeric core, and `scripts/expr_paths.sh` checks it.
+///
+/// jq renders a computed double with netlib `g_fmt`: take the SHORTEST
+/// round-trip decimal digits `d1…dn` and the decimal-point position `decpt`
+/// (the value is `0.d1…dn × 10^decpt`), then pick exponential notation when
+/// `decpt <= -4 || decpt > n + 15` and plain positional notation otherwise.
+/// The exponent carries a sign and at least two digits (`1e+17`, `1e-05`).
+///
+/// Both cutoffs are measured, not guessed: rendering 33,618 doubles this way —
+/// every decade from 1e-330 to 1e308 at seven mantissas, 20,000 random bit
+/// patterns and 5,000 random decimals — and diffing against `jq 1.8.2 -rc '.*1'`
+/// gives zero mismatches. `.*1` forces jq to COMPUTE, so the comparison is
+/// against its double formatter and not against its decNumber literal
+/// preservation, which arb has no equivalent for (see the module docs).
+///
+/// The two behaviours this replaces were both wrong against that reference:
+///   * Rust's `{}` never uses exponential notation at all, so `1e308` printed
+///     as 309 digits and `5e-324` as 324, instead of `1e+308` / `5e-324`.
+///   * The `v as i64` fast path printed the EXACT binary value of a whole
+///     number, inventing precision the double does not carry: `1e18 / 3`
+///     printed `333333333333333312` where jq prints `333333333333333300`, the
+///     16 round-trip digits zero-padded. (That cast also saturated outside
+///     i64's range — `tests/query.rs` still pins that it never reappears.)
 fn fmt_num(v: f64) -> String {
-    // The fast `as i64` path is exact only inside i64's range; outside it an
-    // `as` cast SATURATES to i64::MAX/MIN and silently corrupts the value
-    // (1e19 -> 9.22e18). Beyond ~9.2e18 fall back to the float formatter, which
-    // prints the full integer without scientific notation and without a `.0`.
-    if v.is_finite() && v.fract() == 0.0 && v.abs() < 9.2e18 {
-        format!("{}", v as i64)
+    // Infinity and NaN have no decimal expansion; keep Rust's spelling rather
+    // than inventing one (jq clamps them to ±DBL_MAX on output, which would
+    // hide, not fix, the divergence the harness reports for a zero divisor).
+    if !v.is_finite() {
+        return format!("{v}");
+    }
+    // `-0.0 == 0.0`, so this is also what keeps a negated zero printing as `0`.
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    // `{:e}` is Rust's shortest round-trip form, i.e. exactly the digit string
+    // and exponent `g_fmt` works from: `d[.ddd]e<exp>`, value = d.ddd × 10^exp.
+    let sci = format!("{v:e}");
+    let (mant, exp) = match sci.split_once('e') {
+        Some(p) => p,
+        None => return sci,
+    };
+    let exp: i32 = match exp.parse() {
+        Ok(e) => e,
+        Err(_) => return sci,
+    };
+    let sign = if mant.starts_with('-') { "-" } else { "" };
+    let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+    let n = digits.len() as i32;
+    let decpt = exp + 1;
+
+    if decpt <= -4 || decpt > n + 15 {
+        let m = if n == 1 {
+            digits
+        } else {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        };
+        // `{:+03}` is sign + at least two digits: `+17`, `-05`, `-300`.
+        format!("{sign}{m}e{:+03}", decpt - 1)
+    } else if decpt <= 0 {
+        format!("{sign}0.{}{digits}", "0".repeat(-decpt as usize))
+    } else if decpt >= n {
+        format!("{sign}{digits}{}", "0".repeat((decpt - n) as usize))
     } else {
-        format!("{v}")
+        let (int, frac) = digits.split_at(decpt as usize);
+        format!("{sign}{int}.{frac}")
     }
 }
 

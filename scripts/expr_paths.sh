@@ -64,7 +64,8 @@
 # (`ARB=<path> bash scripts/expr_paths.sh` aims it at another build):
 #   b4449e270f (the first corpus)             55 pass / 18 diverged /  7 skipped
 #   77d4244243 (that corpus, after its fixes) 71 pass /  2 diverged /  7 skipped
-#   HEAD       (THIS corpus, SAME binary)     71 pass / 26 diverged /  7 skipped
+#   aac6d4eefa (THIS corpus, before)          71 pass / 26 diverged /  7 skipped
+#   HEAD       (THIS corpus, after)           91 pass /  6 diverged /  7 skipped
 #
 # The earlier 16 were `or` lowering to the SUM of its operands (`map x > 1 or
 # x > 2` printed `2` where both held), `in [list]` lowering to the COUNT of
@@ -72,20 +73,25 @@
 # groupings `(a) and (b)` / `not (a or b)` / `(c ? t : e)`, which were parse
 # errors because a `(` group re-entered the grammar at `additive`.
 #
-# The 24 NEW reds are not a regression — the code did not change in this commit.
-# They are one blind spot this corpus removes: every value the old corpus fed was
-# a small integer, the single decade band where any plausible number formatter
-# agrees with jq's, so `fmt_num` could be wrong everywhere else and score 71/73.
-# It is: Rust's `{}` never uses exponential notation (`1e308 * 1` prints 309
-# digits against jq's `1e+308`), and its `as i64` fast path prints a whole
-# number's EXACT binary value, i.e. digits the double does not carry (`1e18 / 3`
-# prints `333333333333333312` against jq's `333333333333333300`). Three more are
-# arb's own expression grammar refusing the exponent literal `1e17`.
+# The 20 this corpus exposed and this tree closed were one blind spot: every
+# value the old corpus fed was a small integer, the single decade band where any
+# plausible number formatter agrees with jq's, so `fmt_num` could be wrong
+# everywhere else and still score 71/73. It was, twice over — Rust's `{}` never
+# uses exponential notation (`1e308 * 1` printed 309 digits against jq's
+# `1e+308`), and its `as i64` fast path printed a whole number's EXACT binary
+# value, i.e. digits the double does not carry (`1e18 / 3` printed
+# `333333333333333312` against jq's `333333333333333300`). Three more were arb's
+# own expression grammar refusing the exponent literal `1e17` that `fmt_num` now
+# prints.
 #
-# The 2 older reds are fusevm's, not arb's: `Op::Div` by a zero divisor pushes
-# `Value::Undef` (renders `0`) on the interpreter and IEEE `inf` in compiled
-# code. Working around it inside arb would mean diverging from the op every
-# sibling frontend shares, so those probes stay red and say so.
+# The 6 remaining are three deliberate classes, each on its own labelled probe:
+#   2  fusevm's, not arb's: `Op::Div` by a zero divisor pushes `Value::Undef`
+#      (renders `0`) on the interpreter and IEEE `inf` in compiled code. Working
+#      around it inside arb would mean diverging from the op every sibling
+#      frontend shares, so those probes stay red and say so.
+#   1  overflow: `1e308 * 2` is infinity, which jq clamps to DBL_MAX on output.
+#      Clamping in arb would hide the split above as well.
+#   3  `%` with a non-integer operand — see the probes at the end of this file.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2

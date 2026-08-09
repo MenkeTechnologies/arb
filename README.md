@@ -471,6 +471,12 @@ a stream's first row than for the rest. A probe only counts against jq when jq
 itself exited 0 with output; anything else is reported as skipped, never as a
 pass.
 
+Both harnesses refuse to score a run they could not actually measure. The
+reference version is pinned, so a different `jq` on `PATH` is an error rather
+than a quietly different number, and each one counts how many probes really ran
+and fails below a floor — otherwise a missing tool drains the whole reference
+leg into `skipped` and the divergence count reaches 0 by comparing nothing.
+
 Where a spelling means one thing to jq and another to arb, **context decides**: a
 body command that begins with a jq literal (`.`, `select(`, `map(`, `has(`) goes
 to the jq front-end and every builtin in it answers as jq does, while a bare
