@@ -42,9 +42,19 @@
 # Recorded measurement, this corpus, both binaries built from the same tree:
 #   cec1d985a2 (before the parity work)   41 pass / 19 diverged / 1 skipped
 #   c952bfce57 (after that wave)          59 pass /  1 diverged / 1 skipped
-#   879e61a823 (this corpus, before)     128 pass / 26 diverged / 1 skipped
-#   HEAD       (this corpus, after)      153 pass /  1 diverged / 1 skipped
-# The 25 closed were: every `map(…)` probe (jq returns `[…]`; arb dropped the
+#   879e61a823 (the previous corpus, before)  128 pass / 26 diverged / 1 skipped
+#   77d4244243 (the previous corpus, after)   153 pass /  1 diverged / 1 skipped
+#   HEAD       (THIS corpus, SAME binary)     158 pass / 15 diverged / 1 skipped
+#
+# The 14 NEW reds are not a regression — the code did not change in this commit.
+# They are one blind spot this corpus removes: every numeric probe used a small
+# value, so the corpus only ever exercised the single decade band where any
+# number formatter agrees with jq's. `1e308 * 1` prints 309 digits, `1e18 / 3`
+# prints `333333333333333312` against jq's `333333333333333300`, and `map(…)`
+# rebuilds its array through a SECOND formatter, so `1e-06` comes back out as
+# `1e-6` while the scalar beside it is right.
+#
+# The 25 closed before that were: every `map(…)` probe (jq returns `[…]`; arb dropped the
 # rewrap and also merged two input lines into one flat stream), `keys` and
 # `flatten` reached through the jq front-end, the ordered STRING compares
 # (`select(.s < "abd")` silently matched NOTHING rather than erroring),
@@ -71,8 +81,34 @@ ARB=./target/debug/arb
 QUIET=0
 [ "${1:-}" = "-q" ] && QUIET=1
 
+# The pinned references. Every recorded number below was measured against them.
+# `command -v jq` alone is not enough: this machine carries TWO jq binaries
+# (/opt/homebrew/bin/jq is 1.8.2, /usr/bin/jq is 1.7.1-apple) and they do not
+# agree, so whichever one PATH resolved silently moved the score.
+REF_JQ=jq-1.8.2
+JQ=${JQ:-jq}
+# The floor the probe count must clear. `xp_probe` SKIPS silently when xmllint
+# is missing, so without this a machine with no xmllint drops 24 probes and
+# still reports a clean run. Raise it when the corpus grows; never lower it.
+MIN_PROBES=173
+
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
-command -v jq >/dev/null || { echo "jq_parity: jq not found" >&2; exit 2; }
+command -v "$JQ" >/dev/null || {
+    echo "jq_parity: no '$JQ' on PATH — every jq probe would compare arb against" >&2
+    echo "           a missing tool. Install $REF_JQ or set JQ=." >&2
+    exit 3
+}
+have_jq=$("$JQ" --version 2>&1)
+[ "$have_jq" = "$REF_JQ" ] || {
+    echo "jq_parity: reference is pinned to $REF_JQ but '$JQ' is $have_jq —" >&2
+    echo "           the recorded numbers are not reproducible against it." >&2
+    exit 3
+}
+command -v xmllint >/dev/null || {
+    echo "jq_parity: no xmllint — the 24 xpath probes would SKIP and the run" >&2
+    echo "           would still report clean. Install libxml2." >&2
+    exit 3
+}
 
 pass=0; fail=0; skip=0
 fails=()
@@ -81,7 +117,7 @@ fails=()
 jq_probe() {
     local input="$1" filter="$2" a b
     a=$(printf '%s\n' "$input" | "$ARB" -e "out { in.json; $filter }" 2>&1)
-    b=$(printf '%s\n' "$input" | jq -rc "$filter" 2>&1)
+    b=$(printf '%s\n' "$input" | "$JQ" -rc "$filter" 2>&1)
     if [ "$a" = "$b" ]; then
         pass=$((pass + 1))
         [ "$QUIET" = 1 ] || printf 'ok   jq   %-32s %s\n' "$filter" "$input"
@@ -266,6 +302,42 @@ jq_probe '{"n":3.25}'                    '.n'
 jq_probe '{"n":-0.5}'                    '.n'
 jq_probe '{"s":"has space"}'             '.s'
 
+# ── jq: a COMPUTED number, across the magnitude range ───────────────────────
+# Every numeric probe above is a small value, so the whole corpus only ever
+# exercised the one decade band where any formatter agrees with jq's. Outside it
+# arb printed `1e308 * 1` as 309 digits and `1e18 / 3` as `333333333333333312`
+# (18 digits a double does not carry, against jq's 16 zero-padded).
+#
+# `* 1` and `+ 0` are identities on the value, so a difference is the RENDERER
+# alone. They also force jq to COMPUTE: on a number it never touched, jq reprints
+# the source literal via decNumber (`1e17` comes back as `1E+17`), which arb has
+# no equivalent for — SPEC §6 makes every value an f64 and keeps no literal. The
+# probes therefore stay on computed values, and the deviation is documented
+# rather than papered over with a probe that reads the literal back.
+jq_probe '{"n":1e16}'                    '.n * 1'
+jq_probe '{"n":1e17}'                    '.n * 2'
+jq_probe '{"n":1e18}'                    '.n / 3'
+jq_probe '{"n":1e21}'                    '.n + 0'
+jq_probe '{"n":1.5e16}'                  '.n * 1'
+jq_probe '{"n":1.5e17}'                  '.n * 1'
+jq_probe '{"n":1e-5}'                    '.n * 1'
+jq_probe '{"n":1e-7}'                    '.n + 0'
+jq_probe '{"n":2e-9}'                    '.n * 2'
+jq_probe '{"n":1e-300}'                  '.n * 1'
+jq_probe '{"n":1.23456789012345e20}'     '.n * 1'
+# The same values through `map(…)`, which REBUILDS a JSON array from the rendered
+# elements. Re-parsing them into a `serde_json::Value` and printing that ran the
+# number through a second, different formatter, so the array disagreed with the
+# scalar next to it: `1e-06` came back out as `1e-6` and `1e-05` as `0.00001`.
+jq_probe '[1e16,1e17,1e18]'              'map(. * 1)'
+jq_probe '[1e-5,1e-6,1e-7,2e-9]'         'map(. * 1)'
+jq_probe '[1.23456789012345e20]'         'map(. + 0)'
+jq_probe '[1e17,2e-9]'                   'map(. * 2)'
+jq_probe '[1e15,1.5e16,9.99e16]'         'map(. * 1)'
+jq_probe '[1,2,3]'                       'map(. / 3)'
+jq_probe '[1e17,1e17]'                   'add'
+jq_probe '[0.1,0.2]'                     'add'
+
 # ── jq: the hard-error half of the contract (SPEC §8) ───────────────────────
 # Real jq answers every one of these. arb's documented subset does not include
 # them, and SPEC §8 promises a hard error rather than a silent reinterpretation —
@@ -379,10 +451,17 @@ fi
 echo
 echo "── jq_parity summary ───────────────────────────────"
 printf 'pass %d   diverged %d   skipped %d\n' "$pass" "$fail" "$skip"
+printf 'oracle %s; %d probes ran (floor %d)\n' "$have_jq" "$((pass + fail))" "$MIN_PROBES"
 echo "note: $yq_note"
 if [ "$fail" -gt 0 ]; then
     echo
     echo "diverged probes:"
     for f in "${fails[@]}"; do printf '  %s\n' "$f"; done
+fi
+if [ "$((pass + fail))" -lt "$MIN_PROBES" ]; then
+    echo
+    echo "jq_parity: only $((pass + fail)) probes ran, below the floor of $MIN_PROBES." >&2
+    echo "           A shrinking denominator is not a passing run. NOT a pass." >&2
+    exit 3
 fi
 exit "$fail"

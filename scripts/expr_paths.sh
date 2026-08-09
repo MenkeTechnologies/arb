@@ -39,24 +39,53 @@
 #   bash scripts/expr_paths.sh          # every probe, print divergences
 #   bash scripts/expr_paths.sh -q       # summary only
 #
-# Exit status is the number of diverging probes (0 = parity). There is no
-# allowlist: every divergence is printed every run.
+# A RUN THAT COMPARED NOTHING MUST NOT LOOK CLEAN. Every jq comparison here is
+# guarded by "did jq answer?", and a jq that cannot answer falls into `skipped`.
+# That is right per probe and wrong in aggregate: with no usable jq on PATH ALL
+# of them skip, the summary reads `pass 0 … skipped 78`, and the exit status —
+# the number of DIVERGENCES — is 0. Zero divergences out of zero comparisons is
+# not parity, it is a harness that measured nothing.
+#
+# Two guards, both fatal (exit 3), so that cannot be reported as a pass:
+#   * the oracle is PINNED. `jq` must be present AND report REF_JQ. This machine
+#     carries two: /opt/homebrew/bin/jq (1.8.2) and /usr/bin/jq (1.7.1-apple),
+#     and they do not agree — 1.7.1 renders `-0.` of 0 as `-0` where 1.8.2 (and
+#     arb) render `0`, so whichever one PATH happened to resolve silently moved
+#     the score by a probe. Set JQ=/path/to/jq to aim it elsewhere.
+#   * the oracle leg must actually COMPARE at least MIN_ORACLE probes. A deleted
+#     probe, a corpus that failed to load, or a jq that answers nothing now
+#     fails loudly instead of shrinking the denominator in silence.
+#
+# Exit status is the number of diverging probes (0 = parity), or 3 if the oracle
+# could not be trusted. There is no allowlist: every divergence is printed every
+# run.
 #
 # Recorded measurement, this corpus, both binaries built from the same tree
 # (`ARB=<path> bash scripts/expr_paths.sh` aims it at another build):
-#   b4449e270f (before this corpus existed)   55 pass / 18 diverged / 7 skipped
-#   HEAD       (after the expr.rs fixes)      71 pass /  2 diverged / 7 skipped
-# The 16 closed were `or` lowering to the SUM of its operands (`map x > 1 or
+#   b4449e270f (the first corpus)             55 pass / 18 diverged /  7 skipped
+#   77d4244243 (that corpus, after its fixes) 71 pass /  2 diverged /  7 skipped
+#   HEAD       (THIS corpus, SAME binary)     71 pass / 26 diverged /  7 skipped
+#
+# The earlier 16 were `or` lowering to the SUM of its operands (`map x > 1 or
 # x > 2` printed `2` where both held), `in [list]` lowering to the COUNT of
 # matching elements (`map x in [1,1,1]` printed `3`), and the parenthesized
 # groupings `(a) and (b)` / `not (a or b)` / `(c ? t : e)`, which were parse
 # errors because a `(` group re-entered the grammar at `additive`.
 #
-# The 2 remaining are fusevm's, not arb's, and are expected to stay until the VM
-# is fixed: `Op::Div` by a zero divisor pushes `Value::Undef` (renders `0`) on
-# the interpreter and IEEE `inf` in compiled code. Working around it inside arb
-# would mean diverging from the op every sibling frontend shares, so the probes
-# stay red and say so.
+# The 24 NEW reds are not a regression — the code did not change in this commit.
+# They are one blind spot this corpus removes: every value the old corpus fed was
+# a small integer, the single decade band where any plausible number formatter
+# agrees with jq's, so `fmt_num` could be wrong everywhere else and score 71/73.
+# It is: Rust's `{}` never uses exponential notation (`1e308 * 1` prints 309
+# digits against jq's `1e+308`), and its `as i64` fast path prints a whole
+# number's EXACT binary value, i.e. digits the double does not carry (`1e18 / 3`
+# prints `333333333333333312` against jq's `333333333333333300`). Three more are
+# arb's own expression grammar refusing the exponent literal `1e17`.
+#
+# The 2 older reds are fusevm's, not arb's: `Op::Div` by a zero divisor pushes
+# `Value::Undef` (renders `0`) on the interpreter and IEEE `inf` in compiled
+# code. Working around it inside arb would mean diverging from the op every
+# sibling frontend shares, so those probes stay red and say so.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -68,12 +97,34 @@ ARB=${ARB:-./target/debug/arb}
 QUIET=0
 [ "${1:-}" = "-q" ] && QUIET=1
 
+# The pinned reference. Every recorded number below was measured against it.
+REF_JQ=jq-1.8.2
+JQ=${JQ:-jq}
+# The oracle leg must compare at least this many probes. Raise it whenever the
+# corpus grows; never lower it to make a run pass.
+MIN_ORACLE=95
+
 [ -x "$ARB" ] || { echo "expr_paths: $ARB not built — run 'cargo build'" >&2; exit 2; }
+command -v "$JQ" >/dev/null || {
+    echo "expr_paths: no '$JQ' on PATH — the reference leg would compare NOTHING" >&2
+    echo "            and report 0 divergences. Install $REF_JQ or set JQ=." >&2
+    exit 3
+}
+have_jq=$("$JQ" --version 2>&1)
+[ "$have_jq" = "$REF_JQ" ] || {
+    echo "expr_paths: reference is pinned to $REF_JQ but '$JQ' is $have_jq." >&2
+    echo "            They disagree (1.7.1-apple prints -0 where 1.8.2 prints 0)," >&2
+    echo "            so the recorded numbers are not reproducible. Set JQ=." >&2
+    exit 3
+}
 
 # Past any plausible invocation count, so the block tier never fires.
 NEVER=4294967295
 
 pass=0; fail=0; skip=0
+# Probes where the oracle actually answered and its answer was compared. This is
+# the denominator the summary's `pass` count is only meaningful against.
+oracle=0
 declare -a fails=()
 declare -a skips=()
 
@@ -111,7 +162,7 @@ probe() {
         return
     fi
 
-    j=$(printf '%s\n' "$input" | jq -rc "$jqf" 2>/dev/null); jrc=$?
+    j=$(printf '%s\n' "$input" | "$JQ" -rc "$jqf" 2>/dev/null); jrc=$?
     # The reference must have SUCCEEDED before its answer counts. A non-zero exit
     # or empty stdout means jq refused the construct (or has no value for it) —
     # comparing against that would score two failures as one pass.
@@ -122,6 +173,7 @@ probe() {
         return
     fi
 
+    oracle=$((oracle + 1))
     if [ "$i" = "$j" ]; then
         pass=$((pass + 1))
         [ "$QUIET" = 1 ] || printf 'ok   all  %-34s %s -> %s\n' "$label" "$shown" "$(printf %s "$i" | tr '\n' '|')"
@@ -159,6 +211,19 @@ where_probe() {
 
 NUMS=$'1\n2\n3\n4\n5\n6\n7\n8\n9\n10'
 MIX=$'-4\n-1\n0\n1\n2\n7\n100'
+# Every value above is a small integer. That is a blind spot, not a corpus:
+# `fmt_num` only ever ran in the single decade band where "print the digits" and
+# jq's formatter happen to agree, so 71/73 probes could pass while the renderer
+# was wrong everywhere else. These two pools are the rest of the range.
+BIG=$'1e15\n1e16\n1e17\n1e18\n1e19\n1e21\n1.5e16\n1.5e17\n9.99e16\n1.23456789012345e20'
+# The same magnitudes written positionally. `where` echoes the SURVIVING INPUT
+# LINE, so it can never show a rendering difference — but jq would, because it
+# reprints a number it did not compute on from the source literal
+# (`1e18` comes back out as `1E+18`). Feeding both engines a literal that is
+# already in its canonical form keeps that probe about the COMPARISON.
+PLAINBIG=$'1000000000000000\n1000000000000000000\n1500000000000000000\n2\n100'
+TINY=$'0.001\n0.0001\n0.00001\n1e-6\n1e-7\n2e-9\n1e-20\n1e-300\n5e-324'
+FRAC=$'5.5\n7.25\n-5.5\n0.5\n10.5\n-7.5\n100.75'
 
 # ── arithmetic: every operator, against jq ──────────────────────────────────
 map_probe "$NUMS" 'x + 1'            '. + 1'
@@ -287,9 +352,75 @@ map_probe $'abc\ndef'  'not x'        -
 map_probe "$NUMS" 'nosuchfield + 1'   -
 map_probe "$NUMS" 'x > 5 ? 1 / 0 : 2' -
 
+# ── how a computed number RENDERS, across the whole magnitude range ─────────
+# The claim in this file's header is that arb's `fmt_num` renders a computed
+# double the way `jq -r` does. Over `$NUMS` that is untestable — every value is
+# a small integer, the one band where every plausible formatter agrees. Outside
+# it the two disagreed in two separate ways, and 71/73 stayed green:
+#
+#   * Rust's `{}` never uses exponential notation, so `1e308 * 1` printed 309
+#     digits and `5e-324 * 1` printed 324, where jq prints `1e+308` / `5e-324`.
+#   * the `as i64` fast path printed a whole number's EXACT binary value, i.e.
+#     digits the double does not carry: `1e18 / 3` printed
+#     `333333333333333312` against jq's `333333333333333300`.
+#
+# `x * 1` and `x + 0` are identities on the VALUE, so any difference they show
+# is the renderer alone; `x * 2` and `x / 3` land on values with a different
+# digit count and exponent, which is what moves a probe across the
+# fixed-vs-exponential boundary.
+for pool in "$BIG" "$TINY"; do
+    map_probe "$pool" 'x * 1'  '. * 1'
+    map_probe "$pool" 'x + 0'  '. + 0'
+    map_probe "$pool" 'x * 2'  '. * 2'
+    map_probe "$pool" 'x / 3'  '. / 3'
+    map_probe "$pool" '0 - x'  '0 - .'
+done
+# The boundary itself: jq switches to exponential at decpt > ndigits + 15, so
+# `1e15` renders positionally and `1e16` does not, while `1.5e16` — one more
+# significant digit — goes back to positional. A renderer that got the cutoff
+# from the magnitude alone passes the first two and fails the third.
+map_probe $'1e15\n1e16\n1.5e16\n9.99e16\n1.5e17' 'x * 1' '. * 1'
+map_probe $'0.0001\n0.00001\n0.000123' 'x * 1' '. * 1'
+# Overflow. `1e308 * 2` is IEEE infinity, which jq clamps to DBL_MAX on output
+# and arb prints as `inf`. Kept as its own probe rather than mixed into the pool
+# above so that one deliberate deviation cannot be read as the renderer being
+# wrong — and it is deliberate: clamping here would also silently paper over the
+# interp-vs-native zero-divisor split those `x / 0` probes exist to report.
+map_probe $'1e308' 'x * 2' '. * 2'
+
+# Comparison and control flow must still work on values from those pools — a
+# renderer fix must not be mistaken for the arithmetic being exercised. These
+# also cover the EXPONENT LITERAL: arb's `fmt_num` emits `1e+17`, so its own
+# expression grammar has to accept one, and `number()` used to stop at the `e`
+# and fail with "calc: unexpected `e`" — arb printed values it could not read.
+bool_probe "$BIG"  'x > 1e17'  '. > 1e17'
+bool_probe "$TINY" 'x < 1e-6'  '. < 1e-6'
+map_probe "$NUMS"  'x * 1e3'   '. * 1e3'
+map_probe "$NUMS"  'x * 1E3'   '. * 1e3'
+map_probe "$NUMS"  'x * 1e-3'  '. * 1e-3'
+map_probe "$NUMS"  'x * 2e+2'  '. * 2e+2'
+where_probe "$PLAINBIG" 'x > 1e17'  '. > 1e17'
+map_probe "$BIG"  'x > 1e17 ? 1 : 0' 'if . > 1e17 then 1 else 0 end'
+
+# ── `%` with a non-integer operand: a REPORTED deviation, not a pass ────────
+# arb's `%` is an f64 remainder (fusevm `Op::Mod`, agreeing on both tiers and
+# with SPEC §6's "every value is an f64"); jq's truncates both operands to
+# integers first, so `5.5 % 3` is 2.5 in arb and 2 in jq. Every probe above uses
+# integer operands, where the two coincide — which is why an operator-level
+# semantic difference sat under a green harness.
+#
+# These probes are RED and stay red. Which rule arb should follow is a language
+# decision, not a bug to be quietly patched to whatever jq does, and rewording
+# the probe to match arb would be the harness lying about a real difference.
+# SPEC §6 records it. Same treatment as the `keys` collision in jq_parity.sh.
+map_probe "$FRAC" 'x % 3'   '. % 3'
+map_probe "$FRAC" 'x % 2'   '. % 2'
+map_probe "$FRAC" 'x % 4.5' '. % 4.5'
+
 echo
 echo "── expr_paths summary ──────────────────────────────"
 printf 'pass %d   diverged %d   skipped %d\n' "$pass" "$fail" "$skip"
+printf 'oracle %s compared %d probes (floor %d)\n' "$have_jq" "$oracle" "$MIN_ORACLE"
 if [ "$skip" -gt 0 ]; then
     echo
     echo "skipped (reference gave no usable answer — NOT counted as passing):"
@@ -299,5 +430,12 @@ if [ "$fail" -gt 0 ]; then
     echo
     echo "diverged probes:"
     for f in "${fails[@]}"; do printf '  %s\n' "$f"; done
+fi
+if [ "$oracle" -lt "$MIN_ORACLE" ]; then
+    echo
+    echo "expr_paths: the oracle leg compared $oracle probes, below the floor of" >&2
+    echo "            $MIN_ORACLE. Whatever this run's divergence count is, it did" >&2
+    echo "            not measure the corpus it claims to. NOT a pass." >&2
+    exit 3
 fi
 exit "$fail"
