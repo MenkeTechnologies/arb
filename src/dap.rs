@@ -46,6 +46,12 @@ struct Bp {
 #[derive(Default)]
 pub struct DapState {
     bps: Vec<Bp>,
+    /// Function breakpoints: query-verb names (`where`, `tally`, `map`). A
+    /// stream has no call stack, but the stack trace this adapter reports is the
+    /// pipeline the paused line flows through — so the frame a client sees IS a
+    /// named stage, and breaking on one by name is the same request DAP's
+    /// function-breakpoint pane makes. Stored lowercased.
+    fbps: Vec<String>,
     resume: Option<Resume>,
     stepping: bool,
     terminated: bool,
@@ -124,6 +130,39 @@ fn compile_bps(args: &Value) -> Vec<Bp> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Compile the `setFunctionBreakpoints` payload: the `name` of each requested
+/// breakpoint, lowercased and trimmed. An empty name is dropped.
+fn compile_fbps(args: &Value) -> Vec<String> {
+    args.get("breakpoints")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| {
+                    let name = b.get("name").and_then(Value::as_str)?.trim().to_lowercase();
+                    (!name.is_empty()).then_some(name)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The verb a pipeline stage label names. `stack_frames` labels a stage with the
+/// `Debug` rendering of its `QueryOp` (`Where(Bin(…))`, `Tally`), so the verb is
+/// the leading identifier — everything before the first non-alphanumeric char.
+fn stage_verb(label: &str) -> &str {
+    let end = label
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(label.len());
+    &label[..end]
+}
+
+/// Whether any function breakpoint names a stage of `pipeline`.
+fn fbp_hit(fbps: &[String], pipeline: &[String]) -> bool {
+    pipeline
+        .iter()
+        .any(|stage| fbps.iter().any(|n| stage_verb(stage).to_lowercase() == *n))
 }
 
 /// The stack frames for a paused line: frame 0 is the line, each deeper frame is
@@ -209,7 +248,8 @@ fn check_line_on(
         .bps
         .iter()
         .any(|b| b.cond.as_ref().is_none_or(|re| re.is_match(line)));
-    if !st.stepping && !bp_hit {
+    let fn_hit = fbp_hit(&st.fbps, pipeline);
+    if !st.stepping && !bp_hit && !fn_hit {
         return;
     }
     st.stepping = false;
@@ -220,7 +260,14 @@ fn check_line_on(
     st.rate = rate;
     st.controls = controls.to_vec();
     st.pipeline = pipeline.to_vec();
-    st.stop_reason = if bp_hit { "breakpoint" } else { "step" }.to_string();
+    st.stop_reason = if bp_hit {
+        "breakpoint"
+    } else if fn_hit {
+        "function breakpoint"
+    } else {
+        "step"
+    }
+    .to_string();
     let reason = st.stop_reason.clone();
     drop(st);
     send_event(
@@ -342,6 +389,7 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
             resp(json!({
                 "supportsConfigurationDoneRequest": true,
                 "supportsConditionalBreakpoints": true,
+                "supportsFunctionBreakpoints": true,
                 "supportsEvaluateForHovers": true,
                 "supportsTerminateRequest": true,
             })),
@@ -355,6 +403,24 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
                 .map(|b| json!({ "verified": true, "line": b.line }))
                 .collect();
             shared().state.lock().unwrap().bps = bps;
+            vec![resp(json!({ "breakpoints": verified }))]
+        }
+        // Break when the paused line reaches a named query VERB. Previously this
+        // request fell through to the lenient catch-all below, which answers
+        // `success: true` with an empty body — a client's function-breakpoint
+        // pane would have shown the breakpoint as accepted and it would never
+        // have fired. A name arb has no verb for is answered `verified: false`
+        // with the reason, rather than silently accepted.
+        "setFunctionBreakpoints" => {
+            let names = compile_fbps(&args);
+            let verified: Vec<Value> = names
+                .iter()
+                .map(|n| match crate::lsp::sig_of(n) {
+                    Some(_) => json!({ "verified": true }),
+                    None => json!({ "verified": false, "message": format!("no arb verb `{n}`") }),
+                })
+                .collect();
+            shared().state.lock().unwrap().fbps = names;
             vec![resp(json!({ "breakpoints": verified }))]
         }
         "launch" => {
@@ -490,6 +556,30 @@ mod tests {
         // A bp with no condition breaks on every line (cond is None).
         let uncond = compile_bps(&json!({ "breakpoints": [{ "line": 1 }] }));
         assert!(uncond[0].cond.is_none());
+    }
+
+    /// A function breakpoint names a query VERB and fires when the paused
+    /// line's pipeline holds a stage with that name. The pipeline labels are the
+    /// `Debug` rendering of each `QueryOp`, so the match has to look past the
+    /// operand payload — `Where(Bin(Gt, …))` is the `where` stage.
+    #[test]
+    fn function_breakpoint_matches_a_pipeline_verb_by_name() {
+        let names =
+            compile_fbps(&json!({ "breakpoints": [{ "name": " Where " }, { "name": "" }] }));
+        assert_eq!(names, ["where"], "trimmed, lowercased, empties dropped");
+
+        let pipeline = vec![
+            "In".to_string(),
+            "Where(Bin(Gt))".to_string(),
+            "Tally".into(),
+        ];
+        assert!(fbp_hit(&names, &pipeline));
+        // A verb the pipeline does not contain must not fire, and neither must
+        // an empty breakpoint set — otherwise every line would stop.
+        assert!(!fbp_hit(&["sort".to_string()], &pipeline));
+        assert!(!fbp_hit(&[], &pipeline));
+        // A name that is a PREFIX of a stage is not that stage.
+        assert!(!fbp_hit(&["wher".to_string()], &pipeline));
     }
 
     #[test]

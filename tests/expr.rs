@@ -178,3 +178,28 @@ fn deep_unary_and_not_chains_error_not_overflow() {
     // Shallow unary/not still parse + eval.
     assert_eq!(eval(&parse("- -x").unwrap(), 5.0).unwrap(), 5.0);
 }
+
+// A parenthesized group re-enters the grammar at its TOP (`ternary`), which is
+// what makes `(x > 1) and (x < 5)` parse — and also makes each nesting level
+// cost roughly twice the stack it did when the group re-entered at `additive`.
+// Deep nesting of the long chain must still fail closed rather than abort.
+#[test]
+fn deep_paren_nesting_of_the_full_grammar_errors_not_overflow() {
+    let deep = format!("{}x > 0{}", "(".repeat(5000), ")".repeat(5000));
+    assert!(parse(&deep)
+        .expect_err("deep paren nesting must be rejected")
+        .contains("deeply nested"));
+    // And the groupings that motivated the change still parse and evaluate.
+    assert_eq!(
+        eval(&parse("(x > 1) and (x < 5)").unwrap(), 3.0).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        eval(&parse("not (x > 1 or x > 2)").unwrap(), 5.0).unwrap(),
+        0.0
+    );
+    assert_eq!(
+        eval(&parse("(x > 5 ? 100 : 0)").unwrap(), 9.0).unwrap(),
+        100.0
+    );
+}

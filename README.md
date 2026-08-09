@@ -460,6 +460,17 @@ match `jq -rc` / `xmllint --xpath`, and an out-of-subset one must exit non-zero.
 It has no allowlist, and the `yq` leg is reported as unverified rather than
 passing while no `yq` is installed.
 
+The other half of the language — the arithmetic/predicate expressions behind
+`where`, `map` and `calc` — has its own harness, `scripts/expr_paths.sh`. It
+diffs three engines per probe: arb on the fusevm interpreter, arb on Cranelift
+native code (each pinned with `FUSEVM_JIT_BLOCK_THRESHOLD`), and `jq` as the
+reference for everything jq can spell. The two arb columns exist because the
+default threshold is 1 — the first evaluation of a chunk is interpreted and the
+rest are native, so a construct the tiers disagree about answers differently for
+a stream's first row than for the rest. A probe only counts against jq when jq
+itself exited 0 with output; anything else is reported as skipped, never as a
+pass.
+
 Where a spelling means one thing to jq and another to arb, **context decides**: a
 body command that begins with a jq literal (`.`, `select(`, `map(`, `has(`) goes
 to the jq front-end and every builtin in it answers as jq does, while a bare
@@ -572,7 +583,7 @@ ok 1 - keeps 5xx
 | `arb '<PROD> \| _ \| <CONS>'` | Orchestrate a pipeline; `_` is arb's stage, producer stderr → pane. |
 | `arb --run 'PIPELINE'` | Same, explicit flag form. |
 | `arb --lsp` | Language Server over stdio for `.arb` (diagnostics, completion, hover, signatureHelp, definition/references/highlight/rename, folding, formatting, semanticTokens). |
-| `arb --dap` | Debug Adapter over stdio: step the stream line-by-line, regex breakpoints, inspect the paused line / stats / controls. |
+| `arb --dap` | Debug Adapter over stdio: step the stream line-by-line, regex breakpoints, function breakpoints on a query verb (`where`, `tally`), inspect the paused line / stats / controls. |
 | `arb --check` | Validate the spec (parse + build) and exit 0/1, no stdin. |
 | `arb --tiers 'EXPR'` | Evaluate EXPR on fusevm, then report which execution tier took its chunk. |
 | `arb --test` | Run the spec's in-language `test { … }` blocks (TAP output), exit 0/1. |
@@ -663,8 +674,9 @@ the terminal or the browser) is complete:
   UTF-16 columns, `completion`, `hover`, `signatureHelp`, `definition`/
   `references`/`documentHighlight`/`rename` over widget `.path` names,
   `foldingRange`, `formatting`, `semanticTokens`), and `arb --dap`, a real
-  steppable debugger (each stream line is a step, regex breakpoints, the pipeline
-  as the stack, `evaluate` over the paused line) — both over stdio JSON-RPC.
+  steppable debugger (each stream line is a step, regex breakpoints, function
+  breakpoints on a query verb, the pipeline as the stack, `evaluate` over the
+  paused line) — both over stdio JSON-RPC.
 - **Presets & library** — 150+ bundled stdlib dashboards, `import` resolution
   (with `import X as Y` namespacing), a local preset library
   (`--save`/`--install`/`--uninstall`/`--installed`), and a registry over a

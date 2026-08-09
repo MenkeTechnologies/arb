@@ -98,8 +98,15 @@ and or not     logical
 x matches /re/ regex test
 x in [..]      membership
 a..b           range
+( … )          grouping — a full expression, including a comparison, a
+               logical, or a `?:` (`(x > 1) and (x < 5)`, `not (a or b)`)
 |>             value pipe: xs |> filter(even) |> sum
 ```
+
+Every value is an f64, so a predicate has a NUMBER for its value: `1` when it
+holds and `0` when it does not, for `==`/`<`/`and`/`or`/`not`/`in` alike. That
+matters wherever an expression's value is printed rather than tested —
+`map x > 1 or x > 2` emits `1`, never a count of how many sides held.
 
 ## 7. Pipe & sources
 
@@ -699,6 +706,18 @@ The compute core (expressions, `calc`, `where`) lowers to a `fusevm::Chunk` and
 runs on the VM; declarative widget/layout construction is plain Rust and needs no
 VM. Language design (lexer/parser/ast/interp/semantics) is arb-original.
 
+A chunk can execute on either of two fusevm tiers — the interpreter, or native
+code from the Cranelift block JIT once the chunk has been invoked past
+`block_threshold` (default 1). `scripts/expr_paths.sh` runs the expression
+corpus through both, pinned via `FUSEVM_JIT_BLOCK_THRESHOLD`, because a
+construct the tiers disagree about answers differently for the first row of a
+stream than for the rest. One such disagreement is open and is fusevm's, not
+arb's: `Op::Div` by a zero divisor yields `Value::Undef` (prints `0`) on the
+interpreter and IEEE `inf` in compiled code, so `map x / 0` over a stream prints
+`0` then `inf`, and `where x / 0 > 1` keeps a different subset of identical
+lines. arb does not paper over it locally — the op is shared with every sibling
+frontend.
+
 All SPEC modules now have code (script-package registry + the actor system
 included; native/cdylib packages remain future work).
 
@@ -714,4 +733,4 @@ Status: ✅ shipped · 🟡 partial · ⬜ planned · ❌ out of scope.
 5. ✅ Web target — `arb --serve` HTTP + WebSocket live dashboard rendered with the `zgui-core` component toolkit (appShell + per-widget components); `arb --html` static export.
 6. ✅ Actors — Akka-style message-passing (§15): `actor NAME(state) { on MSG(p) { … reply EXPR } }` declarations compiled to `ActorDef`; a real runtime of one `mpsc`-mailbox OS thread per actor with *spawn* / *send* (tell) / *ask* (await reply) / supervised round-robin *pool* (respawns a dead worker); handler bodies run arb expressions (fusevm) over `state` + params + locals. Two surfaces: the `via NAME * N` pipeline op fans the stream across a pool in parallel (rayon), order preserved; and the session-ref surface — top-level `spawn NAME = ACTOR(init)` / `pool NAME = ACTOR * N` bindings, a `supervise NAME { on crash { restart \| stop } }` crash policy, and the `tell REF MSG(args)` / `ask .CTRL REF MSG(args)` bind/expect actions that drive them (interactive TUI).
 7. ✅ Package manager — local preset library (`--save`/`--install`/`--uninstall`/`--installed`) + a networked registry over a git index hosted on GitHub (`arb update`/`search`/`install`/`add`/`uninstall`/`publish`, `~/.arb/pkg` resolver tier, transitive `[deps]` with semver constraint-checking). `arb publish` upserts the package's entry into the index and pushes it (default registry `github.com/MenkeTechnologies/arb-registry`). *(native/cdylib packages + multi-version semver resolution: ⬜)*
-8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). Diagnostics anchor to the offending verb even when nested inside a `source`/`out` body (not the enclosing directive). *(per-token argument precision — squiggle the `/re/` itself, not its verb — ⬜)*
+8. ✅ LSP/DAP — `arb --lsp` ships a full server: diagnostics (real source ranges, UTF-16 columns), `documentSymbol`, `hover`, `completion` (CORPUS verbs + dot-context `.path` names + widget `-flags`), `signatureHelp`, `definition`/`references`/`documentHighlight`/`rename` over widget `.path` names, `foldingRange`, `formatting`, and `semanticTokens/full`. `arb --dap` is a real steppable debugger over the stream model: each incoming line is a step, breakpoints are regex predicates (a `SourceBreakpoint.condition`, or unconditional = single-step), function breakpoints (`setFunctionBreakpoints`) name a query VERB and stop when the paused line reaches that stage — a name arb has no verb for comes back `verified: false` rather than being silently accepted — the stack trace is the query-pipeline stages, scopes expose the matched line + stream stats + control values, and `evaluate` runs arb's real expression evaluator against the paused line. The `program` (spec) and `input` (data file) come from the `launch` request since DAP owns stdio; `stepIn`/`stepOut` collapse to `next` (a stream has no call nesting). Diagnostics anchor to the offending verb even when nested inside a `source`/`out` body (not the enclosing directive). *(per-token argument precision — squiggle the `/re/` itself, not its verb — ⬜)*

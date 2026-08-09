@@ -371,6 +371,9 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
         }
         Expr::InList(left, items) => {
             // Sum of `(left == item)` over the list; truthy iff any matched.
+            // The sum COUNTS matches, so a list with a repeated element yields 2
+            // or 3 — fine for `where`'s truthiness test, wrong for `map`/`calc`,
+            // which print the expression's value. Normalize back to 0/1.
             if items.is_empty() {
                 b.emit(Op::LoadFloat(0.0), 0);
             } else {
@@ -381,6 +384,9 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
                     if k > 0 {
                         b.emit(Op::Add, 0);
                     }
+                }
+                if items.len() > 1 {
+                    emit_normalize_bool(b);
                 }
             }
         }
@@ -419,6 +425,12 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
             emit_bool(a, x, resolve, b);
             emit_bool(c, x, resolve, b);
             b.emit(Op::Add, 0);
+            // The sum is 2 when BOTH sides are true. `where` only reads
+            // truthiness so it never noticed, but `map`/`calc` print the value —
+            // `map x > 1 or x > 2` at x=5 printed `2`. Every other
+            // boolean-producing node (`and`, a comparison, `not`) yields 0/1, so
+            // normalize `or` to match.
+            emit_normalize_bool(b);
         }
         Expr::Bin(op, a, c) => {
             emit(a, x, resolve, b);
@@ -447,6 +459,14 @@ fn emit(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
 /// Emit `e` normalized to a boolean 0.0/1.0 (`e != 0`), for logical combinators.
 fn emit_bool(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64, b: &mut ChunkBuilder) {
     emit(e, x, resolve, b);
+    emit_normalize_bool(b);
+}
+
+/// Normalize the value already on the stack to a boolean 0.0/1.0 (`v != 0`).
+/// Used wherever a node builds its answer by SUMMING 0/1 terms (`or`, `in
+/// [list]`), whose sum can exceed 1 and would otherwise leak out of a `map`
+/// or `calc` as a count instead of a boolean.
+fn emit_normalize_bool(b: &mut ChunkBuilder) {
     b.emit(Op::LoadFloat(0.0), 0);
     b.emit(Op::NumNe, 0);
 }
@@ -461,7 +481,16 @@ struct Parser {
 
 /// Cap on `(`-nesting in `map`/`where`/`calc` expressions — well past any real
 /// expression, but bounded so a malicious input can't abort the process.
-const MAX_EXPR_DEPTH: usize = 256;
+///
+/// The bound that matters is STACK, not syntax: one nesting level costs one
+/// frame per nonterminal between `primary` and its recursive call. A
+/// parenthesized group re-enters at `ternary`, so a level walks
+/// `ternary → or → and → not → comparison → additive → multiplicative → unary →
+/// primary` — about twice the chain a group that re-entered at `additive` cost,
+/// and a limit tuned for the shorter chain aborted the process (SIGABRT) instead
+/// of erroring. Halved to keep the guard inside the same stack budget;
+/// `tests/expr.rs::deep_nesting_errors_not_stack_overflow` is what proves it.
+const MAX_EXPR_DEPTH: usize = 128;
 
 impl Parser {
     /// Peek the next non-whitespace char (consuming leading whitespace).
@@ -699,9 +728,15 @@ impl Parser {
 
     fn primary_inner(&mut self) -> Result<Expr, String> {
         match self.peek() {
+            // A parenthesized group is a FULL expression, the same nonterminal a
+            // call argument gets. Recursing into `additive` instead stopped at the
+            // first comparison or keyword, so the three natural groupings —
+            // `(x > 1) and (x < 5)`, `not (a or b)`, `(x > 1 ? 10 : 20)` — were
+            // rejected with "calc: expected `)`" even though the doc comment on
+            // `parse` lists parentheses as supported.
             Some('(') => {
                 self.i += 1;
-                let e = self.additive()?;
+                let e = self.ternary()?;
                 if self.peek() != Some(')') {
                     return Err("calc: expected `)`".into());
                 }
@@ -867,6 +902,48 @@ mod tests {
         let strv = |_: &str| None;
         let sub = substitute_controls(&e, &num, &strv);
         assert_eq!(eval(&sub, 0.0).unwrap(), 42.0);
+    }
+
+    /// Every boolean-producing node must yield 0 or 1, because `map`/`calc`
+    /// print the expression's VALUE. `or` lowered to the sum of its two
+    /// normalized operands, so a row where both sides held answered `2`; `in
+    /// [list]` lowered to the count of matching elements, so a list with a
+    /// repeated element answered `2` or `3`. `where` reads only truthiness and
+    /// never saw either.
+    #[test]
+    fn boolean_nodes_yield_zero_or_one_not_a_count() {
+        let ev = |src: &str, x: f64| eval(&parse(src).unwrap(), x).unwrap();
+        // Both sides of the `or` hold.
+        assert_eq!(ev("x > 1 or x > 2", 5.0), 1.0);
+        assert_eq!(ev("x > 1 or x > 2", 0.0), 0.0);
+        // Exactly one side holds — the case that was already right.
+        assert_eq!(ev("x > 4 or x < 1", 5.0), 1.0);
+        // Chained `or`, three terms all true.
+        assert_eq!(ev("x > 1 or x > 2 or x > 3", 9.0), 1.0);
+        // A repeated element in an `in` list.
+        assert_eq!(ev("x in [1,1,1]", 1.0), 1.0);
+        assert_eq!(ev("x in [1,5,5,9]", 5.0), 1.0);
+        assert_eq!(ev("x in [1,2,3]", 7.0), 0.0);
+        // A single-element list still answers 0/1.
+        assert_eq!(ev("x in [5]", 5.0), 1.0);
+    }
+
+    /// A parenthesized group is a full expression, not just an additive one.
+    /// `(x > 1) and (x < 5)`, `not (a or b)` and `(cond ? a : b)` are the
+    /// spellings a reader writes first, and each used to be `calc: expected `)``.
+    #[test]
+    fn parentheses_group_a_whole_expression() {
+        let ev = |src: &str, x: f64| eval(&parse(src).unwrap(), x).unwrap();
+        assert_eq!(ev("(x > 1) and (x < 5)", 3.0), 1.0);
+        assert_eq!(ev("(x > 1) and (x < 5)", 9.0), 0.0);
+        assert_eq!(ev("not (x > 1 or x > 2)", 5.0), 0.0);
+        assert_eq!(ev("not (x > 1 or x > 2)", 0.0), 1.0);
+        assert_eq!(ev("(x > 5 ? 100 : 0)", 9.0), 100.0);
+        assert_eq!(ev("(x > 5 ? 100 : 0)", 1.0), 0.0);
+        // Arithmetic grouping is unchanged.
+        assert_eq!(ev("(x + 2) * 3", 1.0), 9.0);
+        assert_eq!(ev("x - (2 - 1)", 5.0), 4.0);
+        assert_eq!(ev("((x))", 7.0), 7.0);
     }
 
     #[test]
