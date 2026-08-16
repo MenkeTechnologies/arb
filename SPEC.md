@@ -325,9 +325,33 @@ try/catch, no `..` recursive descent, no variable binding, no
 `group_by`/`unique_by`/`min_by`/`max_by` in jq spelling, no `range`, no
 regex builtins (`sub`/`gsub`/`splits`), no `@base64`/`@csv`/`@tsv`/`@json` format
 strings, no `env`/`$ENV`, no `input`/`inputs`, no positional/text predicates, no
-axes, no `*` wildcard step). `scripts/jq_parity.sh` probes BOTH halves of this
+axes, no `*` wildcard step). The same applies to jq's SYNTAX forms, which the list
+above does not name because none of them is a builtin: no object construction
+(`{a: .a}`), no array construction (`[.a, .b]`), no comma operator (`.a, .b`), no
+`if`/`then`/`else`, and no parentheses (`(.a + 3) * 2` — the body dispatcher hands
+only `.`, `select(`, `map(` and `has(` to the jq front-end, so a leading `(` is
+refused as an unknown verb). Nor the remaining builtin families: no
+`type`/`tojson`/`fromjson`, no string builtins (`startswith`/`ltrimstr`/`explode`/
+`join`), no `reverse`/`unique`/`contains`/`indices`/`del`/`path`/`walk`, no
+type filters (`objects`/`arrays`/`nulls`/`scalars`), no math builtins
+(`sqrt`/`infinite`/`nan`/`now`). Where a jq builtin shares a spelling with an arb
+NATIVE verb (`sort`, `min`, `max`, `floor`, `abs`, …) the bare word is the native
+verb, per the context rule below — that is the documented gating, not a jq leak.
+`scripts/jq_parity.sh` probes BOTH halves of this
 contract: every claimed construct is byte-diffed against the reference tool, and
 every construct named as out-of-subset is asserted to exit non-zero.
+
+**Two measured deviations, neither of them silent.** A `sel { CSS }` selector
+cannot begin with `#`: `#` opens a comment in arb's lexer, so `sel { #main }`
+lexes to an empty block and reports `sel: expected a CSS selector` (exit 1) rather
+than selecting anything. The unbraced `sel #main`, the compound `sel { div#main p }`
+and the xpath `//div[@id='main']` all reach the same nodes. And identity/`select`/
+`values` emit the SOURCE line for a non-string value, so a line carrying interior
+whitespace (`{ "a" : 1 }`) is passed through as written where `jq -c` re-serializes
+it compact; arb keeps no literal (§6), and rebuilding the value to compact it would
+re-sort object keys (`serde_json::Map` is a `BTreeMap`, where jq preserves input
+order) and reprint jq's preserved `1.50` as `1.5`. Both are probed and reported as
+divergences every run rather than allowlisted.
 
 **jq expression bodies are jq VALUES.** A `select(…)` predicate, a `map(…)` body
 and a bare arithmetic stage evaluate over JSON values, not over arb's f64
@@ -345,7 +369,14 @@ expression language (§6):
 * `%` truncates both operands to integers first, as jq's does. Arb's own
   `map x % 3` keeps §6's f64 remainder; the jq context follows jq, which is the
   same context gating that separates jq `to_entries` from native `entries`;
-* nested field paths work inside a body (`select(.a.b > 1)`, `map(.a.b)`);
+* nested field paths work inside a body (`select(.a.b > 1)`, `map(.a.b)`), and a
+  path may continue THROUGH an iterate (`.users[].name`, `.a[].b.c`);
+* a top-level JSON STRING renders RAW, the way `jq -r` prints one: a line reading
+  `"hello"` is `hello`, and `"a\"b"` is `a"b`. That holds for the filters that
+  emit their input line unchanged — identity `.`, `select(…)` and `values` — as
+  well as for the ones that already rendered (`.a`, `.[]`, a slice). Other types
+  keep the source line, which is also what jq does with a number it never computed
+  (`1.50` stays `1.50`);
 * a TYPE mismatch is a hard error, not an answer. `null | .[]`, `3 | .a`,
   `"hello" | .[1]`, `true | length`, `{"a":1} | . + 3`, `.n / 0` and `.n % 0` all
   refuse with `jq: …` on stderr and a non-zero exit, matching what `jq` itself
@@ -391,12 +422,25 @@ So `. | keys` is jq's sorted array while `keys` on its own is arb's line-per-key
 verb — the same gating that already separates jq `to_entries` from native
 `entries`, applied to the one spelling that carries both meanings.
 
-`keys` is therefore resolved in jq context and **unresolved in the bare spelling**,
-which is where `scripts/jq_parity.sh` still reports a divergence every run. Making
-the bare word mean jq's array would break a shipped preset: `stdlib/json.arb` runs
-`keys; tally` over the line-per-key shape and pins it with its own in-language
-test. A distinct native spelling would resolve it, and none exists yet; the probe
-stays red rather than being reworded into a pass.
+`keys` is therefore resolved in jq context and **deliberately left as the native
+verb in the bare spelling**, which is where `scripts/jq_parity.sh` reports a
+divergence every run. Three things decide it, and they point the same way:
+
+* Making the bare word mean jq's array would break a shipped preset.
+  `stdlib/json.arb` runs `keys; tally` over the line-per-key shape and pins it
+  with its own in-language test (`arb --test stdlib/json.arb`).
+* `keys` is not a lone wart. The bare word is the native verb for EVERY shared
+  spelling — `sort`, `min`, `max`, `floor`, `abs`, `add`, `length`, `entries` all
+  behave this way, and the jq front-end refuses `sort`/`min`/`max`/`floor`/`abs`
+  by name rather than answering as jq. Special-casing `keys` alone would make it
+  the single exception to a rule that currently holds without exception.
+* Nothing is unreachable. `. | keys` already gives jq's sorted array, so the jq
+  meaning has a spelling; only the DEFAULT for the bare word is at issue.
+
+So the divergence is a naming collision, not a missing capability, and the cost of
+"fixing" it is a broken preset plus an inconsistent context rule. A distinct
+native spelling would retire it, and none exists yet; until then the probe stays
+red rather than being reworded into a pass.
 
 ### In-language unit tests (`arb --test`)
 

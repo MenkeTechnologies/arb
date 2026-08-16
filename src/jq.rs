@@ -20,6 +20,27 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
         }
         translate_stage(stage, &mut ops)?;
     }
+    // A pipeline that ENDS by emitting its input line verbatim still owes jq's
+    // string rendering: `jq -r` prints a top-level JSON string raw, so a line
+    // reading `"hello"` is `hello`. Identity contributes no ops at all, and
+    // `select(…)`/`values` re-emit `l.clone()`, so those three are exactly the
+    // endings that reach the output un-rendered.
+    //
+    // Appended ONCE, at the END, and only for those endings — never per stage.
+    // Both restrictions are load-bearing:
+    //   * mid-pipeline it would feed the NEXT stage an unquoted line, and a
+    //     non-JSON line is the one input the type checks cannot refuse — so
+    //     `"abc" | keys`, which correctly raises `string ("abc") has no keys`
+    //     today, would silently pass `abc` through with exit 0. That converts a
+    //     hard error into an answer, the exact failure SPEC §8 forbids.
+    //   * after a stage that already RENDERED (a path, `.[]`, `map(…)`) it would
+    //     unquote a second time: `{"a":"\"q\""}` | `.a` renders `"q"`, whose
+    //     quotes are DATA, and a second pass would strip them to `q`.
+    // `map(…)` bodies build through `translate_stage` directly, so they are
+    // untouched by this and keep rebuilding their array through `jq_array_json`.
+    if ops.is_empty() || matches!(ops.last(), Some(QueryOp::NonNull | QueryOp::JqSelect(_))) {
+        ops.push(QueryOp::JqRawString);
+    }
     Ok(ops)
 }
 

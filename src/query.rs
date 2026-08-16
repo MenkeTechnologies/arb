@@ -82,6 +82,23 @@ pub enum QueryOp {
     /// jq `values` == `select(. != null)`: drop JSON-null lines, pass every other
     /// line through unchanged. (NOT object-value iteration — that is `vals`/`.[]`.)
     NonNull,
+    /// Render a PASSTHROUGH line the way `jq -r` prints it, for the one type where
+    /// the raw line and jq's rendering disagree: a top-level JSON STRING.
+    ///
+    /// Identity `.`, `select(…)` and `values` all emit the INPUT LINE verbatim.
+    /// For an object, array, number or boolean that is what jq does too — jq keeps
+    /// the source literal of any number it never computed (`1.50` stays `1.50`,
+    /// `[1,2]` stays `[1,2]`), so passing the line through matches it. A string is
+    /// the exception: `jq -r` strips the quotes and unescapes, so a line reading
+    /// `"hello"` must print `hello`. arb printed `"hello"` — and disagreed with
+    /// ITSELF, since `.[1:3]` on the same input already rendered `el` raw.
+    ///
+    /// Deliberately string-ONLY. Re-rendering the other types would lose more than
+    /// it gained: `serde_json::Map` is a `BTreeMap`, so a rebuilt object comes back
+    /// key-SORTED (`{"b":1,"a":2}` -> `{"a":2,"b":1}`) where jq preserves input
+    /// order, and every number would be reprinted through `fmt_num`, turning jq's
+    /// preserved `1.50` into `1.5`. Both would be new divergences in place of one.
+    JqRawString,
     /// Project a JSON object down to the named keys (jq `{a,b,c}` /
     /// `pick(.a,.b,.c)`), preserving the listed order. Non-object lines pass
     /// through unchanged; missing keys are dropped.
@@ -619,6 +636,13 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 // jq `values` == `select(. != null)`: keep every non-null input
                 // unchanged, drop only the lines that parse to JSON `null`.
                 cur.retain(|l| !matches!(serde_json::from_str::<Value>(l), Ok(Value::Null)));
+            }
+            QueryOp::JqRawString => {
+                for l in cur.iter_mut() {
+                    if let Some(Value::String(s)) = jq_value(l) {
+                        *l = s;
+                    }
+                }
             }
             QueryOp::Pick(keys) => {
                 for l in cur.iter_mut() {
@@ -1654,6 +1678,7 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::JqKeys
                 | QueryOp::Vals
                 | QueryOp::NonNull
+                | QueryOp::JqRawString
                 | QueryOp::Pick(_)
                 | QueryOp::Where(_)
                 | QueryOp::Map(_)

@@ -462,14 +462,28 @@ A `select(…)`/`map(…)` body evaluates over jq VALUES, so a compare yields
 overloaded per type (string concat, array concat, object merge, `null` as the
 identity) and `%` truncates to integers the way jq's does.
 
+A top-level JSON string renders RAW, as `jq -r` prints one — a line reading
+`"hello"` is `hello` — through identity/`select`/`values` as well as through a
+path or a slice.
+
 All of that is checked by `scripts/jq_parity.sh`, which runs arb and the
 reference tool over one corpus and byte-diffs stdout: an in-subset construct must
 match `jq -rc` / `xmllint --xpath`, an out-of-subset one must exit non-zero, and
 a type error must be refused by BOTH engines — the probe verifies that jq really
 does refuse, so a refusal arb invented alone is never scored as parity. The css
 leg (`sel { … }`) is probed against the xmllint XPath that selects the same
-elements. It has no allowlist, and the `yq` leg is reported as unverified rather
-than passing while no `yq` is installed.
+elements. A fifth probe kind covers the non-JSON line, where `jq` refuses the
+input outright and there is therefore no oracle at all: the expected values come
+from the SPEC prose, and the probe asserts that jq really does refuse, so it can
+never quietly pin arb against a live reference. It has no allowlist, and the `yq`
+leg is reported as unverified rather than passing while no `yq` is installed.
+
+Two deviations are reported as divergences on every run rather than allowlisted: a
+`sel { … }` selector cannot begin with `#` (that opens a comment in arb's lexer —
+`sel #main`, `sel { div#main p }` and the xpath `//div[@id='main']` all work), and
+a passed-through line keeps its source spacing where `jq -c` re-serializes it
+compact. Both are stated in full in
+[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind
 `where`, `map` and `calc` — has its own harness, `scripts/expr_paths.sh`. It
