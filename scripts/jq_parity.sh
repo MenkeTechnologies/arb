@@ -53,8 +53,49 @@
 #   aac6d4eefa (that corpus, before)          158 pass / 15 diverged / 1 skipped
 #   5ccdf9de36 (that corpus, after)           172 pass /  1 diverged / 1 skipped
 #   3e19965cd4 (the previous corpus)          173 pass / 11 diverged / 1 skipped
-#   3e19965cd4 (THIS corpus, before)          250 pass / 94 diverged / 1 skipped
-#   HEAD       (THIS corpus, after)           343 pass /  1 diverged / 1 skipped
+#   3e19965cd4 (the previous corpus, before) 250 pass / 94 diverged / 1 skipped
+#   81c0d07485 (the previous corpus, after)  343 pass /  1 diverged / 1 skipped
+#   81c0d07485 (THIS corpus, before)         544 pass / 20 diverged / 1 skipped
+#   HEAD       (THIS corpus, after)          559 pass /  5 diverged / 1 skipped
+#
+# ── round 2 ─────────────────────────────────────────────────────────────────
+# Same move as round 1, applied to what round 1 still could not see. The corpus
+# went 344 -> 564 by diffing SPEC §8's CLAIMED subset against the probe list
+# rather than by inventing new cases, and the 19 it exposed on the same binary
+# that scored 343/344 were again mostly one root cause.
+#
+# `.` is the FIRST construct SPEC §8 names, and every probe of it fed an object,
+# a number, a boolean or a null — never a STRING. For those four types arb's raw
+# line and jq's rendering coincide exactly, so identity emitting NO OPS at all
+# (`src/jq.rs`, `"." => Ok(())`) looked correct for the whole life of the corpus.
+# It is not correct for a string: `jq -r` strips the quotes, so a line reading
+# `"hello"` must print `hello`, and arb printed `"hello"`. arb also disagreed with
+# ITSELF — `.[1:3]` on that same input already rendered `el` raw, because a slice
+# RENDERS while identity passed the line through. `select(…)` and `values` re-emit
+# the input line for the same reason, so all three carried it. See
+# `QueryOp::JqRawString`, appended once at the END of a jq pipeline and only when
+# the pipeline ends by emitting its input verbatim: mid-pipeline it would hand the
+# next stage a non-JSON line and turn `"abc" | keys` from a hard error into a
+# silent answer, and after an already-rendered stage it would unquote a second
+# time and eat quotes that are DATA. Both are pinned as probes.
+#
+# The remaining 5 are recorded, not hidden. `keys` is round 1's spelling
+# collision, unchanged. `sel { #main }` is NEW: a LEADING `#` opens a COMMENT in
+# arb's lexer, so the braced spelling SPEC §8 prints cannot express an id selector
+# at all — round 1's `sel { div.card h2 }` bug in its last corner, needing either
+# a lexer change that would break real comments or a raw source span on
+# `Arg::Block`. The 3 whitespace probes are the measured COST of the passthrough
+# that makes the string case above worth fixing rather than papering over:
+# compacting a container would re-sort `serde_json`'s BTreeMap keys and reprint
+# jq's preserved `1.50` as `1.5`, two deeper divergences traded for one.
+#
+# Round 2 also added a FIFTH probe kind. `text_probe` covers SPEC §8's non-JSON
+# line carve-out — a path yields `null`, an iterate/slice passes through, an
+# expression sees jq's string — which is the half of the value model that makes
+# arb a line stream instead of a jq clone, was stated in three clauses, and was
+# scored by NOTHING. jq refuses such a line outright, so there is no oracle; the
+# expected values are transcribed from the SPEC prose and the probe asserts that
+# jq really does refuse, so it can never quietly pin arb against a live reference.
 #
 # The corpus nearly doubled (184 -> 344 probes) and most of the 94 it exposed
 # were one root cause with many faces: every `select(…)`/`map(…)` body and every bare
@@ -130,7 +171,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=344
+MIN_PROBES=564
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -218,6 +259,45 @@ type_probe() {
         fails+=("type $filter <= $input — jq REFUSES, arb answered"$'\n'"       arb: $(printf %s "$out" | tr '\n' '|')")
         [ "$QUIET" = 1 ] || printf 'DIFF type %-30s %s\n       arb answered: %s\n' \
             "$filter" "$input" "$(printf %s "$out" | tr '\n' '|')"
+    fi
+}
+
+# text_probe INPUT FILTER EXPECTED — the NON-JSON line, where there is no oracle.
+#
+# SPEC §8 carves this case out in prose: arb's stream is TEXT and `jq` has no
+# reading of a non-JSON line at all (it refuses the whole input), so there is
+# nothing to byte-diff against. That makes it the one region of the contract the
+# other four probe kinds structurally cannot reach — and it was scored by NOTHING,
+# which is the same "too small to fail" state the css leg was in before round 1.
+#
+# The three rules SPEC states are the contract instead: a path yields `null`, an
+# iterate/slice passes the line through, and an EXPRESSION sees the line as jq's
+# string (`. * 2` over `abc` is `abcabc`). EXPECTED is transcribed from that prose
+# and NEVER from a run of arb — a probe recording what arb happens to do would
+# assert nothing and would ratify a regression as the new truth.
+#
+# The probe also CHECKS that jq refuses the input. That keeps it honest in the
+# other direction: it may only claim to be oracle-free where the oracle really is
+# absent, so a line jq CAN read is reported as a misclassification rather than
+# being quietly pinned to arb's answer.
+text_probe() {
+    local input="$1" filter="$2" want="$3" a jrc
+    printf '%s\n' "$input" | "$JQ" -rc "$filter" >/dev/null 2>&1; jrc=$?
+    if [ "$jrc" -eq 0 ]; then
+        fail=$((fail + 1))
+        fails+=("text $filter <= $input — MISCLASSIFIED: jq READS this line, so it is not oracle-free")
+        [ "$QUIET" = 1 ] || printf 'DIFF text %-26s %s (jq reads it — probe is wrong)\n' "$filter" "$input"
+        return
+    fi
+    a=$(printf '%s\n' "$input" | "$ARB" -e "out { in.json; $filter }" 2>&1)
+    if [ "$a" = "$want" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   text %-26s %-12s => %s\n' "$filter" "$input" "$(printf %s "$a" | tr '\n' '|')"
+    else
+        fail=$((fail + 1))
+        fails+=("text $filter <= $input — SPEC §8 says \`$want\`"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF text %-26s %s\n       SPEC: %s\n       arb : %s\n' \
+            "$filter" "$input" "$(printf %s "$want" | tr '\n' '|')" "$(printf %s "$a" | tr '\n' '|')"
     fi
 }
 
@@ -350,6 +430,74 @@ jq_probe '{"a":1,"b":2}'                 'length'
 jq_probe '"hello"'                       'length'
 jq_probe '-7'                            'length'
 jq_probe 'null'                          'length'
+
+# ── jq: a top-level JSON STRING through the PASSTHROUGH filters ─────────────
+# `.` is the FIRST construct SPEC §8 names, and every probe of it above feeds an
+# object, a number, a boolean or a null — never a string. That is the same blind
+# spot shape as the numeric band: for those four types arb's line passes through
+# and jq's rendering coincide exactly, so the probe agreed for a reason that had
+# nothing to do with the string case.
+#
+# It does not coincide for a string. `jq -r` strips the quotes, and arb emitted
+# the raw line, so a line reading `"hello"` printed `"hello"`. arb also disagreed
+# with ITSELF: `.[1:3]` on the same input already rendered `el` raw, because a
+# slice RENDERS its result while identity emitted no ops at all.
+#
+# `select(…)` and `values` re-emit the input line for the same reason, so all
+# three spellings are probed, along with the escapes that prove it is a real
+# unquote and not a quote-strip.
+jq_probe '"hello"'                       '.'
+jq_probe '""'                            '.'
+jq_probe '"a b"'                         '.'
+jq_probe '"1"'                           '.'
+jq_probe '"null"'                        '.'
+jq_probe '"true"'                        '.'
+jq_probe '"a\"b"'                        '.'
+jq_probe '"tab\there"'                   '.'
+jq_probe '"é日本"'                        '.'
+jq_probe '"hello"'                       'values'
+jq_probe '"hello"'                       '. | values'
+jq_probe '"hello"'                       'select(.)'
+jq_probe '"hello"'                       'select(. == "hello")'
+jq_probe '""'                            'values'
+# The other four types must KEEP passing the source line through. jq reprints the
+# literal of any number it never computed, so `1.50` stays `1.50` — re-rendering
+# it through `fmt_num` would produce `1.5`, and rebuilding an object would come
+# back key-SORTED out of `serde_json`'s BTreeMap where jq preserves input order.
+# These pin that the fix stayed string-only.
+jq_probe '1.50'                          '.'
+jq_probe '{"b":1,"a":2}'                 '.'
+jq_probe '[1,2]'                         '.'
+jq_probe '1.50'                          'values'
+jq_probe '{"b":1,"a":2}'                 'select(.)'
+jq_probe '[1,2]'                         'select(.)'
+# The COST of passing the line through, measured rather than assumed: where the
+# source line carries interior whitespace, `jq -c` re-serializes it compact and
+# arb emits it as written. These probes are RED and stay red until arb can render
+# a container without losing what the passthrough currently preserves.
+#
+# It is a strictly harder problem than the string case above, which is why that
+# one is fixed and this one is only recorded. Compacting means rebuilding the
+# value, and rebuilding costs two things jq keeps: `serde_json::Map` is a
+# `BTreeMap`, so `{"b":1,"a":2}` comes back key-SORTED where jq preserves input
+# order, and every number is reprinted through `fmt_num`, so jq's preserved `1.50`
+# becomes `1.5`. Both are pinned as PASSING probes just above. Trading one
+# divergence for two deeper ones is not a fix, and the honest state is a red probe
+# plus the narrowed SPEC §8 sentence, not a reworded probe that agrees with arb.
+jq_probe '{ "a" : 1 }'                   '.'
+jq_probe '[1,  2]'                       '.'
+jq_probe '{ "a" : 1 }'                   'select(.a == 1)'
+# A string whose CONTENT is quotes must be unquoted exactly ONCE. These reach the
+# already-rendered paths (`.a`, `.[]`), which must NOT be unquoted a second time.
+jq_probe '{"a":"\"q\""}'                 '.a'
+jq_probe '["\"q\""]'                     '.[]'
+jq_probe '{"a":"\"q\""}'                 'select(.a)'
+# And a downstream stage must still see the JSON string, so the type errors that
+# guard it keep firing (`"abc" | keys` raises). Those are `type_probe`s below;
+# these pin the ones that legitimately ANSWER.
+jq_probe '"abc"'                         '. | length'
+jq_probe '"abc"'                         '. * 2'
+jq_probe '"abc"'                         '. + "d"'
 
 # ── jq: null handling ───────────────────────────────────────────────────────
 # jq renders an explicit null, an absent key and an out-of-range index all as
@@ -490,6 +638,157 @@ jq_probe '{"a":1}'                       'select(.b == null)'
 jq_probe '{"a":[1]}'                     'select(.a == [1])'
 jq_probe '{"a":1}'                       'select(.a and true)'
 
+# ── jq: the TOTAL ORDER across types (SPEC §8 names it verbatim) ────────────
+# SPEC §8 states the order in full — `null < false < true < numbers < strings <
+# arrays < objects` — but every ordered compare in the corpus above puts two
+# values of the SAME type on the two sides. The cross-type half of a claim spelled
+# out that explicitly was scored by nothing, and it is the half an f64 evaluator
+# cannot express at all (it has one type), so it is exactly where a regression
+# would land.
+jq_probe '{"a":null,"b":false}'          '.a < .b'
+jq_probe '{"a":false,"b":true}'          '.a < .b'
+jq_probe '{"a":true,"b":1}'              '.a < .b'
+jq_probe '{"a":1,"b":"s"}'               '.a < .b'
+jq_probe '{"a":"s","b":[1]}'             '.a < .b'
+jq_probe '{"a":[1],"b":{"x":1}}'         '.a < .b'
+jq_probe '{"a":null,"b":{"x":1}}'        '.a < .b'
+jq_probe '{"a":1,"b":"s"}'               '.a > .b'
+jq_probe '{"a":null,"b":0}'              '.a <= .b'
+# Arrays and objects compare ELEMENTWISE, not by length or address.
+jq_probe '{"a":[1,2],"b":[1,3]}'         '.a < .b'
+jq_probe '{"a":[1,2],"b":[1]}'           '.a > .b'
+jq_probe '{"a":{"x":1},"b":{"y":1}}'     '.a < .b'
+jq_probe '[[2],[1,9]]'                   'map(. > [1])'
+jq_probe '[null,false,true,1,"s"]'       'map(. > null)'
+
+# ── jq: ITERATE MID-PATH — `.users[].name`, SPEC's own first table row ──────
+# The SPEC §8 translation table opens with `.users[].name`, and the corpus never
+# ran it: every iterate probe either ENDS at `[]` (`.items[]`) or indexes a fixed
+# element first (`.a[0].b`). Continuing a path THROUGH an iterate is a different
+# code path — it fans one input into many and then keeps walking each one.
+jq_probe '{"users":[{"name":"a"},{"name":"b"}]}' '.users[].name'
+jq_probe '{"a":[{"b":1},{"b":2}]}'       '.a[].b'
+jq_probe '{"a":[[1,2],[3]]}'             '.a[][]'
+jq_probe '{"a":[{"b":{"c":1}}]}'         '.a[].b.c'
+jq_probe '{"a":{"x":{"n":1},"y":{"n":2}}}' '.a[].n'
+jq_probe '{"a":[{"b":1}]}'               '.a[].b'
+jq_probe '{"a":[]}'                      '.a[].b'
+jq_probe '{"a":[{"b":1},{"c":2}]}'       '.a[].b'
+jq_probe '{"a":[1,2]}'                   '.a[1:]'
+
+# ── jq: the pipelines SPEC §8 PRINTS as its own examples ────────────────────
+# SPEC §8's "Literal front-ends" block shows four runnable lines. A documented
+# example is the highest-traffic construct in any spec — it is what a reader
+# copies first — and none of them was in the corpus. Each combines stages that
+# were only ever probed in isolation.
+jq_probe '{"users":[{"age":20,"name":"x"},{"age":9,"name":"y"}]}' '.users[] | select(.age >= 18) | .name'
+jq_probe '[{"price":3},{"price":4}]'     'map(.price) | add'
+jq_probe '{"a":[1,2,3]}'                 '.a[] | select(. > 1) | . * 10'
+jq_probe '[{"n":1},{"n":2}]'             '.[] | .n | . + 1'
+jq_probe '{"a":{"b":[1,2]}}'             '.a.b | map(. * 2) | add'
+jq_probe '[{"a":1},{"a":2},{"a":3}]'     'map(select(.a > 1)) | length'
+
+# ── jq: a SUBSCRIPT KEEPS ITS TYPE (SPEC §8 spells out `.["0"]`) ────────────
+# SPEC §8: "A subscript keeps its type: `.["0"]` is an object key and `.[0]` is an
+# array index, so `[1,2] | .["0"]` refuses rather than reading the first element."
+# The digit-string is the case that separates a real type check from a coercion,
+# and only the non-digit `.["a"]` form was probed.
+jq_probe '{"0":"v"}'                     '.["0"]'
+jq_probe '{"0":{"1":"deep"}}'            '.["0"]["1"]'
+jq_probe '{"-1":"neg"}'                  '.["-1"]'
+jq_probe '[10,20]'                       '.[0]'
+
+# ── jq: MULTIPLE INPUT LINES ────────────────────────────────────────────────
+# arb is a LINE stream, so per-line scoping is a property no single-line probe can
+# observe. The `map(…)` rewrap bug in round 1 merged two lines into one flat
+# stream and a one-line corpus called it a pass. Every stage family is re-run here
+# over two lines to pin that they stay independent.
+jq_probe '[1,2]
+[3,4]'                                   'map(. * 2)'
+jq_probe '{"a":1}
+{"a":2}'                                 '.a'
+jq_probe '{"a":1}
+{"a":2}'                                 'select(.a > 1)'
+jq_probe '[1]
+[2]'                                     'add'
+jq_probe '{"a":1}
+{"a":2}'                                 '. | keys'
+jq_probe '{"a":[1,2]}
+{"a":[3]}'                               '.a[]'
+jq_probe '"x"
+"y"'                                     '.'
+jq_probe '{"a":1}
+{"b":2}'                                 '.a'
+jq_probe '[1,2]
+[3]'                                     '. | length'
+
+# ── jq: UNICODE — length, slice and key order are all codepoint-based ───────
+# `length` on a string is jq's CODEPOINT count and a slice indexes codepoints, so
+# a byte-oriented implementation passes every ASCII probe in this file and fails
+# the moment real text arrives. `keys` sorts by codepoint too.
+jq_probe '"héllo"'                       'length'
+jq_probe '"日本語"'                       'length'
+jq_probe '"日本語abc"'                    '.[1:3]'
+jq_probe '"日本語abc"'                    '.[-3:]'
+jq_probe '{"é":1,"z":2,"A":3}'           '. | keys'
+jq_probe '{"b":1,"B":2,"á":3,"1":4}'     '. | keys'
+jq_probe '["日本"]'                       'map(length)'
+jq_probe '{"a":"héllo"}'                 '.a'
+
+# ── jq: COMPOSITION — map inside map, reducer inside map ────────────────────
+# Every `map(…)` probe above has a one-stage body. Nesting is where the per-input
+# scope and the array rewrap have to hold at two levels at once.
+jq_probe '[[1,2],[3,4]]'                 'map(map(. * 2))'
+jq_probe '[[1,2],[3,4]]'                 'map(map(. > 1))'
+jq_probe '[{"a":[1,2]}]'                 'map(.a | length)'
+jq_probe '[{"a":{"b":[1,2]}}]'           'map(.a.b | add)'
+jq_probe '[1,2,3]'                       'map(. + 1) | map(. * 2)'
+jq_probe '[[1,2],[3]]'                   'map(add)'
+jq_probe '[[1,2],[3]]'                   'map(length) | add'
+jq_probe '[{"a":1},{"a":2}]'             'map(select(.a > 1)) | map(.a)'
+
+# ── jq: `values` is `select(. != null)`, not object-value iteration ─────────
+jq_probe '[1,null,2,null]'               'map(values)'
+jq_probe '0'                             'values'
+jq_probe '[]'                            'values'
+jq_probe '{}'                            'values'
+jq_probe '[1,""]'                        '.[] | values'
+jq_probe '{"a":null,"b":1}'              '.a | values'
+
+# ── jq: string ESCAPES survive a path ───────────────────────────────────────
+# `-r` prints a string's CONTENT, so the escapes have to be decoded exactly once.
+jq_probe '{"a":"tab\there"}'             '.a'
+jq_probe '{"a":"nl\nhere"}'              '.a'
+jq_probe '{"a":"q\"uote"}'               '.a'
+jq_probe '{"a":"sl\\ash"}'               '.a'
+jq_probe '{"a":"unié"}'                  '.a'
+jq_probe '["tab\there"]'                 '.'
+jq_probe '{"a":"tab\there"}'             'map(.)'
+
+# ── jq: to_entries / flatten at depth ───────────────────────────────────────
+jq_probe '{"a":null}'                    '. | to_entries'
+jq_probe '{"a":[1],"b":{"c":2}}'         '. | to_entries'
+jq_probe '[[1,[2]],3]'                   '. | flatten'
+jq_probe '[null,[null]]'                 '. | flatten'
+jq_probe '[[["a"]]]'                     '. | flatten'
+jq_probe '{"a":{"b":1}}'                 '.a | keys'
+jq_probe '{"a":[1,2]}'                   '.a | has(1)'
+jq_probe '{"a":{"b":1}}'                 '.a | has("b")'
+
+# ── jq: an EMPTY result stream ──────────────────────────────────────────────
+# `select` that matches nothing must emit NOTHING, not a blank line or a `null`.
+jq_probe '[1,2,3]'                       '.[] | select(. > 5)'
+jq_probe '[1,2,3]'                       'map(select(. > 5))'
+jq_probe '{"a":1}'                       'select(.a > 5) | .a'
+jq_probe '[]'                            'map(select(.))'
+
+# ── jq: operator PRECEDENCE in a value expression ───────────────────────────
+jq_probe '{"a":2}'                       '.a + 3 * 2'
+jq_probe '{"a":10}'                      '.a - 2 - 3'
+jq_probe '{"a":2,"b":3,"c":4}'           '.a * .b + .c'
+jq_probe '{"a":12}'                      '.a / 2 / 3'
+jq_probe '{"a":1,"b":2}'                 '.a < .b and .b < 3'
+
 # ── jq: nested field paths inside select/map ────────────────────────────────
 # `select(.a.b > 1)` used to be refused outright ("nested field path … is
 # unsupported"). jq accepts it, so the refusal was a gap in the claimed subset.
@@ -612,6 +911,78 @@ err_probe '. - 3'
 err_probe '. * 3'
 err_probe '. / 3'
 err_probe '. % 3'
+# jq's CONSTRUCTORS and control flow. SPEC §8's out-of-subset list names builtins
+# and operators but no SYNTAX form, so object construction, array construction,
+# the comma operator, `if/then/else` and plain PARENTHESES were all unlisted and
+# unprobed — while being the constructs a jq user reaches for soonest after the
+# ones already covered. A silent answer from any of them would be the
+# `select(.status == "ok")` shape again: a filter that quietly means something
+# else. (`(.a + 3) * 2` refuses with `unknown verb \`(.a\``, because the body
+# dispatcher routes only `.`/`select(`/`map(`/`has(` to the jq front-end — a hard
+# error either way, which is what the contract requires.)
+err_probe '{a: .a}'
+err_probe '{"k": .a}'
+err_probe '[.a, .b]'
+err_probe '[.a]'
+err_probe '.a, .b'
+err_probe 'if .a then 1 else 2 end'
+err_probe '(.a + 3) * 2'
+err_probe 'empty'
+err_probe 'error'
+# Type/encoding builtins.
+err_probe 'type'
+err_probe 'tojson'
+err_probe 'fromjson'
+err_probe 'tostream'
+err_probe 'input_line_number'
+err_probe '$__loc__'
+err_probe 'builtins'
+err_probe 'halt'
+err_probe 'debug'
+# String builtins beyond the regex family already listed.
+err_probe 'ltrimstr("x")'
+err_probe 'rtrimstr("x")'
+err_probe 'startswith("x")'
+err_probe 'endswith("x")'
+err_probe 'ascii_upcase'
+err_probe 'explode'
+err_probe 'implode'
+err_probe 'join(",")'
+err_probe 'test("x")'
+err_probe 'capture("x")'
+err_probe 'match("x")'
+err_probe 'scan("x")'
+# Array/object builtins that are NOT arb native verbs — the ones that are
+# (`sort`, `min`, `max`, `floor`, `abs`) stay out of this list on purpose: SPEC §8
+# makes a bare alphanumeric word the NATIVE verb, so accepting them is the
+# documented context rule, not a jq leak.
+err_probe 'reverse'
+err_probe 'unique'
+err_probe 'contains("x")'
+err_probe 'inside([1])'
+err_probe 'indices(1)'
+err_probe 'flatten(1)'
+err_probe 'del(.a)'
+err_probe 'path(.a)'
+err_probe 'walk(.)'
+err_probe 'combinations'
+err_probe 'transpose'
+err_probe 'to_entries[]'
+# The type-filter family.
+err_probe 'recurse'
+err_probe 'objects'
+err_probe 'arrays'
+err_probe 'booleans'
+err_probe 'nulls'
+err_probe 'scalars'
+err_probe 'iterables'
+# Math builtins.
+err_probe 'sqrt'
+err_probe 'infinite'
+err_probe 'nan'
+err_probe 'isnan'
+err_probe 'todate'
+err_probe 'now'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
@@ -665,6 +1036,58 @@ type_probe '{"a":"x","b":3}'             '.a - .b'
 type_probe '{"a":[1],"b":3}'             '.a + .b'
 type_probe '{"a":true,"b":3}'            '.a * .b'
 type_probe '{"a":{"x":1},"b":3}'         '.a / .b'
+# A top-level JSON STRING now renders raw (see the passthrough section above), and
+# these pin that the unquote did NOT leak into the stages that must still refuse.
+# If the rendering were applied mid-pipeline instead of at the end, each of these
+# would receive a bare `abc` — a non-JSON line, the one input the type checks
+# cannot refuse — and would answer with exit 0 instead of raising.
+type_probe '"abc"'                       '. | keys'
+type_probe '"abc"'                       '. | add'
+type_probe '"abc"'                       '. | to_entries'
+type_probe '"abc"'                       '. | flatten'
+type_probe '"abc"'                       'map(.)'
+type_probe '"abc"'                       '.[]'
+type_probe '"abc"'                       '.a'
+type_probe '"abc"'                       'has("a")'
+type_probe '"abc"'                       'select(.) | keys'
+# Iterating THROUGH a path onto the wrong type (`.a[].b` where an element is a
+# scalar) — the mid-path iterate above, on data that breaks it.
+type_probe '{"a":[{"b":1}]}'             '.a[].b.c'
+type_probe '{"a":[1,2]}'                 '.a[].b'
+type_probe '{"a":3}'                     '.a[]'
+
+# ── the NON-JSON line: SPEC §8's text carve-out, which had no probes ────────
+# See `text_probe` above for why there is no oracle here and where EXPECTED comes
+# from. SPEC §8, verbatim: "a path yields `null`, an iterate/slice passes the line
+# through, and an EXPRESSION sees the line as jq's string — `. * 2` over a line
+# reading `abc` is `abcabc`."
+#
+# This is the half of the value model that makes arb a line stream rather than a
+# jq clone, it is stated in three clauses, and NOTHING measured it. A change to
+# the jq value path could have silently turned any of these into a hard error —
+# which for a text stream would break every non-JSON pipeline arb exists to serve.
+# rule 1: a path yields null
+text_probe 'abc'          '.a'          'null'
+text_probe 'abc'          '.a.b'        'null'
+text_probe 'hello world'  '.foo'        'null'
+text_probe 'abc'          '.["k"]'      'null'
+text_probe 'abc'          '.[0]'        'null'
+# rule 2: an iterate/slice passes the line through
+text_probe 'abc'          '.[]'         'abc'
+text_probe 'abc'          '.[1:2]'      'abc'
+text_probe 'hello'        '.[:2]'       'hello'
+# rule 3: an expression sees the line as jq's string
+text_probe 'abc'          '. * 2'       'abcabc'
+text_probe 'abc'          '. + "d"'     'abcd'
+text_probe 'abc'          '.'           'abc'
+text_probe 'abc'          '. == "abc"'  'true'
+text_probe 'abc'          '. < "abd"'   'true'
+text_probe 'abc'          'select(. == "abc")' 'abc'
+text_probe 'abc'          'select(.)'   'abc'
+# `length` on a text line is the native verb's character count, which SPEC §8's
+# spelling table records as the deliberate difference from jq's strict `length`.
+text_probe 'abc'          'length'      '3'
+text_probe 'abc'          '. | length'  '3'
 
 # ── xpath / css ─────────────────────────────────────────────────────────────
 XPF=$(mktemp -t arbxp).html
@@ -783,6 +1206,25 @@ css_probe "$XPF" 'body a'      '//body//a/text()'
 # text `sel` dropped, so the documented form failed with "expected a CSS
 # selector" while only the undocumented `sel a` worked. Both spellings are
 # probed now so the documented one cannot silently rot again.
+# The css leg reaches well past the `tag` / `.class` / descendant forms probed
+# above — the child combinator, attribute selectors, a bare class, a selector
+# group and the structural pseudo-classes all compile and answer. None of it was
+# measured, and none of it is named in SPEC §8, which prints only `sel { CSS }`
+# and one `div.card h2` example. Unmeasured support is what round 1 found the css
+# leg in overall, so the working forms are pinned here before they can rot.
+#
+# `.card` is translated as `//div[@class='card']` rather than `//*[…]`: only the
+# div carries that class in this fixture, so the two select the same node set, and
+# `//*` is out of arb's documented subset (it refuses it — see the xp! list).
+css_probe "$XPF" 'div > h2'      '//div/h2/text()'
+css_probe "$XPF" 'div.card > h2' "//div[@class='card']/h2/text()"
+css_probe "$XPF" '.card h2'      "//div[@class='card']//h2/text()"
+css_probe "$XPF" '.other a'      "//div[@class='other']//a/text()"
+css_probe "$XPF" 'a[href]'       '//a[@href]/text()'
+css_probe "$XPF" 'a[rel]'        '//a[@rel]/text()'
+css_probe "$XPF" 'h2, li'        '//h2/text()|//li/text()'
+css_probe "$XPF" 'li:first-child' '//li[1]/text()'
+css_probe "$XPF" 'ul > li'       '//ul/li/text()'
 for pair in 'a|//a/text()' 'div.card h2|//div[@class="card"]//h2/text()'; do
     css="${pair%%|*}"; xp="${pair#*|}"
     a=$("$ARB" -e "out { in.html; sel $css }" <"$XPF" 2>&1)
@@ -796,6 +1238,81 @@ for pair in 'a|//a/text()' 'div.card h2|//div[@class="card"]//h2/text()'; do
         [ "$QUIET" = 1 ] || printf 'DIFF css! %-22s arb: %s\n' "$css" "$(printf %s "$a" | tr '\n' '|')"
     fi
 done
+# ── xpath: the STANDALONE `@attr` step ──────────────────────────────────────
+# SPEC §8 claims it by name and explains it is arb's own reading, not XPath's:
+# "plus a standalone `@attr` step, which is arb's line-stream continuation
+# (`//a; @href`) rather than XPath's `attribute::` axis from the document node."
+# A construct the SPEC singles out for its own sentence had no probe. It is a
+# separate code path from `//a/@href` — two body commands rather than one path —
+# so the two spellings could drift apart without anything noticing.
+sa_probe() {
+    local arb_body="$1" xp="$2" a b
+    command -v xmllint >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.html; $arb_body }" <"$XPF" 2>&1)
+    b=$(xmllint --html --xpath "$xp" "$XPF" 2>/dev/null | perl -ne 'print "$1\n" if /="(.*)"\s*$/')
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   xp@  %-24s (= %s)\n' "$arb_body" "$xp"
+    else
+        fail=$((fail + 1))
+        fails+=("xp@  $arb_body   (xpath equivalent: $xp)"$'\n'"       arb    : $(printf %s "$a" | tr '\n' '|')"$'\n'"       xmllint: $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF xp@  %-24s\n       arb    : %s\n       xmllint: %s\n' \
+            "$arb_body" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+}
+sa_probe '//a; @href'            '//a/@href'
+sa_probe '//div; @class'         '//div/@class'
+sa_probe '//a; @rel'             '//a/@rel'
+sa_probe 'find a; attr href'     '//a/@href'
+sa_probe "//div[@class='card']//a; @href" "//div[@class='card']//a/@href"
+
+# ── css: the `#id` selector, in its own fixture ─────────────────────────────
+# A SEPARATE file so `$XPF` stays byte-identical for every probe above — adding an
+# `id=` to a shared fixture would move the element serialization those probes diff.
+IDF=$(mktemp -t arbid).html
+cat >"$IDF" <<'EOF'
+<html><body><div id="main"><p>Hello</p></div><p id="two">Bye</p></body></html>
+EOF
+# The forms that WORK: an id used as a non-leading part of a compound selector,
+# and the unbraced spelling.
+idw() {
+    local body="$1" xp="$2" a b
+    command -v xmllint >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.html; $body }" <"$IDF" 2>&1)
+    b=$(xmllint --html --xpath "$xp" "$IDF" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   id   %-26s (= %s)\n' "$body" "$xp"
+    else
+        fail=$((fail + 1))
+        fails+=("id   $body   (xpath equivalent: $xp)"$'\n'"       arb    : $(printf %s "$a" | tr '\n' '|')"$'\n'"       xmllint: $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF id   %-26s\n       arb    : %s\n       xmllint: %s\n' \
+            "$body" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+}
+idw 'sel { div#main p }'  '//div[@id="main"]//p/text()'
+idw 'sel #main'           '//div[@id="main"]//p/text()'
+idw 'sel #two'            '//p[@id="two"]/text()'
+idw '//div[@id="main"]//p/text()' '//div[@id="main"]//p/text()'
+# The form that does NOT: a LEADING `#` inside the braced spelling. `#` opens a
+# COMMENT in arb's lexer, so `sel { #main }` lexes to an empty block, `block_text`
+# reconstructs "", and the verb reports "expected a CSS selector" (exit 1).
+#
+# This is round 1's `sel { div.card h2 }` bug in its last unfixed corner. Round 1
+# taught `sel` to rebuild a braced argument's text from the parsed commands, which
+# fixed every selector whose first token survives lexing — but a leading `#` is
+# eaten BEFORE parsing, so there is nothing left to rebuild. `#id` is the single
+# most common selector in CSS, and `sel { CSS }` is the spelling SPEC §8 and the
+# README both print, so the documented form cannot express it.
+#
+# Fixing it properly means either making `#` non-comment inside a block (which
+# would break real comments in every `source { … }` body) or carrying the raw
+# source span on `Arg::Block` (an AST change reaching the lexer, the parser and
+# every block consumer). Neither is a change to make silently, so the probe stays
+# RED and SPEC §8 records the limitation — the same treatment `keys` gets. It is
+# reported every run rather than allowlisted away.
+idw 'sel { #main }'       '//div[@id="main"]//p/text()'
+rm -f "$IDF"
 rm -f "$XPF"
 
 # ── yq leg: no reference tool on this machine ───────────────────────────────
