@@ -29,12 +29,18 @@
 # supported jq/xpath subset, and then says anything OUTSIDE it "is a hard error
 # (`jq: …` / `xpath: …`) … never silently reinterpreted". So:
 #   jq_probe / xp_probe  — an IN-subset construct must byte-match the reference.
+#   css_probe            — the css leg, against the xmllint XPath that selects
+#                          the same elements (there is no css tool here; the
+#                          translation is stated per probe and kept trivial).
 #   err_probe            — an OUT-of-subset construct must EXIT NON-ZERO. Passing
 #                          one silently is the worse failure of the two: a wrong
 #                          answer that looks like an answer. (The earlier
 #                          `select(.status == "ok")` bug was exactly this — the
 #                          quotes were dropped in reconstruction and the filter
 #                          matched nothing instead of erroring.)
+#   type_probe           — an IN-subset construct on the wrong TYPE. Both engines
+#                          must refuse, and the probe CHECKS that jq refuses, so
+#                          a refusal arb invented alone is never scored as parity.
 #
 # Exit status is the number of diverging probes (0 = parity). Divergences are
 # only ever reported, never suppressed: there is no allowlist in this script.
@@ -46,13 +52,38 @@
 #   77d4244243 (the previous corpus, after)   153 pass /  1 diverged / 1 skipped
 #   aac6d4eefa (that corpus, before)          158 pass / 15 diverged / 1 skipped
 #   5ccdf9de36 (that corpus, after)           172 pass /  1 diverged / 1 skipped
-#   HEAD       (THIS corpus)                  173 pass / 11 diverged / 1 skipped
+#   3e19965cd4 (the previous corpus)          173 pass / 11 diverged / 1 skipped
+#   3e19965cd4 (THIS corpus, before)          250 pass / 94 diverged / 1 skipped
+#   HEAD       (THIS corpus, after)           343 pass /  1 diverged / 1 skipped
 #
-# The divergence count went UP because the corpus grew, not because anything
-# regressed. The 10 added are two silent reinterpretations no probe had ever
-# covered — `%` on a fractional operand, and arithmetic against a whole object —
-# both measured against jq and both documented at their probes below. A number
-# that only ever falls is a number being managed rather than measured.
+# The corpus nearly doubled (184 -> 344 probes) and most of the 94 it exposed
+# were one root cause with many faces: every `select(…)`/`map(…)` body and every bare
+# arithmetic stage ran on `crate::expr`, arb's f64 evaluator, where a value can
+# only be a double. jq's model is a JSON value, so the whole type lattice was
+# missing: a compare rendered `1`/`0` instead of `true`/`false`, `select`'s falsy
+# set was `0`/NaN instead of `false`/`null`, `==` was numeric instead of
+# type-strict, `"x" + "y"` was NaN, and every TYPE ERROR answered `null` (or the
+# raw line, or the line's character count) with exit 0 where jq raises. See
+# `src/jqval.rs`, which replaces that path with a jq-value evaluator, and
+# `QueryResult::Error`, the per-line refusal channel several comments in
+# `src/query.rs` used to record as missing.
+#
+# The rest were two separate defects the widened corpus reached for the first
+# time. `sel { div.card h2 }` — the css spelling SPEC §8 and the README both
+# print — did not compile at all: a braced argument lexes to a command BLOCK,
+# whose text `sel` dropped, so the DOCUMENTED form failed with "expected a CSS
+# selector" while only the undocumented `sel div.card h2` worked. And `//*`
+# answered with a node set that is not xmllint's: arb parses with html5ever,
+# which synthesizes the `<head>` an HTML fragment omits, so the wildcard returned
+# an element libxml2's set does not contain. It is not in the documented subset,
+# so it refuses now.
+#
+# The 11 the previous corpus reported were 5 `%`-on-a-fraction (jq truncates both
+# operands to integers first; arb took the f64 remainder — the JQ CONTEXT now
+# follows jq, while arb's own `map x % 3` keeps SPEC §6's f64 rule, the same
+# context gating `keys`/`flatten`/`to_entries` already used), 5 arithmetic
+# against a whole object (now refused), and the bare `keys` spelling collision,
+# which is the ONE that remains and is expected to.
 #
 # The 14 this corpus exposed and this tree closed were one blind spot: every
 # numeric probe used a small value, so the corpus only ever exercised the single
@@ -73,18 +104,8 @@
 # exited ZERO with empty output, a jq construct answering "nothing" instead of
 # refusing.
 #
-# Of the 11 remaining, 10 are the two classes named above and are red pending a
-# decision, not pending a fix nobody has written:
-#   5  `%` on a fractional operand. arb's `%` is the f64 remainder and jq's
-#      truncates to integers first. Which rule the JQ CONTEXT should follow is a
-#      language decision (SPEC §6), and the harness reports the difference rather
-#      than picking a side.
-#   5  arithmetic against a whole object, which jq refuses and arb answers `null`
-#      to with exit 0. This one is a contract violation outright — SPEC §8 says
-#      an out-of-subset construct is a hard error — and the probes are `err_probe`
-#      so they turn green the moment it refuses.
-#
-# The last is the bare `keys` SPELLING COLLISION and is expected to stay:
+# The one remaining divergence is the bare `keys` SPELLING COLLISION and is
+# expected to stay:
 # `keys` is simultaneously a native verb (line-per-key — `stdlib/json.arb` pipes
 # it into `tally`, and its own in-language test pins that) and a jq builtin (one
 # sorted array). In a body a bare alphanumeric word is a NATIVE verb, so the probe
@@ -106,10 +127,10 @@ QUIET=0
 # agree, so whichever one PATH resolved silently moved the score.
 REF_JQ=jq-1.8.2
 JQ=${JQ:-jq}
-# The floor the probe count must clear. `xp_probe` SKIPS silently when xmllint
-# is missing, so without this a machine with no xmllint drops 24 probes and
-# still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=184
+# The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
+# xmllint is missing, so without this a machine with no xmllint drops 46 probes
+# and still reports a clean run. Raise it when the corpus grows; never lower it.
+MIN_PROBES=344
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -124,7 +145,7 @@ have_jq=$("$JQ" --version 2>&1)
     exit 3
 }
 command -v xmllint >/dev/null || {
-    echo "jq_parity: no xmllint — the 24 xpath probes would SKIP and the run" >&2
+    echo "jq_parity: no xmllint — the 46 xpath/css probes would SKIP and the run" >&2
     echo "           would still report clean. Install libxml2." >&2
     exit 3
 }
@@ -165,6 +186,38 @@ err_probe() {
         fails+=("err  $filter — OUT OF SUBSET but accepted silently"$'\n'"       arb: $(printf %s "$out" | tr '\n' '|')")
         [ "$QUIET" = 1 ] || printf 'DIFF err  %-32s accepted silently: %s\n' \
             "$filter" "$(printf %s "$out" | tr '\n' '|')"
+    fi
+}
+
+# type_probe INPUT FILTER — the DATA half of the hard-error contract.
+#
+# `err_probe` covers constructs arb never implemented. This covers the other
+# refusal: a construct that IS in the subset applied to a value of the wrong
+# TYPE (`null | .[]`, `true | length`, `{"a":1} | . + 3`). jq raises on all of
+# them, and SPEC §8 forbids answering where jq refuses — which is exactly what
+# arb used to do, one `null` / raw line / character count at a time.
+#
+# Unlike `err_probe` there IS a reference here and it is CHECKED: a probe whose
+# jq run exits zero is reported as a divergence rather than as a pass, so a
+# refusal arb invented on its own can never be scored as parity. Only the exit
+# statuses are compared — arb anchors its message as `arb: jq: …` while jq prints
+# `jq: error (at <stdin>:N): …`, so the text differs by construction.
+type_probe() {
+    local input="$1" filter="$2" arc jrc out
+    out=$(printf '%s\n' "$input" | "$ARB" -e "out { in.json; $filter }" 2>&1); arc=$?
+    printf '%s\n' "$input" | "$JQ" -rc "$filter" >/dev/null 2>&1; jrc=$?
+    if [ "$jrc" -eq 0 ]; then
+        fail=$((fail + 1))
+        fails+=("type $filter <= $input — MISCLASSIFIED: jq ACCEPTS this, so it is not a type error")
+        [ "$QUIET" = 1 ] || printf 'DIFF type %-30s %s (jq accepts it — probe is wrong)\n' "$filter" "$input"
+    elif [ "$arc" -ne 0 ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   type %-30s %s (both refused)\n' "$filter" "$input"
+    else
+        fail=$((fail + 1))
+        fails+=("type $filter <= $input — jq REFUSES, arb answered"$'\n'"       arb: $(printf %s "$out" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF type %-30s %s\n       arb answered: %s\n' \
+            "$filter" "$input" "$(printf %s "$out" | tr '\n' '|')"
     fi
 }
 
@@ -381,6 +434,126 @@ jq_probe '{"n":100.75}'                  '.n % 4'
 # the band the two share.
 jq_probe '{"n":7}'                       '.n % 3'
 
+# ── jq: per-element arithmetic between two FIELDS (SPEC §8 names `.a + .b`) ──
+# The corpus only ever put a LITERAL on the right (`.n * 1`), so the spelling the
+# SPEC actually prints was unmeasured. `+` is the interesting one: jq overloads it
+# per type — string concat, array concat, object merge, and null as the identity
+# on either side — where an f64 evaluator reads every non-number as NaN and
+# answers `null` to all five.
+jq_probe '{"a":3,"b":4}'                 '.a + .b'
+jq_probe '{"a":3,"b":4}'                 '.a - .b'
+jq_probe '{"a":3,"b":4}'                 '.a * .b'
+jq_probe '{"a":3,"b":4}'                 '.a / .b'
+jq_probe '{"a":7,"b":4}'                 '.a % .b'
+jq_probe '{"a":3}'                       '.a * 2 + 1'
+jq_probe '{"a":"x","b":"y"}'             '.a + .b'
+jq_probe '{"a":[1],"b":[2]}'             '.a + .b'
+jq_probe '{"a":{"x":1},"b":{"x":9,"y":2}}' '.a + .b'
+jq_probe '{"a":{"x":{"p":1}},"b":{"x":{"q":2}}}' '.a * .b'
+jq_probe '{"a":[1,2,3],"b":[2]}'         '.a - .b'
+jq_probe '{"a":"a,b,c","b":","}'         '.a / .b'
+jq_probe '{"a":"ab","b":3}'              '.a * .b'
+jq_probe '{"a":null}'                    '.a + 1'
+jq_probe '{"a":1}'                       '.a + null'
+jq_probe '[{"a":1,"b":2},{"a":3,"b":4}]' 'map(.a + .b)'
+jq_probe '[{"a":1,"b":2},{"a":3,"b":4}]' '.[] | select(.a + .b > 4)'
+
+# ── jq: a comparison used as a VALUE ────────────────────────────────────────
+# jq's compare yields a BOOLEAN. arb's f64 evaluator yielded 1/0, so `map(. > 1)`
+# rendered `[0,1,1]` against jq's `[false,true,true]` — a wrong value in the
+# claimed subset that no probe covered, because every earlier compare sat inside
+# a `select(…)` where only its truthiness was ever observed.
+jq_probe '[1,2,3]'                       'map(. > 1)'
+jq_probe '[1,2,3]'                       '.[] | . > 1'
+jq_probe '{"a":1}'                       '.a == 1'
+jq_probe '{"a":1}'                       '.a != 1'
+jq_probe '["a","b"]'                     'map(. == "a")'
+jq_probe '{"a":1,"b":2}'                 '.a < .b'
+jq_probe '{"a":1,"b":2}'                 '.a and .b'
+jq_probe '{"a":null,"b":false}'          '.a or .b'
+
+# ── jq: `select` truthiness and type-strict equality ─────────────────────────
+# jq's falsy set is exactly `false` and `null`. The f64 evaluator's was `0` and
+# NaN, which inverted BOTH ends: `select(.a)` dropped `0` and kept `null`.
+jq_probe '{"a":0}'                       'select(.a)'
+jq_probe '{"a":""}'                      'select(.a)'
+jq_probe '{"a":[]}'                      'select(.a)'
+jq_probe '{"a":{}}'                      'select(.a)'
+jq_probe '{"a":null}'                    'select(.a)'
+jq_probe '{"a":false}'                   'select(.a)'
+jq_probe '{"a":true}'                    'select(.a)'
+# `==` compares TYPE as well as value, and an absent key is `null`.
+jq_probe '{"a":"1"}'                     'select(.a == 1)'
+jq_probe '{"a":1}'                       'select(.a == "1")'
+jq_probe '{"a":true}'                    'select(.a == true)'
+jq_probe '{"a":1}'                       'select(.b == null)'
+jq_probe '{"a":[1]}'                     'select(.a == [1])'
+jq_probe '{"a":1}'                       'select(.a and true)'
+
+# ── jq: nested field paths inside select/map ────────────────────────────────
+# `select(.a.b > 1)` used to be refused outright ("nested field path … is
+# unsupported"). jq accepts it, so the refusal was a gap in the claimed subset.
+jq_probe '{"a":{"b":2}}'                 'select(.a.b > 1)'
+jq_probe '{"a":{"b":2}}'                 'select(.a.b > 5)'
+jq_probe '[{"a":{"b":2}}]'               'map(.a.b)'
+jq_probe '[{"a":{"b":2}},{"a":{"b":9}}]' 'map(.a.b) | add'
+
+# ── jq: deeper paths and pipes ──────────────────────────────────────────────
+jq_probe '{"a":{"b":{"c":1}}}'           '.a | .b | .c'
+jq_probe '{"a":[{"b":5}]}'               '.a[0].b'
+jq_probe '{"a":{"b":1}}'                 '.["a"]["b"]'
+jq_probe '{"a":{"b":1}}'                 '.a["b"]'
+jq_probe '{"a b":{"c":1}}'               '.["a b"].c'
+jq_probe '{"a":[[1,2],[3]]}'             '.a[1][0]'
+
+# ── jq: iterate over every container shape ──────────────────────────────────
+jq_probe '{"a":1,"b":2}'                 '.[]'
+jq_probe '{}'                            '.[]'
+jq_probe '[]'                            '.[]'
+jq_probe '{"a":{"x":1,"y":2}}'           '.a[]'
+jq_probe '[[1,2],[3]]'                   '.[] | .[]'
+
+# ── jq: slice edges ─────────────────────────────────────────────────────────
+jq_probe '[1,2,3]'                       '.[5:9]'
+jq_probe '[1,2,3]'                       '.[3:1]'
+jq_probe '[1,2,3,4,5]'                   '.[-3:-1]'
+jq_probe '[1,2,3]'                       '.[-9:]'
+jq_probe '[1,2,3]'                       '.[0:0]'
+jq_probe '"hello"'                       '.[:2]'
+jq_probe '"hello"'                       '.[-2:]'
+jq_probe 'null'                          '.[1:2]'
+
+# ── jq: the builtins reached through the jq front-end, at their edges ───────
+# Every one of these routes through `. | …`, which is the jq CONTEXT: SPEC §8's
+# rule is that a body command beginning with a jq literal answers as jq does,
+# while the bare alphanumeric spelling stays arb's native verb.
+jq_probe '[]'                            '. | add'
+jq_probe '[null,null]'                   '. | add'
+jq_probe '{"a":1,"b":2}'                 '. | add'
+jq_probe '["a","b"]'                     '. | add'
+jq_probe '[1,2,3]'                       '. | add'
+jq_probe '[]'                            '. | length'
+jq_probe '{}'                            '. | length'
+jq_probe '""'                            '. | length'
+jq_probe 'null'                          '. | length'
+jq_probe '-7'                            '. | length'
+jq_probe '3.5'                           '. | length'
+jq_probe '[]'                            '. | keys'
+jq_probe '{}'                            '. | keys'
+jq_probe '{"b":1,"A":2,"a":3}'           '. | keys'
+jq_probe '[7,8]'                         '. | keys'
+jq_probe '[]'                            '. | to_entries'
+jq_probe '[7,8]'                         '. | to_entries'
+jq_probe '{"a":{"b":1}}'                 '. | to_entries'
+jq_probe '[]'                            '. | flatten'
+jq_probe '[[[]]]'                        '. | flatten'
+jq_probe '{"a":[1,2]}'                   '. | flatten'
+jq_probe '[1,2]'                         'has(0)'
+jq_probe '[1,2]'                         'has(5)'
+jq_probe 'null'                          'has("a")'
+jq_probe '[1,null]'                      '.[] | values'
+jq_probe 'false'                         'values'
+
 # ── jq: the hard-error half of the contract (SPEC §8) ───────────────────────
 # Real jq answers every one of these. arb's documented subset does not include
 # them, and SPEC §8 promises a hard error rather than a silent reinterpretation —
@@ -440,6 +613,59 @@ err_probe '. * 3'
 err_probe '. / 3'
 err_probe '. % 3'
 
+# ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
+# Every one of these is an IN-subset construct applied to the wrong type. jq
+# raises on all of them (the probe checks that, so none of these refusals is one
+# arb invented). Before this wave arb answered every single one with exit 0:
+# `null` for an index, the raw line for an iterate or a slice, the line's
+# character count for `length` on a boolean, `false` for `has` on a string.
+# A wrong answer that looks like an answer is the worst shape a gap can take —
+# nothing in the output says the query did not do what it said.
+type_probe 'null'                        '.[]'
+type_probe '3'                           '.[]'
+type_probe '"abc"'                       '.[]'
+type_probe 'true'                        '.[]'
+type_probe '{"a":1}'                     '.[0]'
+type_probe '[1,2]'                       '.["a"]'
+type_probe '"hello"'                     '.[1]'
+type_probe '3'                           '.a'
+type_probe '"s"'                         '.a'
+type_probe 'true'                        '.a'
+type_probe '[1,2]'                       '.a'
+type_probe '[1,2]'                       '.a.b'
+type_probe '3'                           '.[1:2]'
+type_probe 'true'                        '.[1:2]'
+type_probe '{"a":1}'                     '.[1:2]'
+type_probe 'null'                        '. | add'
+type_probe '3'                           '. | add'
+type_probe '[1,"a"]'                     '. | add'
+type_probe 'true'                        '. | length'
+type_probe 'null'                        '. | keys'
+type_probe '3'                           '. | keys'
+type_probe '"s"'                         '. | keys'
+type_probe 'null'                        '. | to_entries'
+type_probe '3'                           '. | to_entries'
+type_probe 'null'                        '. | flatten'
+type_probe '3'                           '. | flatten'
+type_probe 'null'                        'map(.)'
+type_probe '3'                           'map(.)'
+type_probe '"s"'                         'map(.)'
+type_probe '"s"'                         'has("a")'
+type_probe '3'                           'has("a")'
+type_probe '[1]'                         'has("a")'
+type_probe '{"a":1}'                     'has(0)'
+# Division and remainder by zero. jq refuses BOTH by name; arb answered `0` and
+# `null`. `% 0.5` counts too — jq truncates the divisor to an integer first, so
+# a fractional divisor below 1 IS a zero divisor.
+type_probe '{"n":6}'                     '.n / 0'
+type_probe '{"n":6}'                     '.n % 0'
+type_probe '{"n":7}'                     '.n % 0.5'
+# Mixed-type arithmetic between two fields.
+type_probe '{"a":"x","b":3}'             '.a - .b'
+type_probe '{"a":[1],"b":3}'             '.a + .b'
+type_probe '{"a":true,"b":3}'            '.a * .b'
+type_probe '{"a":{"x":1},"b":3}'         '.a / .b'
+
 # ── xpath / css ─────────────────────────────────────────────────────────────
 XPF=$(mktemp -t arbxp).html
 cat >"$XPF" <<'EOF'
@@ -480,11 +706,29 @@ xp_probe "$XPF" "//div[contains(@class,'card')]/h2/text()"
 # Union — SPEC §8's prose says "no union", but the engine implements it and it
 # agrees with xmllint, so the probe pins the behaviour and the prose was corrected.
 xp_probe "$XPF" '//h2|//li'
+# Predicate + descendant + accessor in one path, both quote styles on
+# `contains()`, a three-branch union, and a rooted path with a `//` in the
+# middle. Each combines constructs the corpus only ever probed in isolation.
+xp_probe "$XPF" "//div[@class='card']//a/text()"
+xp_probe "$XPF" '//div[@class="other"]/h2/text()'
+xp_probe "$XPF" '//a[contains(@href,"x")]/text()'
+xp_probe "$XPF" "//a[@rel='nf']/text()"
+xp_probe "$XPF" "//div[@class='card']//a/@href"
+xp_probe "$XPF" '//h2|//li|//span'
+xp_probe "$XPF" '/html/body//a/@href'
+xp_probe "$XPF" '//div/span/text()'
+xp_probe "$XPF" '//ul//li/text()'
+xp_probe "$XPF" '//div[@class]/h2/text()'
+xp_probe "$XPF" '//li'
+xp_probe "$XPF" '//span'
 
 # xpath: out-of-subset location paths must be a hard error, not a guess. Same
 # reasoning as err_probe above; xmllint answers all of these.
 for xbad in '//a[1]' '//a[position()=1]' '//a/../span' '//a[text()="X"]' '//a/@*' \
-            '//a[last()]' 'ancestor::div' '//a[@href][2]'; do
+            '//a[last()]' 'ancestor::div' '//a[@href][2]' \
+            '//*' 'count(//a)' '//@href' '//a[@href and @rel]' \
+            '//a[@href!="/x"]' '//a/following-sibling::span' \
+            '//a[contains(text(),"X")]' '//a[not(@rel)]' 'normalize-space(//a)'; do
     if "$ARB" -e "out { in.html; $xbad }" <"$XPF" >/dev/null 2>&1; then
         fail=$((fail + 1))
         fails+=("xp!  $xbad — OUT OF SUBSET but accepted silently")
@@ -492,6 +736,64 @@ for xbad in '//a[1]' '//a[position()=1]' '//a/../span' '//a[text()="X"]' '//a/@*
     else
         pass=$((pass + 1))
         [ "$QUIET" = 1 ] || printf 'ok   xp!  %-24s (refused)\n' "$xbad"
+    fi
+done
+
+# ── css leg: `sel { CSS }` ──────────────────────────────────────────────────
+# The README's headline claim is a jq/xpath/CSS/yq superset, and the css leg had
+# ZERO probes — a whole third of the claim scored by nothing at all, which is a
+# worse state than the yq leg, because yq at least REPORTS itself as unverified.
+#
+# There is no css tool on this machine, so each probe carries the XPath that
+# selects the same elements and the reference is xmllint on that path. That is a
+# translation, so it is stated per probe and kept trivial: only tag, `.class`,
+# and descendant combinators appear, whose XPath equivalents are exact.
+#
+# `sel` emits an element's TEXT CONTENT, so every probe picks elements with a
+# single text child, where the text content and xmllint's `text()` node are the
+# same string. That keeps the comparison about which elements were SELECTED — a
+# selector matching the wrong element still shows up as different text.
+css_probe() {
+    local file="$1" css="$2" xp="$3" a b
+    command -v xmllint >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.html; sel { $css } }" <"$file" 2>&1)
+    b=$(xmllint --html --xpath "$xp" "$file" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   css  %-22s (= %s)\n' "$css" "$xp"
+    else
+        fail=$((fail + 1))
+        fails+=("css  $css   (xpath equivalent: $xp)"$'\n'"       arb    : $(printf %s "$a" | tr '\n' '|')"$'\n'"       xmllint: $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF css  %-22s (= %s)\n       arb    : %s\n       xmllint: %s\n' \
+            "$css" "$xp" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+}
+css_probe "$XPF" 'h2'          '//h2/text()'
+css_probe "$XPF" 'a'           '//a/text()'
+css_probe "$XPF" 'li'          '//li/text()'
+css_probe "$XPF" 'span'        '//span/text()'
+css_probe "$XPF" 'div.card h2' "//div[@class='card']//h2/text()"
+css_probe "$XPF" 'div.other a' "//div[@class='other']//a/text()"
+css_probe "$XPF" 'ul li'       '//ul//li/text()'
+css_probe "$XPF" 'div a'       '//div//a/text()'
+css_probe "$XPF" 'div h2'      '//div//h2/text()'
+css_probe "$XPF" 'body a'      '//body//a/text()'
+# `sel { … }` is the spelling SPEC §8 and the README both print, and it was the
+# one that did NOT compile — a braced argument lexes to a command BLOCK, whose
+# text `sel` dropped, so the documented form failed with "expected a CSS
+# selector" while only the undocumented `sel a` worked. Both spellings are
+# probed now so the documented one cannot silently rot again.
+for pair in 'a|//a/text()' 'div.card h2|//div[@class="card"]//h2/text()'; do
+    css="${pair%%|*}"; xp="${pair#*|}"
+    a=$("$ARB" -e "out { in.html; sel $css }" <"$XPF" 2>&1)
+    b=$(xmllint --html --xpath "$xp" "$XPF" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   css! %-22s (unbraced spelling)\n' "$css"
+    else
+        fail=$((fail + 1))
+        fails+=("css! sel $css (unbraced) — arb: $(printf %s "$a" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF css! %-22s arb: %s\n' "$css" "$(printf %s "$a" | tr '\n' '|')"
     fi
 done
 rm -f "$XPF"
