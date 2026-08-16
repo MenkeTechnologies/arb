@@ -555,6 +555,7 @@ fn eval_spec(line: &str, buffer: &Arc<Mutex<Vec<String>>>, start: Instant) {
                     QueryResult::Scalar(v) => format!("= {v}"),
                     QueryResult::Lines(ls) => format!("{} line(s)", ls.len()),
                     QueryResult::Pairs(p) => format!("{} group(s)", p.len()),
+                    QueryResult::Error(e) => format!("! {e}"),
                 };
                 println!(
                     "  {} {} {arrow} source[{} op] {}",

@@ -27,7 +27,10 @@ pub enum FieldSel {
     /// arb's native `field` yields "" and falls back to logfmt. Keeping the two
     /// apart lets a jq path answer like jq without changing what `field NAME`
     /// does to a plain-text or logfmt stream.
-    JqKey(Vec<String>),
+    /// Segments are TYPED, unlike `Key`'s flat strings: `.["0"]` is an object
+    /// key and `.[0]` is an array index, and jq keeps them apart (`[1,2] |
+    /// .["0"]` is an error, not the first element).
+    JqKey(Vec<crate::jqval::Seg>),
 }
 
 #[derive(Debug, Clone)]
@@ -146,9 +149,11 @@ pub enum QueryOp {
     /// Native `has KEY` verb: retain only JSON-object lines that contain KEY; all
     /// other lines (missing key, non-object, unparseable) are dropped.
     Has(String),
-    /// jq `has(KEY)`: emit `true`/`false` per input line — `true` iff the line is a
-    /// JSON object containing KEY, else `false`. A per-input boolean, not a filter.
-    HasKey(String),
+    /// jq `has(KEY)`: emit `true`/`false` per input line. The argument is a jq
+    /// VALUE, not a name — jq accepts a string key on an object and a numeric
+    /// index on an array, and refuses every other pairing by name ("Cannot check
+    /// whether array has a string key") rather than answering `false`.
+    HasKey(Value),
     /// jq to_entries: expand each JSON object line into one `{"key":<k>,"value":<v>}` line per key (BTreeMap key order); non-object lines pass through.
     Entries,
     /// The jq front-end's `to_entries`. Same mapping as `Entries`, but emits the
@@ -166,6 +171,28 @@ pub enum QueryOp {
     /// Scoped per input line, so two input lines stay two output arrays. (Iterate
     /// WITHOUT the re-wrap is jq's own `.[] | f`, which arb also accepts.)
     JqMap(Vec<QueryOp>),
+    /// The jq front-end's `.[]`. Same expansion as `Each`, but a line that parses
+    /// to a NON-iterable JSON value (a scalar or `null`) is an error rather than a
+    /// pass-through — jq raises "Cannot iterate over null (null)" and SPEC §8
+    /// forbids answering where jq refuses. Native `each` keeps the pass-through,
+    /// because it runs over plain-text streams too.
+    JqEach,
+    /// The jq front-end's `add` — `reduce .[] as $x (null; . + $x)`, so an EMPTY
+    /// array is `null` (native `add` documents `[] -> ""`) and a mixed-type array
+    /// raises the same error `+` would. Iterates an object's values.
+    JqAdd,
+    /// The jq front-end's `length`. Same JSON-aware measure as `JsonLen`, except a
+    /// boolean is an error ("boolean (true) has no length") instead of falling back
+    /// to the raw line's character count.
+    JqLen,
+    /// jq `select(f)` over jq VALUE semantics: keep the line when `f` is truthy,
+    /// where only `false` and `null` are falsy. Distinct from native `Where`,
+    /// which evaluates an f64 predicate over a numeric line stream.
+    JqSelect(crate::jqval::Expr),
+    /// A jq value expression stage (`.a + .b`, `. * 2`, `. > 1`). Distinct from
+    /// native `Map`, which computes an f64: this yields a jq VALUE, so a compare
+    /// renders `true`/`false` and a string `+` concatenates.
+    JqCalc(crate::jqval::Expr),
     /// jq `flatten`: recursively flatten a JSON-array line to its non-array leaves,
     /// emitting one leaf per line (matching jq's full-depth flatten, unlike `each`
     /// which descends a single level). Non-array lines pass through unchanged.
@@ -333,12 +360,27 @@ pub enum QueryOp {
     Bins(usize),
 }
 
-/// The output of evaluating a pipeline: lines, a scalar, or grouped counts.
+/// The output of evaluating a pipeline: lines, a scalar, grouped counts — or a
+/// runtime REFUSAL.
+///
+/// `Error` is the per-line error channel the jq front-end needs. SPEC §8 promises
+/// that a construct outside the documented subset "is a hard error … never
+/// silently reinterpreted", and a type mismatch (`{"a":1} | . + 3`, `null | .[]`,
+/// `true | length`) is only discoverable once the DATA arrives. Without this
+/// variant every such case had to answer something — `null`, the raw line, the
+/// line's character count — which is the exact failure the SPEC rules out, and
+/// which several comments in this file used to record as "arb has no per-line
+/// error channel".
+///
+/// Only the jq front-end raises it. Native verbs run over plain-text streams and
+/// keep their documented pass-through behaviour.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryResult {
     Lines(Vec<String>),
     Scalar(f64),
     Pairs(Vec<(String, u64)>),
+    /// A refused pipeline. The message is already `jq: …`-anchored.
+    Error(String),
 }
 
 /// Evaluate `ops` against `lines`. `elapsed_secs` feeds `rate`.
@@ -349,6 +391,20 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Match(re) => cur.retain(|l| re.is_match(l)),
             QueryOp::Reject(re) => cur.retain(|l| !re.is_match(l)),
             QueryOp::Field(sel) => {
+                if let FieldSel::JqKey(segs) = sel {
+                    for l in cur.iter_mut() {
+                        match jq_value(l) {
+                            // A line that is not JSON at all has no jq TYPE to
+                            // check, so it keeps the documented miss rendering.
+                            None => *l = "null".to_string(),
+                            Some(v) => match crate::jqval::get_path(&v, segs) {
+                                Ok(r) => *l = jq_to_string(&r),
+                                Err(e) => return QueryResult::Error(format!("jq: {e}")),
+                            },
+                        }
+                    }
+                    continue;
+                }
                 for l in cur.iter_mut() {
                     *l = extract_field(l, sel);
                 }
@@ -360,6 +416,82 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         .map(|&n| nth_col(l, n))
                         .collect::<Vec<_>>()
                         .join(" ");
+                }
+            }
+            QueryOp::JqEach => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    match jq_value(l) {
+                        Some(Value::Array(arr)) => out.extend(arr.iter().map(jq_to_string)),
+                        // jq `.[]` over an object iterates its VALUES.
+                        Some(Value::Object(m)) => out.extend(m.values().map(jq_to_string)),
+                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
+                        None => out.push(l.clone()),
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::JqSelect(e) => {
+                let mut out = Vec::with_capacity(cur.len());
+                for l in &cur {
+                    match crate::jqval::eval(e, &jq_scalar(l)) {
+                        Ok(v) => {
+                            if crate::jqval::truthy(&v) {
+                                out.push(l.clone());
+                            }
+                        }
+                        Err(msg) => return QueryResult::Error(format!("jq: {msg}")),
+                    }
+                }
+                cur = out;
+            }
+            QueryOp::JqCalc(e) => {
+                for l in cur.iter_mut() {
+                    match crate::jqval::eval(e, &jq_scalar(l)) {
+                        Ok(v) => *l = crate::jqval::render(&v),
+                        Err(msg) => return QueryResult::Error(format!("jq: {msg}")),
+                    }
+                }
+            }
+            QueryOp::JqAdd => {
+                for l in cur.iter_mut() {
+                    // jq `add` is `reduce .[] as $x (null; . + $x)`: it starts from
+                    // null (so `[]` is `null`, not ""), folds with the SAME `+` a
+                    // jq expression uses (so `[1,"a"]` raises rather than
+                    // stringifying), and iterates an object's values.
+                    let items: Vec<Value> = match jq_value(l) {
+                        Some(Value::Array(a)) => a,
+                        Some(Value::Object(m)) => m.into_iter().map(|(_, v)| v).collect(),
+                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
+                        None => continue,
+                    };
+                    let mut acc = Value::Null;
+                    for it in &items {
+                        match crate::jqval::binop(crate::jqval::Op::Add, &acc, it) {
+                            Ok(v) => acc = v,
+                            Err(msg) => return QueryResult::Error(format!("jq: {msg}")),
+                        }
+                    }
+                    *l = crate::jqval::render(&acc);
+                }
+            }
+            QueryOp::JqLen => {
+                for l in cur.iter_mut() {
+                    *l = match jq_value(l) {
+                        Some(Value::Array(a)) => a.len().to_string(),
+                        Some(Value::Object(m)) => m.len().to_string(),
+                        Some(Value::String(s)) => s.chars().count().to_string(),
+                        // jq's `length` on a number is its ABSOLUTE value.
+                        Some(Value::Number(n)) => fmt_num(n.as_f64().unwrap_or(0.0).abs()),
+                        Some(Value::Null) => "0".to_string(),
+                        Some(v @ Value::Bool(_)) => {
+                            return QueryResult::Error(format!(
+                                "jq: {} ({v}) has no length",
+                                crate::jqval::tname(&v)
+                            ));
+                        }
+                        None => l.chars().count().to_string(),
+                    };
                 }
             }
             QueryOp::Each => {
@@ -467,7 +599,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                             let arr: Vec<Value> = (0..a.len()).map(Value::from).collect();
                             *l = Value::Array(arr).to_string();
                         }
-                        _ => {}
+                        // A scalar (or null) has no keys and jq says so by name.
+                        Ok(v) => return QueryResult::Error(has_no_keys(&v)),
+                        Err(_) => {}
                     }
                 }
             }
@@ -733,12 +867,27 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::HasKey(key) => {
                 // jq `has`: a per-input boolean test, NOT a filter — every input
-                // yields exactly one `true`/`false` line.
+                // yields exactly one `true`/`false` line. The key must MATCH the
+                // container: a string key on an object, a numeric index on an
+                // array. Every other pairing is an error in jq, where arb used to
+                // answer `false` — including `[1,2] | has(0)`, which is `true`.
                 for l in cur.iter_mut() {
-                    let present = matches!(
-                        serde_json::from_str::<Value>(l),
-                        Ok(Value::Object(ref m)) if m.contains_key(key)
-                    );
+                    let present = match (jq_value(l), key) {
+                        (Some(Value::Object(m)), Value::String(k)) => m.contains_key(k),
+                        (Some(Value::Array(a)), Value::Number(n)) => {
+                            let i = n.as_f64().unwrap_or(-1.0);
+                            i >= 0.0 && (i as usize) < a.len()
+                        }
+                        // jq answers `false` for null rather than raising.
+                        (Some(Value::Null), _) | (None, _) => false,
+                        (Some(v), k) => {
+                            return QueryResult::Error(format!(
+                                "jq: Cannot check whether {} has a {} key",
+                                crate::jqval::tname(&v),
+                                crate::jqval::tname(k)
+                            ));
+                        }
+                    };
                     *l = if present { "true" } else { "false" }.to_string();
                 }
             }
@@ -761,19 +910,28 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 cur = out;
             }
             QueryOp::JqEntries => {
+                fn entry(k: Value, v: Value) -> Value {
+                    let mut e = serde_json::Map::new();
+                    e.insert("key".into(), k);
+                    e.insert("value".into(), v);
+                    Value::Object(e)
+                }
                 for l in cur.iter_mut() {
-                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(l) {
-                        let arr: Vec<Value> = m
+                    let arr: Vec<Value> = match jq_value(l) {
+                        Some(Value::Object(m)) => m
                             .into_iter()
-                            .map(|(k, v)| {
-                                let mut e = serde_json::Map::new();
-                                e.insert("key".into(), Value::String(k));
-                                e.insert("value".into(), v);
-                                Value::Object(e)
-                            })
-                            .collect();
-                        *l = Value::Array(arr).to_string();
-                    }
+                            .map(|(k, v)| entry(Value::String(k), v))
+                            .collect(),
+                        // jq's `to_entries` also walks an ARRAY, keying by index.
+                        Some(Value::Array(a)) => a
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| entry(Value::from(i), v))
+                            .collect(),
+                        Some(v) => return QueryResult::Error(has_no_keys(&v)),
+                        None => continue,
+                    };
+                    *l = Value::Array(arr).to_string();
                 }
             }
             QueryOp::JqMap(inner) => {
@@ -783,14 +941,15 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 // both loses the array and merges the inputs together.
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
-                    let elems: Vec<String> = match serde_json::from_str::<Value>(l) {
-                        Ok(Value::Array(a)) => a.iter().map(jq_to_string).collect(),
+                    let elems: Vec<String> = match jq_value(l) {
+                        Some(Value::Array(a)) => a.iter().map(jq_to_string).collect(),
                         // jq `map` over an object maps its VALUES (and still
                         // returns an array).
-                        Ok(Value::Object(m)) => m.values().map(jq_to_string).collect(),
-                        // Not iterable: real jq errors. A line stream has no way to
-                        // raise per-line, so the line passes through untouched.
-                        _ => {
+                        Some(Value::Object(m)) => m.values().map(jq_to_string).collect(),
+                        // Not iterable: jq raises, and so does arb now.
+                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
+                        // Not JSON at all: no jq type to check, so it passes.
+                        None => {
                             out.push(l.clone());
                             continue;
                         }
@@ -801,6 +960,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         QueryResult::Pairs(ps) => {
                             ps.iter().map(|(k, c)| format!("{k}\t{c}")).collect()
                         }
+                        // An inner refusal is the whole `map`'s refusal.
+                        e @ QueryResult::Error(_) => return e,
                     };
                     out.push(jq_array_json(&mapped));
                 }
@@ -833,11 +994,17 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     }
                 }
                 for l in cur.iter_mut() {
-                    if let Ok(v @ Value::Array(_)) = serde_json::from_str::<Value>(l) {
-                        let mut out = Vec::new();
-                        leaves(&v, &mut out);
-                        *l = Value::Array(out).to_string();
-                    }
+                    // jq's `flatten` is defined over `reduce .[] as $x`, so it
+                    // iterates an OBJECT's values too and refuses a scalar.
+                    let items: Vec<Value> = match jq_value(l) {
+                        Some(Value::Array(a)) => a,
+                        Some(Value::Object(m)) => m.into_iter().map(|(_, v)| v).collect(),
+                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
+                        None => continue,
+                    };
+                    let mut out = Vec::new();
+                    items.iter().for_each(|e| leaves(e, &mut out));
+                    *l = Value::Array(out).to_string();
                 }
             }
             QueryOp::Add => {
@@ -1177,17 +1344,30 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::JsonSlice(a, b) => {
                 for l in cur.iter_mut() {
-                    match serde_json::from_str::<Value>(l) {
-                        Ok(Value::Array(arr)) => {
+                    match jq_value(l) {
+                        Some(Value::Array(arr)) => {
                             let (lo, hi) = slice_bounds(*a, *b, arr.len());
                             *l = Value::Array(arr[lo..hi].to_vec()).to_string();
                         }
-                        Ok(Value::String(s)) => {
+                        Some(Value::String(s)) => {
                             let chars: Vec<char> = s.chars().collect();
                             let (lo, hi) = slice_bounds(*a, *b, chars.len());
                             *l = chars[lo..hi].iter().collect();
                         }
-                        _ => {} // non-array/string lines pass through
+                        // jq slices null to null, and refuses every other type —
+                        // it reports the slice as the OBJECT it is internally.
+                        Some(Value::Null) => *l = "null".to_string(),
+                        Some(v) => {
+                            let bound =
+                                |x: &Option<i64>| x.map_or("null".to_string(), |n| n.to_string());
+                            return QueryResult::Error(format!(
+                                "jq: Cannot index {} with object ({{\"start\":{},\"end\":{}}})",
+                                crate::jqval::tname(&v),
+                                bound(a),
+                                bound(b)
+                            ));
+                        }
+                        None => {} // not JSON at all: passes through
                     }
                 }
             }
@@ -1465,6 +1645,11 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
                 | QueryOp::Field(_)
                 | QueryOp::Fields(_)
                 | QueryOp::Each
+                | QueryOp::JqEach
+                | QueryOp::JqSelect(_)
+                | QueryOp::JqCalc(_)
+                | QueryOp::JqAdd
+                | QueryOp::JqLen
                 | QueryOp::Keys
                 | QueryOp::JqKeys
                 | QueryOp::Vals
@@ -1528,9 +1713,16 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
 }
 
 /// Extract a field from a line per the selector.
+///
+/// `JqKey` is NOT handled here: a jq path can refuse (`3 | .a`), and a `String`
+/// return has nowhere to put the refusal, so `eval`'s `Field` arm resolves it
+/// through `jqval::get_path` and raises `QueryResult::Error` instead.
 fn extract_field(line: &str, sel: &FieldSel) -> String {
     match sel {
         FieldSel::Col(n) => nth_col(line, *n).to_string(),
+        FieldSel::JqKey(segs) => jq_value(line)
+            .and_then(|v| crate::jqval::get_path(&v, segs).ok())
+            .map_or_else(|| "null".to_string(), |v| jq_to_string(&v)),
         FieldSel::Key(path) => serde_json::from_str::<Value>(line)
             .ok()
             .and_then(|v| walk(v, path))
@@ -1543,13 +1735,31 @@ fn extract_field(line: &str, sel: &FieldSel) -> String {
                 }
             })
             .unwrap_or_default(),
-        // jq: a miss is `null`, and so is an explicit null — the two are
-        // indistinguishable in jq, so both render the same way here.
-        FieldSel::JqKey(path) => serde_json::from_str::<Value>(line)
-            .ok()
-            .and_then(|v| walk(v, path))
-            .map_or_else(|| "null".to_string(), |v| jq_to_string(&v)),
     }
+}
+
+/// Parse a line as JSON for a jq-context op. `None` means the line is not JSON
+/// at all — arb's stream is TEXT, so such a line has no jq type to check and
+/// every caller keeps its documented pass-through instead of raising.
+fn jq_value(line: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(line).ok()
+}
+
+/// The current value for a jq EXPRESSION stage. Unlike [`jq_value`] there is no
+/// "not JSON" case: a bare text line is jq's string, so `"ab" | . * 2` gives
+/// `abab` the way jq does.
+fn jq_scalar(line: &str) -> Value {
+    jq_value(line).unwrap_or_else(|| Value::String(line.to_string()))
+}
+
+/// jq's message for iterating something that is not an array or object.
+fn cannot_iterate(v: &Value) -> String {
+    format!("jq: Cannot iterate over {} ({v})", crate::jqval::tname(v))
+}
+
+/// jq's message for asking a non-container for its keys.
+fn has_no_keys(v: &Value) -> String {
+    format!("jq: {} ({v}) has no keys", crate::jqval::tname(v))
 }
 
 /// Render a JSON value the way jq's `-r`/`-c` pair does: a string raw, a null as
@@ -1894,7 +2104,7 @@ fn nums(lines: &[String]) -> Vec<f64> {
 ///     printed `333333333333333312` where jq prints `333333333333333300`, the
 ///     16 round-trip digits zero-padded. (That cast also saturated outside
 ///     i64's range — `tests/query.rs` still pins that it never reappears.)
-fn fmt_num(v: f64) -> String {
+pub(crate) fn fmt_num(v: f64) -> String {
     // A non-finite double has no decimal expansion, and neither JSON nor jq has
     // a spelling for one, so jq maps both onto values that do: an infinity
     // CLAMPS to ±DBL_MAX and a NaN renders as `null`. This function's contract is

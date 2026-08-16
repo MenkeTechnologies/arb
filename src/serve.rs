@@ -392,7 +392,8 @@ fn widget_json(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
-                None => crate::query::numeric_series(raw),
+                // A refused pipeline has no series to plot.
+                Some(QueryResult::Error(_)) | None => crate::query::numeric_series(raw),
             };
             let n = series.len();
             let series = &series[n.saturating_sub(400)..]; // cap points per poll
@@ -485,7 +486,7 @@ fn widget_json(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
-                None => crate::query::numeric_series(raw),
+                Some(QueryResult::Error(_)) | None => crate::query::numeric_series(raw),
             };
             let n = series.len();
             let series = &series[n.saturating_sub(500)..]; // cap points per poll
@@ -529,6 +530,7 @@ fn widget_text(w: &Widget, raw: &[String], _elapsed: f64, result: Option<QueryRe
             .map(|(k, v)| format!("{k}: {v}"))
             .collect::<Vec<_>>()
             .join("\n"),
+        QueryResult::Error(e) => format!("arb: {e}"),
     }
 }
 

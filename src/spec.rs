@@ -1860,6 +1860,26 @@ fn parse_test_case(
     })
 }
 
+/// Reconstruct the source text of a braced argument. The lexer reads `{ div.card
+/// h2 }` as a BLOCK of commands, because braces are how arb spells every other
+/// nested body — but `sel`'s brace holds a CSS selector, not commands, so the
+/// words have to be put back together. Command separators (`;`/newline) inside
+/// the brace become spaces, which is what a multi-line selector list means.
+fn block_text(cmds: &[Command]) -> String {
+    cmds.iter()
+        .map(|c| {
+            std::iter::once(c.name.clone())
+                .chain(c.args.iter().map(|a| match a {
+                    Arg::Block(inner) => format!("{{{}}}", block_text(inner)),
+                    other => other.as_str().unwrap_or_default().to_string(),
+                }))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Compile a `source { … }` body into a query pipeline. Must start with `in`.
 fn pipeline_from_body(
     cmds: &[Command],
@@ -1924,7 +1944,21 @@ fn pipeline_from_body(
                     ops.push(QueryOp::Toml);
                 }
                 "sel" => {
-                    let words: Vec<&str> = c.args.iter().filter_map(Arg::as_str).collect();
+                    // `sel { div.card h2 }` is the spelling SPEC §8 and the README
+                    // both show, and it is the one that did NOT work: a braced
+                    // argument lexes to `Arg::Block`, `as_str` drops it, and the
+                    // verb then reported "expected a CSS selector" for the exact
+                    // form the docs advertise. The block's source text is
+                    // reconstructed here so both spellings compile to the same op.
+                    let flat: Vec<String> = c
+                        .args
+                        .iter()
+                        .map(|a| match a {
+                            Arg::Block(cmds) => block_text(cmds),
+                            other => other.as_str().unwrap_or_default().to_string(),
+                        })
+                        .collect();
+                    let words: Vec<&str> = flat.iter().map(String::as_str).collect();
                     let mut css_parts = Vec::new();
                     let mut attr = None;
                     let mut i = 0;

@@ -155,9 +155,19 @@ fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
         }
         None => (step, None),
     };
-    // The tag: a bare name or the `*` wildcard. No namespaces, no functions.
+    // The tag: a bare name. No wildcard, no namespaces, no functions.
+    //
+    // `*` used to compile to the CSS universal selector and answer with a node
+    // set. It is not in SPEC §8's documented subset, and it does not agree with
+    // xmllint either: arb parses with html5ever, which SYNTHESIZES the `<head>`
+    // an HTML fragment omits, so `//*` returns one element libxml2's node set
+    // does not contain. Answering with a node set that differs from the
+    // reference is the silent reinterpretation the SPEC rules out, so the
+    // wildcard refuses instead.
     let tag_css = if tag == "*" {
-        "*".to_string()
+        return Err(
+            "xpath: the `*` wildcard is not supported (subset: a named tag, `//`, `/`, `@`)".into(),
+        );
     } else if is_ident(tag) {
         tag.to_string()
     } else if tag.contains("::") || tag == ".." || tag == "." {
@@ -331,7 +341,6 @@ mod tests {
             matches!(ops("//a/text()").as_slice(), [QueryOp::Find(s), QueryOp::Text] if s == "a")
         );
         assert!(matches!(ops("@href").as_slice(), [QueryOp::Attr(a)] if a == "href"));
-        assert!(matches!(ops("//*").as_slice(), [QueryOp::Find(s)] if s == "*"));
     }
 
     #[test]
@@ -396,6 +405,15 @@ mod tests {
             "//ns:a",                 // namespace
             "@*",                     // wildcard attribute
             "foo",                    // not an xpath literal at all
+            // The `*` step used to COMPILE, to the CSS universal selector. It is
+            // not in SPEC §8's subset and it does not agree with the reference
+            // either: arb parses with html5ever, which synthesizes the `<head>`
+            // an HTML fragment omits, so `//*` returned one element xmllint's
+            // node set does not contain. Answering with a node set that differs
+            // from the reference is the silent reinterpretation §8 rules out.
+            "//*",
+            "//*/text()",
+            "/html/*",
         ] {
             assert!(translate(bad).is_err(), "expected `{bad}` to error");
         }

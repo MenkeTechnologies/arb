@@ -2604,6 +2604,8 @@ pub fn sel_candidates(w: &Widget, raw: &[String]) -> Vec<String> {
             crate::query::QueryResult::Pairs(p) => {
                 p.iter().map(|(k, v)| format!("{k}\t{v}")).collect()
             }
+            // A refused pipeline offers no candidates to select from.
+            crate::query::QueryResult::Error(_) => Vec::new(),
         },
         None => raw.to_vec(),
     }
@@ -2966,6 +2968,7 @@ pub fn project_line(proj: &[QueryOp], raw: &str) -> Vec<String> {
         QueryResult::Lines(ls) => ls,
         QueryResult::Scalar(v) => vec![format!("{v}")],
         QueryResult::Pairs(p) => p.into_iter().map(|(k, v)| format!("{k}\t{v}")).collect(),
+        QueryResult::Error(e) => vec![format!("arb: {e}")],
     }
 }
 
@@ -3633,6 +3636,7 @@ fn render_widget(
                     .first()
                     .map(|(k, v)| format!("{k} ({v})"))
                     .unwrap_or_default(),
+                Some(QueryResult::Error(e)) => format!("arb: {e}"),
                 None => lines.last().cloned().unwrap_or_default(),
             };
             f.render_widget(Paragraph::new(clip(&s, inner_w)).block(block), area);
@@ -3642,6 +3646,7 @@ fn render_widget(
                 Some(QueryResult::Lines(ls)) => ls.clone(),
                 Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
+                Some(QueryResult::Error(e)) => vec![format!("arb: {e}")],
                 None => lines.to_vec(),
             };
             // `-limit N` (alias `-lines N`) caps the rows shown to the last N,
@@ -3737,6 +3742,7 @@ fn render_widget(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
+                Some(QueryResult::Error(_)) => Vec::new(),
                 None => crate::query::numeric_series(lines),
             };
             let points: Vec<(f64, f64)> = series
@@ -3772,6 +3778,7 @@ fn render_widget(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
+                Some(QueryResult::Error(_)) => Vec::new(),
                 None => crate::query::numeric_series(lines),
             };
             let coords: Vec<(f64, f64)> = series
@@ -3807,6 +3814,7 @@ fn render_widget(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
+                Some(QueryResult::Error(_)) => Vec::new(),
                 None => crate::query::numeric_series(lines),
             };
             // Newest points that fit the width; non-finite/negative clamp to 0.
@@ -3928,6 +3936,7 @@ fn render_widget(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
+                Some(QueryResult::Error(_)) => Vec::new(),
                 None => crate::query::numeric_series(lines),
             };
             let (min, max) = series
@@ -4066,6 +4075,7 @@ fn render_widget(
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(_, v)| *v as f64).collect(),
                 Some(QueryResult::Lines(ls)) => crate::query::numeric_series(ls),
                 Some(QueryResult::Scalar(v)) => vec![*v],
+                Some(QueryResult::Error(_)) => Vec::new(),
                 None => crate::query::numeric_series(lines),
             };
             // Keep only the newest points that fit the width.
@@ -4153,6 +4163,7 @@ fn render_widget(
                 Some(QueryResult::Lines(ls)) => ls.clone(),
                 Some(QueryResult::Scalar(v)) => vec![format!("{v}")],
                 Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
+                Some(QueryResult::Error(e)) => vec![format!("arb: {e}")],
                 None => lines.to_vec(),
             };
             let inner_h = area.height.saturating_sub(2) as usize;
@@ -4199,6 +4210,7 @@ fn result_lines(result: &Option<QueryResult>, lines: &[String]) -> Vec<String> {
         Some(QueryResult::Lines(ls)) => ls.clone(),
         Some(QueryResult::Scalar(v)) => vec![crate::query::fmt_scalar(*v)],
         Some(QueryResult::Pairs(p)) => p.iter().map(|(k, v)| format!("{k}  {v}")).collect(),
+        Some(QueryResult::Error(e)) => vec![format!("arb: {e}")],
         None => lines.to_vec(),
     }
 }

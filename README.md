@@ -454,11 +454,22 @@ out { in.html; //a/@href }                               # xpath literal
 
 The jq/xpath literal front-ends cover the common path/filter subset; anything
 outside it is a **hard error** (`jq: …` / `xpath: …`), never silently guessed.
-Both halves of that are checked by `scripts/jq_parity.sh`, which runs arb and the
+That includes a TYPE mismatch inside the subset — `null | .[]`, `true | length`,
+`{"a":1} | . + 3` and `.n / 0` all refuse and exit non-zero, because jq refuses
+them too and an answer where the reference raises is the same silent guess.
+A `select(…)`/`map(…)` body evaluates over jq VALUES, so a compare yields
+`true`/`false`, only `false` and `null` are falsy, `==` is type-strict, `+` is
+overloaded per type (string concat, array concat, object merge, `null` as the
+identity) and `%` truncates to integers the way jq's does.
+
+All of that is checked by `scripts/jq_parity.sh`, which runs arb and the
 reference tool over one corpus and byte-diffs stdout: an in-subset construct must
-match `jq -rc` / `xmllint --xpath`, and an out-of-subset one must exit non-zero.
-It has no allowlist, and the `yq` leg is reported as unverified rather than
-passing while no `yq` is installed.
+match `jq -rc` / `xmllint --xpath`, an out-of-subset one must exit non-zero, and
+a type error must be refused by BOTH engines — the probe verifies that jq really
+does refuse, so a refusal arb invented alone is never scored as parity. The css
+leg (`sel { … }`) is probed against the xmllint XPath that selects the same
+elements. It has no allowlist, and the `yq` leg is reported as unverified rather
+than passing while no `yq` is installed.
 
 The other half of the language — the arithmetic/predicate expressions behind
 `where`, `map` and `calc` — has its own harness, `scripts/expr_paths.sh`. It

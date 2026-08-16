@@ -6,7 +6,7 @@
 //! not Turing-complete jq. Anything outside the subset is a clean error, never a
 //! silent mis-translation.
 
-use crate::expr::Expr;
+use crate::jqval::Seg;
 use crate::query::{FieldSel, QueryOp};
 
 /// Translate a reconstructed jq command string into arb ops. Splits on top-level
@@ -61,7 +61,7 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
     match s {
         "." => return Ok(()), // identity
         ".[]" => {
-            ops.push(QueryOp::Each);
+            ops.push(QueryOp::JqEach);
             return Ok(());
         }
         "keys" => {
@@ -78,11 +78,15 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
             return Ok(());
         }
         "length" => {
-            ops.push(QueryOp::JsonLen);
+            // The STRICT length: jq refuses a boolean, where the native `length`
+            // verb falls back to the raw line's character count.
+            ops.push(QueryOp::JqLen);
             return Ok(());
         }
         "add" => {
-            ops.push(QueryOp::Add);
+            // jq's fold-from-null `add`, not the native verb: `[]` is `null` here
+            // and "" there (SPEC §8), and a mixed-type array raises.
+            ops.push(QueryOp::JqAdd);
             return Ok(());
         }
         "flatten" => {
@@ -100,7 +104,7 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
         _ => {}
     }
     if let Some(inner) = fn_call(s, "select") {
-        ops.push(QueryOp::Where(parse_expr(inner)?));
+        ops.push(QueryOp::JqSelect(parse_expr(inner)?));
         return Ok(());
     }
     if let Some(inner) = fn_call(s, "map") {
@@ -121,23 +125,27 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
         return Ok(());
     }
     if let Some(inner) = fn_call(s, "has") {
-        let key = strip_quotes(inner.trim());
-        if key.is_empty() {
-            return Err(format!("jq: has() expects a key: `{s}`"));
-        }
+        // jq's argument is a VALUE — `has("k")` on an object, `has(0)` on an
+        // array — so it is parsed as one rather than string-stripped.
+        let arg = inner.trim();
+        let key = match crate::jqval::parse(arg) {
+            Ok(crate::jqval::Expr::Lit(
+                v @ (serde_json::Value::String(_) | serde_json::Value::Number(_)),
+            )) => v,
+            _ => return Err(format!("jq: has() expects a string or number key: `{s}`")),
+        };
         ops.push(QueryOp::HasKey(key));
         return Ok(());
     }
-    if s.starts_with('.') {
-        if is_pure_path(s) {
-            return translate_path(s, ops);
-        }
-        // A `.field`-bearing arithmetic body (typically inside `map(...)`), e.g.
-        // `. * 2` or `.a + .b` -> a per-element Map.
-        ops.push(QueryOp::Map(parse_expr(s)?));
-        return Ok(());
+    if s.starts_with('.') && is_pure_path(s) {
+        return translate_path(s, ops);
     }
-    Err(format!("jq: unsupported expression `{s}`"))
+    // Everything else is a jq VALUE expression — `. * 2`, `.a + .b`, `. > 1`,
+    // `1 + .a`. `jqval` parses it, and refuses every construct outside the
+    // documented subset (`reduce`, `paths`, `//`, `..`, `$ENV`, a bare `not`),
+    // which is how the hard-error half of SPEC §8 is honoured here.
+    ops.push(QueryOp::JqCalc(parse_expr(s)?));
+    Ok(())
 }
 
 /// If `s` is exactly `name( … )`, return the inside; else None.
@@ -145,14 +153,6 @@ fn fn_call<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     let rest = s.strip_prefix(name)?.trim_start();
     let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
     Some(inner)
-}
-
-/// Strip one layer of surrounding double quotes.
-fn strip_quotes(s: &str) -> String {
-    s.strip_prefix('"')
-        .and_then(|x| x.strip_suffix('"'))
-        .unwrap_or(s)
-        .to_string()
 }
 
 /// A stage is a pure path if every char OUTSIDE a `[…]` subscript is a path char.
@@ -182,11 +182,11 @@ fn is_pure_path(s: &str) -> bool {
 fn translate_path(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
     let cs: Vec<char> = s.chars().collect();
     let mut i = 0usize;
-    let mut key: Vec<String> = Vec::new();
+    let mut key: Vec<Seg> = Vec::new();
     if cs.first() != Some(&'.') {
         return Err(format!("jq: path must start with `.`: `{s}`"));
     }
-    let flush = |key: &mut Vec<String>, ops: &mut Vec<QueryOp>| {
+    let flush = |key: &mut Vec<Seg>, ops: &mut Vec<QueryOp>| {
         if !key.is_empty() {
             ops.push(QueryOp::Field(FieldSel::JqKey(std::mem::take(key))));
         }
@@ -202,7 +202,7 @@ fn translate_path(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
                     if id.is_empty() {
                         return Err(format!("jq: expected a key after `.` in `{s}`"));
                     }
-                    key.push(id);
+                    key.push(Seg::Key(id));
                 }
             }
             '[' => parse_bracket(&cs, &mut i, &mut key, ops, &flush, s)?,
@@ -219,9 +219,9 @@ fn translate_path(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
 fn parse_bracket(
     cs: &[char],
     i: &mut usize,
-    key: &mut Vec<String>,
+    key: &mut Vec<Seg>,
     ops: &mut Vec<QueryOp>,
-    flush: &dyn Fn(&mut Vec<String>, &mut Vec<QueryOp>),
+    flush: &dyn Fn(&mut Vec<Seg>, &mut Vec<QueryOp>),
     s: &str,
 ) -> Result<(), String> {
     *i += 1; // consume '['
@@ -238,12 +238,12 @@ fn parse_bracket(
     // `[]` — iterate the array/object.
     if c.is_empty() {
         flush(key, ops);
-        ops.push(QueryOp::Each);
+        ops.push(QueryOp::JqEach);
         return Ok(());
     }
     // `["key"]` — a quoted object key (checked before `:` so `["a:b"]` is a key).
     if let Some(k) = c.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
-        key.push(k.to_string());
+        key.push(Seg::Key(k.to_string()));
         return Ok(());
     }
     // `[a:b]` — a slice; it applies to the value the pending path points at.
@@ -255,9 +255,10 @@ fn parse_bracket(
         ));
         return Ok(());
     }
-    // `[N]` / `[-N]` — an array index (`walk` handles the negative case).
-    if c.parse::<i64>().is_ok() {
-        key.push(c.to_string());
+    // `[N]` / `[-N]` — an array INDEX, kept distinct from a quoted key so that
+    // `[1,2] | .["0"]` refuses the way jq does instead of reading element 0.
+    if let Ok(n) = c.parse::<i64>() {
+        key.push(Seg::Index(n));
         Ok(())
     } else {
         Err(format!("jq: unsupported subscript `[{content}]` in `{s}`"))
@@ -285,64 +286,15 @@ fn take_ident(cs: &[char], i: &mut usize) -> String {
 }
 
 /// Parse a jq expression body (a `select(...)` predicate or a `map(...)` /
-/// arithmetic stage) into an arb `Expr`: rewrite each leading `.field` to an arb
-/// field bareword, then defer to arb's expression parser. Nested field paths
-/// (`.a.b`) inside an expression are unsupported and error.
-fn parse_expr(src: &str) -> Result<Expr, String> {
-    let rewritten = rewrite_fields(src)?;
-    crate::expr::parse(&rewritten).map_err(|e| format!("jq: {e}"))
-}
-
-/// Rewrite jq `.field` refs to arb barewords. `.` followed by an identifier and
-/// NOT preceded by an alphanumeric is a field ref (drop the dot). `.` before a
-/// digit stays (decimal / range). `.a.b` (nested) errors.
-fn rewrite_fields(src: &str) -> Result<String, String> {
-    let cs: Vec<char> = src.chars().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < cs.len() {
-        let c = cs[i];
-        if c == '.' {
-            let next = cs.get(i + 1).copied();
-            let prev_alnum = out
-                .chars()
-                .last()
-                .map(|p| p.is_alphanumeric() || p == '_')
-                .unwrap_or(false);
-            if matches!(next, Some(d) if d.is_ascii_alphabetic() || d == '_') {
-                if prev_alnum {
-                    return Err(format!(
-                        "jq: nested field path (.a.b) inside select/map is unsupported: `{src}`"
-                    ));
-                }
-                i += 1; // drop the '.'
-                while i < cs.len() && (cs[i].is_alphanumeric() || cs[i] == '_') {
-                    out.push(cs[i]);
-                    i += 1;
-                }
-                if cs.get(i) == Some(&'.')
-                    && matches!(cs.get(i + 1), Some(d) if d.is_ascii_alphabetic() || *d == '_')
-                {
-                    return Err(format!(
-                        "jq: nested field path (.a.b) inside select/map is unsupported: `{src}`"
-                    ));
-                }
-                continue;
-            }
-            // `.` before a digit is a decimal (`.5`); `..` is a range; a bare `.`
-            // (identity of the current element) becomes arb's line scalar `x`.
-            if matches!(next, Some(d) if d.is_ascii_digit()) || next == Some('.') {
-                out.push('.');
-            } else {
-                out.push('x');
-            }
-            i += 1;
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    Ok(out)
+/// arithmetic stage) into a jq VALUE expression.
+///
+/// This used to rewrite `.field` into an arb bareword and hand the result to
+/// `crate::expr`, arb's f64 evaluator. That model cannot express jq: a compare
+/// came back as 1/0 instead of `true`/`false`, `0` counted as falsy in `select`,
+/// `==` was numeric rather than type-strict, `"x" + "y"` was NaN, and a type
+/// error answered `null` instead of raising. See `crate::jqval`.
+fn parse_expr(src: &str) -> Result<crate::jqval::Expr, String> {
+    crate::jqval::parse(src.trim()).map_err(|e| format!("jq: {e}"))
 }
 
 #[cfg(test)]
@@ -540,7 +492,24 @@ mod tests {
         assert!(translate(".foo // 0").is_err()); // alternative
         assert!(translate(".foo?").is_err()); // optional
         assert!(translate("reduce .[] as $x (0; . + $x)").is_err());
-        assert!(translate("select(.a.b > 1)").is_err()); // nested in expr
+        assert!(translate("paths").is_err());
+        assert!(translate("first(.[])").is_err());
+        assert!(translate("$ENV.HOME").is_err());
+        assert!(translate(".[] | not").is_err());
+    }
+
+    #[test]
+    fn nested_field_path_inside_select_now_answers_like_jq() {
+        // This used to be a documented arb LIMITATION (`jq: nested field path
+        // (.a.b) inside select/map is unsupported`) because the f64 expression
+        // parser had no path node. `jqval` does, and jq accepts it, so the
+        // refusal was a gap in the claimed subset rather than a boundary of it.
+        assert_eq!(
+            run("select(.a.b > 1)", &[r#"{"a":{"b":2}}"#]),
+            vec![r#"{"a":{"b":2}}"#]
+        );
+        assert!(run("select(.a.b > 5)", &[r#"{"a":{"b":2}}"#]).is_empty());
+        assert_eq!(run("map(.a.b)", &[r#"[{"a":{"b":2}}]"#]), vec!["[2]"]);
     }
 
     #[test]

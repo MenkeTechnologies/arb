@@ -22,6 +22,9 @@ pub fn result_to_lines(r: QueryResult) -> Vec<String> {
         QueryResult::Lines(v) => v,
         QueryResult::Scalar(s) => vec![query::fmt_scalar(s)],
         QueryResult::Pairs(p) => p.iter().map(|(k, v)| format!("{k}\t{v}")).collect(),
+        // A refused pipeline yields the refusal as its only line, so an
+        // in-language test can pin that a construct IS refused.
+        QueryResult::Error(e) => vec![format!("arb: {e}")],
     }
 }
 

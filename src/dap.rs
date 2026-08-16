@@ -343,6 +343,9 @@ fn spawn_feed(program: Option<String>, input: Option<String>) {
                     .map(|(k, v)| format!("{k}\t{v}"))
                     .collect::<Vec<_>>()
                     .join("\n"),
+                // A refused pipeline has no transformed line; the debugger shows
+                // the refusal in place of the value.
+                crate::query::QueryResult::Error(e) => format!("arb: {e}"),
             };
             check_line(
                 idx,

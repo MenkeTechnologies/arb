@@ -19,6 +19,7 @@ pub mod err;
 pub mod expr;
 pub mod fzf;
 pub mod jq;
+pub mod jqval;
 pub mod lexer;
 pub mod lsp;
 pub mod parser;

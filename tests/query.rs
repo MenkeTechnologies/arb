@@ -532,6 +532,27 @@ fn streamable_detection() {
     assert!(!is_line_streamable(&pipeline(
         "tail .x\nsource .x { in; tally }"
     )));
+    // The jq front-end's own ops are per-line too, and each of them is a
+    // SEPARATE variant from the native verb it shadows (`JqEach` vs `Each`,
+    // `JqAdd` vs `Add`, …). Leaving one off this list does not fail anything
+    // loudly — it silently drops `arb -e` off the streaming path, so a live pipe
+    // buffers until EOF instead of emitting as lines arrive.
+    for jq in [
+        ".[]",
+        "select(.a > 1)",
+        ". * 2",
+        ".a + .b",
+        ". | add",
+        ". | length",
+        "map(. * 2)",
+    ] {
+        assert!(
+            is_line_streamable(&pipeline(&format!(
+                "tail .x\nsource .x {{ in.json; {jq} }}"
+            ))),
+            "`{jq}` must stay line-streamable"
+        );
+    }
 }
 
 #[test]
@@ -1952,5 +1973,229 @@ fn yaml_merge_key_is_applied_with_correct_precedence() {
             assert!(v.get("<<").is_none(), "literal merge key leaked");
         }
         other => panic!("got {other:?}"),
+    }
+}
+
+// ── jq value semantics (SPEC §8) ────────────────────────────────────────────
+// Round-7: the jq front-end used to lower `select(…)`/`map(…)` bodies and bare
+// arithmetic stages onto `crate::expr`, arb's f64 evaluator. Every test below
+// pins a case where that model gave a DIFFERENT answer from `jq 1.8.2` on the
+// same input, measured with `scripts/jq_parity.sh`.
+
+/// Run a jq literal through the whole `source { … }` path and return its lines.
+fn jq_lines(filter: &str, input: &[&str]) -> Vec<String> {
+    let src = format!("tail .x\nsource .x {{ in.json; {filter} }}");
+    match eval(&pipeline(&src), &lines(input), 1.0) {
+        QueryResult::Lines(l) => l,
+        other => panic!("{filter} -> {other:?}"),
+    }
+}
+
+/// The refusal message for a jq literal that must raise on this input.
+fn jq_err(filter: &str, input: &[&str]) -> String {
+    let src = format!("tail .x\nsource .x {{ in.json; {filter} }}");
+    match eval(&pipeline(&src), &lines(input), 1.0) {
+        QueryResult::Error(e) => e,
+        other => panic!("{filter} must refuse, got {other:?}"),
+    }
+}
+
+#[test]
+fn jq_comparison_renders_a_boolean_not_a_digit() {
+    // `jq -rc 'map(. > 1)'` on `[1,2,3]` is `[false,true,true]`. The f64
+    // evaluator had no boolean, so it rendered `[0,1,1]` — a wrong VALUE inside
+    // the claimed subset, invisible to every earlier probe because they all put
+    // the compare inside a `select(…)` where only truthiness was observed.
+    assert_eq!(jq_lines("map(. > 1)", &["[1,2,3]"]), ["[false,true,true]"]);
+    assert_eq!(jq_lines(".[] | . > 1", &["[1,2]"]), ["false", "true"]);
+    assert_eq!(jq_lines(".a == 1", &[r#"{"a":1}"#]), ["true"]);
+    assert_eq!(jq_lines(".a and .b", &[r#"{"a":1,"b":2}"#]), ["true"]);
+}
+
+#[test]
+fn jq_select_uses_jq_truthiness() {
+    // jq's falsy set is exactly `false` and `null`. The f64 evaluator's was `0`
+    // and NaN, which inverted BOTH ends of the set at once.
+    for kept in ["0", r#""""#, "[]", "{}", "true"] {
+        let line = format!(r#"{{"a":{kept}}}"#);
+        assert_eq!(
+            jq_lines("select(.a)", &[&line]),
+            vec![line.clone()],
+            "select(.a) must keep {kept}"
+        );
+    }
+    for dropped in ["null", "false"] {
+        let line = format!(r#"{{"a":{dropped}}}"#);
+        assert!(
+            jq_lines("select(.a)", &[&line]).is_empty(),
+            "select(.a) must drop {dropped}"
+        );
+    }
+}
+
+#[test]
+fn jq_equality_compares_type_as_well_as_value() {
+    assert!(jq_lines("select(.a == 1)", &[r#"{"a":"1"}"#]).is_empty());
+    assert!(jq_lines(r#"select(.a == "1")"#, &[r#"{"a":1}"#]).is_empty());
+    assert_eq!(
+        jq_lines("select(.a == true)", &[r#"{"a":true}"#]),
+        [r#"{"a":true}"#]
+    );
+    // An absent key IS null, so this is how jq spells "field is missing".
+    assert_eq!(
+        jq_lines("select(.b == null)", &[r#"{"a":1}"#]),
+        [r#"{"a":1}"#]
+    );
+}
+
+#[test]
+fn jq_plus_is_overloaded_per_type_with_null_as_identity() {
+    assert_eq!(jq_lines(".a + .b", &[r#"{"a":"x","b":"y"}"#]), ["xy"]);
+    assert_eq!(jq_lines(".a + .b", &[r#"{"a":[1],"b":[2]}"#]), ["[1,2]"]);
+    assert_eq!(
+        jq_lines(".a + .b", &[r#"{"a":{"x":1},"b":{"x":9,"y":2}}"#]),
+        [r#"{"x":9,"y":2}"#]
+    );
+    assert_eq!(jq_lines(".a + 1", &[r#"{"a":null}"#]), ["1"]);
+    assert_eq!(jq_lines(".a + null", &[r#"{"a":1}"#]), ["1"]);
+    // `*` on two objects is a RECURSIVE merge, unlike `+`'s one-level overwrite.
+    assert_eq!(
+        jq_lines(".a * .b", &[r#"{"a":{"x":{"p":1}},"b":{"x":{"q":2}}}"#]),
+        [r#"{"x":{"p":1,"q":2}}"#]
+    );
+    assert_eq!(
+        jq_lines(".a / .b", &[r#"{"a":"a,b","b":","}"#]),
+        [r#"["a","b"]"#]
+    );
+    assert_eq!(
+        jq_lines(".a - .b", &[r#"{"a":[1,2,3],"b":[2]}"#]),
+        ["[1,3]"]
+    );
+}
+
+#[test]
+fn jq_mod_truncates_where_arbs_own_mod_does_not() {
+    // SPEC §6 keeps the f64 remainder for arb's native `map x % 3`; the JQ
+    // CONTEXT follows jq, which truncates both operands to integers first. Same
+    // context gating that already separates jq `to_entries` from native `entries`.
+    assert_eq!(jq_lines(".n % 3", &[r#"{"n":5.5}"#]), ["2"]);
+    assert_eq!(jq_lines(".n % 3", &[r#"{"n":-5.5}"#]), ["-2"]);
+    assert_eq!(jq_lines(".n % 4", &[r#"{"n":100.75}"#]), ["0"]);
+    // The integer band the two rules share stays put.
+    assert_eq!(jq_lines(".n % 3", &[r#"{"n":7}"#]), ["1"]);
+}
+
+#[test]
+fn jq_type_errors_refuse_instead_of_answering() {
+    // SPEC §8: a construct outside the documented subset "is a hard error …
+    // never silently reinterpreted". Each of these ANSWERED before — `null` for
+    // an index, the raw line for an iterate, the line's character count for
+    // `length` on a boolean — with exit 0, so nothing said the query had not
+    // done what it said. `jq 1.8.2` raises on every one.
+    for (filter, input) in [
+        (".[]", "null"),
+        (".[]", "3"),
+        (".a", "3"),
+        (".a", "[1,2]"),
+        (".[0]", r#"{"a":1}"#),
+        (".[1]", r#""hello""#),
+        (".[1:2]", "3"),
+        (". | length", "true"),
+        (". | keys", "null"),
+        (". | add", "null"),
+        (". | add", r#"[1,"a"]"#),
+        (". | to_entries", "null"),
+        (". | flatten", "3"),
+        ("map(.)", "null"),
+        (r#"has("a")"#, r#""s""#),
+        ("has(0)", r#"{"a":1}"#),
+        (". + 3", r#"{"a":1}"#),
+        (". / 3", r#"{"a":1}"#),
+        (".n / 0", r#"{"n":6}"#),
+        (".n % 0", r#"{"n":6}"#),
+    ] {
+        let msg = jq_err(filter, &[input]);
+        assert!(
+            msg.starts_with("jq: "),
+            "`{filter}` on `{input}` must anchor its refusal as `jq: …`, got {msg:?}"
+        );
+    }
+}
+
+#[test]
+fn jq_builtins_match_jq_at_their_edges() {
+    // `add` folds from null, so an EMPTY array is `null` — the native `add` verb
+    // documents `[] -> ""` and is unchanged (SPEC §8's spelling table).
+    assert_eq!(jq_lines(". | add", &["[]"]), ["null"]);
+    assert_eq!(jq_lines(". | add", &["[null,null]"]), ["null"]);
+    assert_eq!(jq_lines(". | add", &[r#"{"a":1,"b":2}"#]), ["3"]);
+    // `to_entries` walks an ARRAY too, keying by index.
+    assert_eq!(
+        jq_lines(". | to_entries", &["[7,8]"]),
+        [r#"[{"key":0,"value":7},{"key":1,"value":8}]"#]
+    );
+    // `has` takes a jq VALUE: a numeric index on an array is `true`, not `false`.
+    assert_eq!(jq_lines("has(0)", &["[1,2]"]), ["true"]);
+    assert_eq!(jq_lines("has(5)", &["[1,2]"]), ["false"]);
+    // `flatten` iterates an object's values.
+    assert_eq!(jq_lines(". | flatten", &[r#"{"a":[1,2]}"#]), ["[1,2]"]);
+}
+
+#[test]
+fn jq_nested_field_path_inside_select_and_map() {
+    // Refused outright before ("nested field path (.a.b) … is unsupported"),
+    // because the f64 expression parser had no path node. jq accepts it.
+    assert_eq!(
+        jq_lines("select(.a.b > 1)", &[r#"{"a":{"b":2}}"#]),
+        [r#"{"a":{"b":2}}"#]
+    );
+    assert_eq!(jq_lines("map(.a.b)", &[r#"[{"a":{"b":2}}]"#]), ["[2]"]);
+}
+
+#[test]
+fn jq_index_and_key_subscripts_stay_distinct() {
+    // `.["0"]` is an object KEY and `.[0]` is an array INDEX. The path used to
+    // carry both as plain strings, so `[1,2] | .["0"]` read element 0 instead of
+    // refusing the way jq does.
+    assert_eq!(jq_lines(r#".["0"]"#, &[r#"{"0":"x"}"#]), ["x"]);
+    assert!(jq_err(r#".["0"]"#, &["[1,2]"]).contains("Cannot index array"));
+}
+
+#[test]
+fn jq_computed_numbers_keep_one_formatter_inside_a_literal_array() {
+    // Every number a jq expression computes is an f64 and goes through
+    // `fmt_num`, including the ones nested in a constructed value — letting
+    // serde_json print a nested number instead rendered a literal `[1,2]` as
+    // `[1.0,2.0]`, because a computed number never carries an integer
+    // representation.
+    assert_eq!(
+        jq_lines("select(.a == [1,2])", &[r#"{"a":[1,2]}"#]),
+        [r#"{"a":[1,2]}"#]
+    );
+    assert_eq!(jq_lines("map(. * 2)", &["[1e17,2e-9]"]), ["[2e+17,4e-09]"]);
+}
+
+// ── css leg: the DOCUMENTED `sel { … }` spelling ────────────────────────────
+#[test]
+fn sel_accepts_the_braced_spelling_the_docs_print() {
+    // SPEC §8 and the README both print `sel {div.card h2}`, and that form did
+    // not compile: a braced argument lexes to a command BLOCK, whose text `sel`
+    // dropped, so the documented spelling failed with "expected a CSS selector"
+    // while only the undocumented `sel div.card h2` worked.
+    let html = lines(&[
+        r#"<html><body><div class="card"><h2>Title</h2><a href="/x">X</a></div>"#,
+        r#"<div class="other"><h2>Second</h2></div></body></html>"#,
+    ]);
+    for spelling in [
+        "sel {div.card h2}",
+        "sel { div.card h2 }",
+        "sel div.card h2",
+    ] {
+        let ops = pipeline(&format!("tail .x\nsource .x {{ in.html; {spelling} }}"));
+        assert_eq!(
+            eval(&ops, &html, 1.0),
+            QueryResult::Lines(lines(&["Title"])),
+            "`{spelling}` must select the same element"
+        );
     }
 }

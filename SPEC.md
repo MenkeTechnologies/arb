@@ -312,37 +312,61 @@ Supported jq: identity `.`, key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index
 `length` (JSON-aware — array/object/string/number)/`add`/`has`/`to_entries`/
 `flatten`). `map(…)` is jq's `map`, so it returns an ARRAY (`map(f)` == `[.[] | f]`)
 and is scoped to one input line; the iterate-without-rewrap reading is jq's own
-`.[] | f`. Per-element arithmetic is supported inside `map`/`select` (`map(. * 2)`,
-`.a + .b`). Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
+`.[] | f`. Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
 `[@attr]` existence, `[@attr='v']`/`[@attr="v"]` equality (either quote) and
 `[contains(@attr,'v')]` substring predicates, union `//a|//b`, and the `/@attr` /
-`/text()` accessors, plus a standalone `@attr` step. **Anything outside the
-documented subset is a hard error** (`jq: …` / `xpath: …`) anchored to the
-offending verb — never silently reinterpreted (no reduce/foreach, no `//`
-alternative, no `?` suppression, no try/catch, no `..` recursive descent, no
-variable binding, no `paths`/`getpath`/`setpath`, no `from_entries`/`with_entries`,
-no `group_by`/`unique_by`/`min_by`/`max_by` in jq spelling, no `range`, no
+`/text()` accessors, plus a standalone `@attr` step, which is arb's line-stream
+continuation (`//a; @href`) rather than XPath's `attribute::` axis from the
+document node. **Anything outside the documented subset is a hard error**
+(`jq: …` / `xpath: …`) anchored to the offending verb — never silently
+reinterpreted (no reduce/foreach, no `//` alternative, no `?` suppression, no
+try/catch, no `..` recursive descent, no variable binding, no
+`paths`/`getpath`/`setpath`, no `from_entries`/`with_entries`, no
+`group_by`/`unique_by`/`min_by`/`max_by` in jq spelling, no `range`, no
 regex builtins (`sub`/`gsub`/`splits`), no `@base64`/`@csv`/`@tsv`/`@json` format
 strings, no `env`/`$ENV`, no `input`/`inputs`, no positional/text predicates, no
-axes). `scripts/jq_parity.sh` probes BOTH halves of this contract: every claimed
-construct is byte-diffed against the reference tool, and every construct named as
-out-of-subset is asserted to exit non-zero.
+axes, no `*` wildcard step). `scripts/jq_parity.sh` probes BOTH halves of this
+contract: every claimed construct is byte-diffed against the reference tool, and
+every construct named as out-of-subset is asserted to exit non-zero.
 
-One case does NOT hold that contract today, and is stated here rather than left
-for a reader to discover: arithmetic against a whole OBJECT (`. + 3`, `. * 3`,
-`. / 3`, `. % 3`) answers `null` and exits 0, where jq refuses it by name
-("object and number cannot be divided"). That is the silent reinterpretation this
-section rules out, so it is a defect against the contract and not an exception to
-it. All five spellings are probed in `scripts/jq_parity.sh` and are red until
-they refuse.
+**jq expression bodies are jq VALUES.** A `select(…)` predicate, a `map(…)` body
+and a bare arithmetic stage evaluate over JSON values, not over arb's f64
+expression language (§6):
+
+* a comparison yields a boolean — `map(. > 1)` is `[false,true,true]`, not `[0,1,1]`;
+* `select` uses jq truthiness, where only `false` and `null` are falsy, so
+  `select(.a)` keeps `0`, `""`, `[]` and `{}`;
+* `==` compares type as well as value (`1` is not `"1"`), and an absent key is
+  `null`, so `select(.b == null)` is how "field missing" is spelled;
+* `+` is overloaded per type — number add, string concat, array concat, object
+  merge, and `null` as the identity on either side — with `-` on arrays (set
+  difference), `*` on objects (recursive merge) and on a string (repetition),
+  and `/` on two strings (split);
+* `%` truncates both operands to integers first, as jq's does. Arb's own
+  `map x % 3` keeps §6's f64 remainder; the jq context follows jq, which is the
+  same context gating that separates jq `to_entries` from native `entries`;
+* nested field paths work inside a body (`select(.a.b > 1)`, `map(.a.b)`);
+* a TYPE mismatch is a hard error, not an answer. `null | .[]`, `3 | .a`,
+  `"hello" | .[1]`, `true | length`, `{"a":1} | . + 3`, `.n / 0` and `.n % 0` all
+  refuse with `jq: …` on stderr and a non-zero exit, matching what `jq` itself
+  does on the same input (exit 5, as jq uses).
+
+Those type rules apply to a line that PARSES as JSON. arb's stream is TEXT and
+`jq` has no reading of a non-JSON line at all (it refuses the whole input), so
+arb keeps its line-stream behaviour there rather than inventing one: a path
+yields `null`, an iterate/slice passes the line through, and an EXPRESSION sees
+the line as jq's string — `. * 2` over a line reading `abc` is `abcabc`.
 
 A compare may test strings as well as numbers — `select(.status == "ok")`, and the
-ordered forms too (`select(.s < "abd")`), which follow jq's codepoint ordering —
-and a key that is not a bare identifier is reachable through the bracket form,
-`.["a b"]`. Path results follow jq on absent data: an explicit null, a missing key
-and an out-of-range index all render as `null`, not as an empty line. (Native
-`field NAME` is unchanged — it still yields "" on a miss and still falls back to
-logfmt, because it runs over plain-text streams as well as JSON.)
+ordered forms too (`select(.s < "abd")`), which follow jq's total order
+(`null < false < true < numbers < strings < arrays < objects`) — and a key that is
+not a bare identifier is reachable through the bracket form, `.["a b"]`. A
+subscript keeps its type: `.["0"]` is an object key and `.[0]` is an array index,
+so `[1,2] | .["0"]` refuses rather than reading the first element. Path results
+follow jq on absent data: an explicit null, a missing key and an out-of-range
+index all render as `null`, not as an empty line. (Native `field NAME` is
+unchanged — it still yields "" on a miss and still falls back to logfmt, because
+it runs over plain-text streams as well as JSON.)
 
 **Where a jq literal and a native verb share a spelling.** arb's pipeline is a
 LINE stream, so a jq filter returning one array is emitted as one compact array
@@ -355,6 +379,10 @@ spellings are kept distinct wherever they differ:
 | `entries` (native) | one line per key | SPEC §8, unchanged |
 | `. \| keys` (jq) | one `["a","b"]` line | matches jq |
 | `keys` (native verb) | one line per key | **does not match jq**, which returns one array |
+| `. \| add` (jq) | folds from `null`, so `[]` is `null` | matches jq |
+| `add` (native verb) | `[] -> ""`, string-joins a mixed array | SPEC §8, unchanged |
+| `. \| length` (jq) | refuses a boolean | matches jq |
+| `length` (native verb) | falls back to the raw line's char count | runs over plain text too |
 
 The rule is CONTEXT, not spelling: a body command that begins with a jq literal
 (`.`, `select(`, `map(`, `has(`) is handed to the jq front-end whole, and inside

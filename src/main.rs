@@ -1307,12 +1307,23 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
             Ok(l) => l,
             Err(_) => break,
         };
-        if let QueryResult::Lines(ls) = query::eval(ops, std::slice::from_ref(&line), 0.0) {
-            for l in ls {
-                if let Err(e) = writeln!(out, "{l}") {
-                    return ok_on_broken_pipe(Err(e));
+        match query::eval(ops, std::slice::from_ref(&line), 0.0) {
+            QueryResult::Lines(ls) => {
+                for l in ls {
+                    if let Err(e) = writeln!(out, "{l}") {
+                        return ok_on_broken_pipe(Err(e));
+                    }
                 }
             }
+            // SPEC §8: a construct outside the documented subset is a hard error,
+            // never a silent reinterpretation. `5` is jq's own status for a
+            // filter that raised.
+            QueryResult::Error(msg) => {
+                let _ = out.flush();
+                eprintln!("arb: {msg}");
+                std::process::exit(5);
+            }
+            _ => {}
         }
         if let Err(e) = out.flush() {
             return ok_on_broken_pipe(Err(e));
@@ -1342,6 +1353,10 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
                 }
                 serde_json::Value::Object(m)
             }
+            QueryResult::Error(msg) => {
+                eprintln!("arb: {msg}");
+                std::process::exit(5);
+            }
         };
         writeln!(out, "{}", serde_json::to_string(&v).unwrap_or_default())?;
         return Ok(());
@@ -1362,6 +1377,11 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
             for (k, c) in ps {
                 writeln!(out, "{k}\t{c}")?;
             }
+        }
+        QueryResult::Error(msg) => {
+            let _ = out.flush();
+            eprintln!("arb: {msg}");
+            std::process::exit(5);
         }
     }
     Ok(())
@@ -1989,6 +2009,7 @@ fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
                     QueryResult::Scalar(v) => format!("= {v}"),
                     QueryResult::Lines(ls) => format!("-> {} line(s)", ls.len()),
                     QueryResult::Pairs(p) => format!("-> {} group(s)", p.len()),
+                    QueryResult::Error(e) => format!("! {e}"),
                 };
                 (format!("stdin[{} op]", s.pipeline.len()), r)
             }
