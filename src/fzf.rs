@@ -582,6 +582,131 @@ pub enum Info {
     InlineRight(String),
 }
 
+/// Where `--preview-window` puts the preview box relative to the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewPos {
+    Up,
+    Down,
+    Left,
+    /// fzf's default.
+    Right,
+}
+
+/// How much room the preview box takes: a share of the body, or a fixed number
+/// of columns (`left`/`right`) or rows (`up`/`down`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewSize {
+    Percent(u16),
+    Cells(u16),
+}
+
+/// `--preview-window=[POSITION][,SIZE[%]][,[no]wrap][,[no]hidden][,…]`.
+///
+/// The flags arb can act on are modeled; the rest of fzf's grammar
+/// (`border-STYLE`, `follow`, `cycle`, `info`, `+SCROLL`, `~HEADER_LINES`,
+/// `default`, `<THRESHOLD(ALT)`) parses without error and is ignored, so a
+/// spec written for fzf never fails here — it just may not be honored in full.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewWindow {
+    pub pos: PreviewPos,
+    pub size: PreviewSize,
+    /// `hidden`: the box is not drawn (the command still runs, as in fzf).
+    pub hidden: bool,
+    /// `wrap`: long preview lines wrap instead of being truncated.
+    pub wrap: bool,
+}
+
+impl Default for PreviewWindow {
+    fn default() -> Self {
+        // fzf(1): "POSITION: (default: right)", and its default size is half the
+        // window.
+        Self {
+            pos: PreviewPos::Right,
+            size: PreviewSize::Percent(50),
+            hidden: false,
+            wrap: false,
+        }
+    }
+}
+
+impl PreviewWindow {
+    /// Parse one `--preview-window` spec. fzf accepts the parts in any order,
+    /// separated by `,`; the older `:` form (`right:55%`) is still widely
+    /// written, so both separators are taken.
+    pub fn parse(spec: &str) -> PreviewWindow {
+        let mut w = PreviewWindow::default();
+        for part in spec.split([',', ':']).map(str::trim) {
+            match part {
+                "" => {}
+                "up" | "top" => w.pos = PreviewPos::Up,
+                "down" | "bottom" => w.pos = PreviewPos::Down,
+                "left" => w.pos = PreviewPos::Left,
+                // `next` places the preview on the list side of the input. arb
+                // draws the input at the top in every fzf layout it models, so
+                // that is the same side as `down`.
+                "right" | "next" => w.pos = PreviewPos::Right,
+                "hidden" => w.hidden = true,
+                "nohidden" => w.hidden = false,
+                "wrap" | "wrap-word" => w.wrap = true,
+                "nowrap" => w.wrap = false,
+                _ => {
+                    if let Some(n) = part.strip_suffix('%') {
+                        if let Ok(pct) = n.parse::<u16>() {
+                            w.size = PreviewSize::Percent(pct.min(100));
+                        }
+                    } else if let Ok(cells) = part.parse::<u16>() {
+                        w.size = PreviewSize::Cells(cells);
+                    }
+                    // Anything else is a part of fzf's grammar arb does not act
+                    // on (border-*, follow, cycle, info, +SCROLL, ~N, default,
+                    // <THRESHOLD(ALT)). Ignored rather than rejected.
+                }
+            }
+        }
+        w
+    }
+
+    /// Split `body` into (list, preview) rectangles. `None` means the preview is
+    /// not drawn — `hidden`, or a size of zero, which fzf documents as "preview
+    /// window will not be visible, but fzf will still execute the command".
+    pub fn split(&self, body: ratatui::layout::Rect) -> (ratatui::layout::Rect, Option<ratatui::layout::Rect>) {
+        use ratatui::layout::{Constraint, Layout};
+        if self.hidden {
+            return (body, None);
+        }
+        let vertical = matches!(self.pos, PreviewPos::Up | PreviewPos::Down);
+        let total = match vertical {
+            true => body.height,
+            false => body.width,
+        };
+        let want = match self.size {
+            PreviewSize::Percent(p) => (u32::from(total) * u32::from(p) / 100) as u16,
+            PreviewSize::Cells(c) => c,
+        };
+        // Leave at least one cell for the list itself, or there is nothing to
+        // pick from.
+        let want = want.min(total.saturating_sub(1));
+        if want == 0 {
+            return (body, None);
+        }
+        let rest = total - want;
+        let constraints = match self.pos {
+            PreviewPos::Up | PreviewPos::Left => [Constraint::Length(want), Constraint::Length(rest)],
+            PreviewPos::Down | PreviewPos::Right => {
+                [Constraint::Length(rest), Constraint::Length(want)]
+            }
+        };
+        let chunks = match vertical {
+            true => Layout::vertical(constraints).split(body),
+            false => Layout::horizontal(constraints).split(body),
+        };
+        match self.pos {
+            PreviewPos::Up | PreviewPos::Left => (chunks[1], Some(chunks[0])),
+            PreviewPos::Down | PreviewPos::Right => (chunks[0], Some(chunks[1])),
+        }
+    }
+}
+
 /// The resolved presentation of the picker: everything the renderer and the key
 /// handler need in order to match fzf.
 #[derive(Clone, Debug)]
@@ -639,6 +764,8 @@ pub struct Look {
     /// other criteria fzf offers (`begin`, `end`, `chunk`, `pathname`) parse but
     /// fall back to this pair.
     pub tiebreak_length: bool,
+    /// `--preview-window`: where the preview box goes and how big it is.
+    pub preview_window: PreviewWindow,
     /// `--bind` bindings, in declaration order (later wins for the same key).
     pub binds: Vec<(Key, Vec<Action>)>,
 }
@@ -669,6 +796,7 @@ impl Default for Look {
             scrollbar: true,
             scroll_off: 3,
             tiebreak_length: true,
+            preview_window: PreviewWindow::default(),
             binds: Vec::new(),
         }
     }
@@ -891,6 +1019,13 @@ impl Look {
                         Some("reverse-list") => Layout::ReverseList,
                         _ => Layout::Default,
                     };
+                    i += usize::from(sep);
+                }
+                "--preview-window" => {
+                    let (v, sep) = flag_value(a, next);
+                    if let Some(spec) = v {
+                        look.preview_window = PreviewWindow::parse(&spec);
+                    }
                     i += usize::from(sep);
                 }
                 "--border" => {
@@ -1174,4 +1309,106 @@ mod tests {
         assert_eq!(look.bound(Key::Ctrl('o')), None);
         assert_eq!(look.bound(Key::Ctrl('k')), Some(&[Action::Up][..]));
     }
+
+    #[test]
+    fn preview_window_defaults_are_fzfs() {
+        // fzf(1): "POSITION: (default: right)", half the window.
+        let w = PreviewWindow::default();
+        assert_eq!(w.pos, PreviewPos::Right);
+        assert_eq!(w.size, PreviewSize::Percent(50));
+        assert!(!w.hidden && !w.wrap);
+    }
+
+    #[test]
+    fn preview_window_takes_both_separators_in_any_order() {
+        // The modern comma form and the older colon form are both in the wild.
+        let a = PreviewWindow::parse("down,30%,wrap");
+        assert_eq!(a.pos, PreviewPos::Down);
+        assert_eq!(a.size, PreviewSize::Percent(30));
+        assert!(a.wrap);
+        let b = PreviewWindow::parse("right:55%");
+        assert_eq!(b.pos, PreviewPos::Right);
+        assert_eq!(b.size, PreviewSize::Percent(55));
+        // Order does not matter to fzf, so it must not matter here.
+        assert_eq!(PreviewWindow::parse("20,up"), PreviewWindow::parse("up,20"));
+        assert_eq!(PreviewWindow::parse("up,20").size, PreviewSize::Cells(20));
+    }
+
+    #[test]
+    fn unmodeled_parts_of_the_spec_are_ignored_not_rejected() {
+        // A spec written for fzf must never fail here just because arb does not
+        // act on every part of the grammar.
+        let w = PreviewWindow::parse("left,40%,border-sharp,follow,cycle,+3/2,~2,noinfo");
+        assert_eq!(w.pos, PreviewPos::Left);
+        assert_eq!(w.size, PreviewSize::Percent(40));
+    }
+
+    #[test]
+    fn hidden_and_zero_size_draw_no_pane() {
+        use ratatui::layout::Rect;
+        let body = Rect { x: 0, y: 0, width: 100, height: 30 };
+        let (list, pane) = PreviewWindow::parse("hidden").split(body);
+        assert!(pane.is_none(), "hidden draws nothing");
+        assert_eq!(list, body, "and the list takes the whole body");
+        // fzf(1): "If size is given as 0, preview window will not be visible,
+        // but fzf will still execute the command in the background."
+        assert!(PreviewWindow::parse("right,0").split(body).1.is_none());
+        assert!(PreviewWindow::parse("right,0%").split(body).1.is_none());
+    }
+
+    #[test]
+    fn the_split_places_and_sizes_the_pane() {
+        use ratatui::layout::Rect;
+        let body = Rect { x: 0, y: 0, width: 100, height: 30 };
+
+        let (list, pane) = PreviewWindow::parse("right,60%").split(body);
+        let pane = pane.expect("drawn");
+        assert_eq!((list.width, pane.width), (40, 60));
+        assert_eq!(pane.x, 40, "right means after the list");
+
+        let (list, pane) = PreviewWindow::parse("left,25").split(body);
+        let pane = pane.expect("drawn");
+        assert_eq!((pane.width, list.width), (25, 75));
+        assert_eq!(pane.x, 0, "left means before the list");
+
+        let (list, pane) = PreviewWindow::parse("up,10").split(body);
+        let pane = pane.expect("drawn");
+        assert_eq!((pane.height, list.height), (10, 20));
+        assert_eq!(pane.y, 0);
+
+        let (list, pane) = PreviewWindow::parse("down,3").split(body);
+        let pane = pane.expect("drawn");
+        assert_eq!((list.height, pane.height), (27, 3));
+        assert_eq!(pane.y, 27);
+    }
+
+    #[test]
+    fn the_list_always_keeps_a_cell() {
+        use ratatui::layout::Rect;
+        let body = Rect { x: 0, y: 0, width: 10, height: 4 };
+        // An oversized request must not leave zero columns to pick from.
+        let (list, pane) = PreviewWindow::parse("right,100%").split(body);
+        assert_eq!(list.width, 1);
+        assert_eq!(pane.expect("drawn").width, 9);
+    }
+
+    #[test]
+    fn look_parses_the_flag_in_both_spellings() {
+        let attached = Look::parse(&[
+            "arb".into(),
+            "--fzf".into(),
+            "--preview-window=up,7".into(),
+        ]);
+        assert_eq!(attached.preview_window.pos, PreviewPos::Up);
+        assert_eq!(attached.preview_window.size, PreviewSize::Cells(7));
+        let separate = Look::parse(&[
+            "arb".into(),
+            "--fzf".into(),
+            "--preview-window".into(),
+            "down,20%".into(),
+        ]);
+        assert_eq!(separate.preview_window.pos, PreviewPos::Down);
+        assert_eq!(separate.preview_window.size, PreviewSize::Percent(20));
+    }
+
 }

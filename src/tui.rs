@@ -3088,10 +3088,11 @@ fn render_fzf(
         None => look.colors,
     };
 
-    // With `--preview`, the body splits: the select list on the left, the
-    // preview box (command output for the cursor line) on the right. It takes
-    // the same palette as the picker — fzf draws it in the `border` colour, not
-    // a widget accent.
+    // With `--preview`, the body splits: the select list and the preview box
+    // (command output for the cursor line). Where the box goes and how big it is
+    // comes from `--preview-window` (fzf's default is `right,50%`). It takes the
+    // same palette as the picker — fzf draws it in the `border` colour, not a
+    // widget accent.
     let body = match preview {
         Some((lines, _)) => {
             // Inside a `--border` box fzf keeps a padding column to the RIGHT of
@@ -3104,10 +3105,13 @@ fn render_fzf(
                 },
                 false => body,
             };
-            let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(area);
-            render_preview_pane(f, cols[1], lines, &colors);
-            cols[0]
+            let (list, pane) = look.preview_window.split(area);
+            // `hidden`, or a size of zero: fzf keeps running the command and
+            // just does not draw the box, so the list takes the whole body.
+            if let Some(pane) = pane {
+                render_preview_pane(f, pane, lines, &colors, look.preview_window.wrap);
+            }
+            list
         }
         None => body,
     };
@@ -3335,7 +3339,13 @@ fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) 
 /// colour with no title, its text inset one column. arb's own `-- CMD` pane
 /// (the DSL's downstream view) keeps its label; this one has to look like fzf's,
 /// which labels nothing unless `--preview-label` says so.
-fn render_preview_pane(f: &mut Frame, area: Rect, lines: &[String], colors: &crate::fzf::Colors) {
+fn render_preview_pane(
+    f: &mut Frame,
+    area: Rect,
+    lines: &[String],
+    colors: &crate::fzf::Colors,
+    wrap: bool,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
@@ -3361,6 +3371,22 @@ fn render_preview_pane(f: &mut Frame, area: Rect, lines: &[String], colors: &cra
         width: inner.width.saturating_sub(1),
         ..inner
     };
+    // fzf(1) --preview-window: "Long lines are truncated by default. Line wrap
+    // can be enabled with wrap flag." The list widget truncates, so `wrap` needs
+    // a paragraph instead — and it must take MORE source lines than there are
+    // rows, since each wrapped line eats several.
+    if wrap {
+        let text: Vec<Line> = lines
+            .iter()
+            .take(inner.height as usize * 4)
+            .map(|l| ansi_line(l))
+            .collect();
+        f.render_widget(
+            Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
     let items: Vec<ListItem> = lines
         .iter()
         .take(inner.height as usize)

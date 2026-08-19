@@ -294,8 +294,10 @@ struct Cli {
 
     // ── fzf-compatibility flags (honored) ───────────────────────────────────
     // So `arb --fzf` can drop in for the `fzf` binary (e.g. `ZPWR_FZF='arb --fzf'`).
-    // Cosmetic fzf flags (--ansi/--border/--reverse/--preview-window/…) are stripped
-    // from the args by `fzf_compat_args` before parsing; these are the ones arb acts on.
+    // The presentation flags (--ansi/--border/--reverse/--preview-window/…) are
+    // stripped from the args by `fzf_compat_args` before clap sees them, because
+    // clap knows only arb's own options — they are read off the FULL argv by
+    // `fzf::Look::parse` and honored from there. These are the ones clap parses.
     /// fzf compat: exact substring match instead of fuzzy. (`-e` under `--fzf`
     /// is rewritten to this; arb's own `-e` is `--eval`.)
     #[arg(
