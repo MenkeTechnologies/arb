@@ -26,7 +26,6 @@
 //!   `.presets`    list presets  `exit`/`quit`/Ctrl-D  leave
 
 use std::borrow::Cow;
-use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
@@ -409,7 +408,7 @@ pub fn run() {
             eprintln!("repl: history unavailable: {}", e);
             Box::new(FileBackedHistory::new(5_000).unwrap_or_else(|_| {
                 eprintln!("repl: cannot create in-memory history");
-                process::exit(1);
+                crate::hosted::exit(1);
             })) as Box<dyn reedline::History>
         }
     };

@@ -14,10 +14,14 @@ pub mod algo;
 pub mod ast;
 pub mod banner;
 pub mod cache;
+/// `cli` submodule: the command line, callable as a library.
+pub mod cli;
 pub mod dap;
 pub mod err;
 pub mod expr;
 pub mod fzf;
+/// `hosted` submodule: running arb inside another process.
+pub mod hosted;
 pub mod jq;
 pub mod jqval;
 pub mod lexer;

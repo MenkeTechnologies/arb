@@ -509,7 +509,7 @@ pub fn handle(msg: &Value, _seq: &mut i64) -> Vec<Value> {
             // out, bounding the hang to 200ms instead of forever.
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                std::process::exit(0);
+                crate::hosted::exit(0);
             });
             vec![resp(json!({}))]
         }
