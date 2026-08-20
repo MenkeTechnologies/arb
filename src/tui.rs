@@ -3732,7 +3732,11 @@ fn render_widget(
             let g = LineGauge::default()
                 .block(block)
                 .filled_style(Style::default().fg(accent))
-                .line_set(symbols::line::THICK)
+                // ratatui 0.30 deprecated `line_set`, which set both halves of
+                // the gauge from one set's `horizontal`; the two setters that
+                // replace it take the symbol directly.
+                .filled_symbol(symbols::line::THICK_HORIZONTAL)
+                .unfilled_symbol(symbols::line::THICK_HORIZONTAL)
                 .ratio(ratio)
                 .label(format!("{val:.0}/{max:.0}"));
             f.render_widget(g, area);
