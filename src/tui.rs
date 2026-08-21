@@ -300,8 +300,15 @@ pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
 /// [`fuzzy_score`] under an explicit `-i`/`+i`/`--smart-case` mode.
 pub fn fuzzy_score_case(line: &str, pat: &str, case: crate::fzf::Case) -> Option<i32> {
     let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
-    crate::algo::fuzzy_match_v2(cased, &crate::algo::Text::new(line), &p, false)
-        .map(|(m, _)| m.score)
+    crate::algo::fuzzy_match_v2(
+        &crate::algo::Scheme::DEFAULT,
+        cased,
+        true,
+        &crate::algo::Text::new(line),
+        &p,
+        false,
+    )
+    .map(|(m, _)| m.score)
 }
 
 /// fzf `--exact`/`-e`: the best substring occurrence, scored on the same scale
@@ -313,8 +320,15 @@ pub fn exact_score(line: &str, pat: &str) -> Option<i32> {
 /// [`exact_score`] under an explicit `-i`/`+i`/`--smart-case` mode.
 pub fn exact_score_case(line: &str, pat: &str, case: crate::fzf::Case) -> Option<i32> {
     let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
-    crate::algo::exact_match_naive(cased, &crate::algo::Text::new(line), &p, false)
-        .map(|(m, _)| m.score)
+    crate::algo::exact_match_naive(
+        &crate::algo::Scheme::DEFAULT,
+        cased,
+        true,
+        &crate::algo::Text::new(line),
+        &p,
+        false,
+    )
+    .map(|(m, _)| m.score)
 }
 
 /// The length fzf's `--tiebreak=length` compares: character count with the
@@ -374,17 +388,33 @@ pub fn rank(
     pat: &str,
     exact: bool,
     no_sort: bool,
-    tiebreak_length: bool,
     tac: bool,
     look: &crate::fzf::Look,
 ) -> Vec<usize> {
     // Parse the query ONCE, not once per line: the term list, its `Vec<char>`
     // and the smart-case decision are per-query work.
-    let pattern = crate::pattern::Pattern::build(pat, exact, look.extended, look.case);
-    let mut hits: Vec<(i32, usize)> = lines
+    let pattern = crate::pattern::Pattern::build_full(
+        pat,
+        exact,
+        look.extended,
+        look.case,
+        look.scheme,
+        &look.tiebreak,
+        look.algo_v1,
+    );
+    // Each hit carries fzf's packed rank key: score plus the `--tiebreak`
+    // criteria, four `u16` slots wide (result.go:54). Building it here means the
+    // per-line work — which needs the match bounds and the line — happens once,
+    // across cores, instead of inside the comparator.
+    let mut hits: Vec<([u16; 4], usize)> = lines
         .par_iter()
         .enumerate()
-        .filter_map(|(i, line)| pattern.score(&search_key(line, look)).map(|s| (s, i)))
+        .filter_map(|(i, line)| {
+            let key = search_key(line, look);
+            pattern
+                .match_line(&key)
+                .map(|b| (crate::pattern::points(&key, &b, &look.tiebreak), i))
+        })
         .collect();
     hits.par_sort_by_key(|(_, i)| *i);
     // `--tac` reversed the input, so every order derived from it reverses too.
@@ -393,14 +423,10 @@ pub fn rank(
     }
     // A query of nothing but inverse terms scores every survivor 0, so fzf
     // leaves them in input order rather than letting the tiebreak reshuffle them
-    // (`sortable`, pattern.go:100).
+    // (`sortable`, pattern.go:100). The sort is stable, so anything the criteria
+    // tie on keeps input order — fzf's final `index` criterion.
     if !no_sort && pattern.sortable {
-        hits.sort_by(|a, b| {
-            b.0.cmp(&a.0).then_with(|| match tiebreak_length {
-                true => trim_length(lines[a.1]).cmp(&trim_length(lines[b.1])),
-                false => std::cmp::Ordering::Equal,
-            })
-        });
+        hits.sort_by(|a, b| crate::pattern::compare_points(&a.0, &b.0));
     }
     hits.into_iter().map(|(_, i)| i).collect()
 }
@@ -1120,7 +1146,9 @@ impl FzfCand {
 /// A scored candidate: `(score, candidate index)`. The match and hit lists hold
 /// INDICES, not clones: at a million lines a `(score, Arc, Arc, Arc)` hit was
 /// 56 bytes against 8, and the ranking sort moved all of it.
-type FzfHit = (i32, u32);
+/// One scored candidate: fzf's packed rank key (score plus the `--tiebreak`
+/// criteria, result.go:54) and the candidate index it belongs to.
+type FzfHit = ([u16; 4], u32);
 
 pub fn run(
     spec: &Spec,
@@ -1271,8 +1299,15 @@ pub fn run(
     // The parsed form of `fzf_filter`, rebuilt only when the query changes —
     // never per line and never per frame. `fzf_filter`'s sentinel forces the
     // first frame to replace this.
-    let mut fzf_pattern =
-        crate::pattern::Pattern::build("", fzf_exact, fzf_look.extended, fzf_look.case);
+    let mut fzf_pattern = crate::pattern::Pattern::build_full(
+        "",
+        fzf_exact,
+        fzf_look.extended,
+        fzf_look.case,
+        fzf_look.scheme,
+        &fzf_look.tiebreak,
+        fzf_look.algo_v1,
+    );
 
     // `timeout Ns …` idle reactions: track the last stream `total` and when it
     // last advanced; each timeout fires once per idle span, re-armed on a new line.
@@ -1454,11 +1489,14 @@ pub fn run(
                 let n = fzf_cands.len();
                 let empty = filter.is_empty();
                 if filter != fzf_filter {
-                    let next = crate::pattern::Pattern::build(
+                    let next = crate::pattern::Pattern::build_full(
                         &filter,
                         fzf_exact,
                         fzf_look.extended,
                         fzf_look.case,
+                        fzf_look.scheme,
+                        &fzf_look.tiebreak,
+                        fzf_look.algo_v1,
                     );
                     // fzf's query-extension trick: typing another char can only
                     // narrow the current matches (fuzzy match is monotonic), so
@@ -1486,7 +1524,10 @@ pub fn run(
                         fzf_hits = old
                             .into_iter()
                             .filter_map(|(_, i)| {
-                                next.score(fzf_cands[i as usize].key()).map(|s| (s, i))
+                                let key = fzf_cands[i as usize].key();
+                                next.match_line(key).map(|b| {
+                                    (crate::pattern::points(key, &b, &fzf_look.tiebreak), i)
+                                })
                             })
                             .collect();
                         // keep fzf_processed — new candidates scored below
@@ -1496,7 +1537,14 @@ pub fn run(
                         fzf_hits = fzf_cands
                             .par_iter()
                             .enumerate()
-                            .filter_map(|(i, cand)| next.score(cand.key()).map(|s| (s, i as u32)))
+                            .filter_map(|(i, cand)| {
+                                next.match_line(cand.key()).map(|b| {
+                                    (
+                                        crate::pattern::points(cand.key(), &b, &fzf_look.tiebreak),
+                                        i as u32,
+                                    )
+                                })
+                            })
                             .collect();
                         fzf_processed = n;
                     }
@@ -1508,8 +1556,9 @@ pub fn run(
                 for (i, cand) in fzf_cands.iter().enumerate().take(n).skip(fzf_processed) {
                     if empty {
                         fzf_matched.push(i as u32);
-                    } else if let Some(sc) = fzf_pattern.score(cand.key()) {
-                        fzf_hits.push((sc, i as u32));
+                    } else if let Some(b) = fzf_pattern.match_line(cand.key()) {
+                        let key = crate::pattern::points(cand.key(), &b, &fzf_look.tiebreak);
+                        fzf_hits.push((key, i as u32));
                     }
                 }
                 fzf_processed = n;
@@ -1526,24 +1575,14 @@ pub fn run(
                     if fzf_look.tac {
                         h.reverse();
                     }
-                    // `--no-sort` keeps the input (scan) order; else rank
-                    // best-first, breaking ties fzf's way: `--tiebreak=length`
-                    // (its default) puts the shorter match first, and the sort
-                    // is stable so anything still equal keeps input order —
-                    // which is fzf's final `index` criterion. A query of nothing
-                    // but inverse terms is not `sortable` — every survivor scores
-                    // 0, so fzf keeps them in input order.
+                    // `--no-sort` keeps the input (scan) order; else rank by
+                    // fzf's packed key — score, then the `--tiebreak` criteria.
+                    // The sort is stable, so anything the criteria tie on keeps
+                    // input order, which is fzf's final `index` criterion. A
+                    // query of nothing but inverse terms is not `sortable` —
+                    // every survivor scores 0, so fzf keeps them as they came.
                     if !fzf_no_sort && fzf_pattern.sortable {
-                        h.par_sort_by(|a, b| {
-                            b.0.cmp(&a.0).then_with(|| {
-                                if fzf_look.tiebreak_length {
-                                    trim_length(fzf_cands[a.1 as usize].disp())
-                                        .cmp(&trim_length(fzf_cands[b.1 as usize].disp()))
-                                } else {
-                                    std::cmp::Ordering::Equal
-                                }
-                            })
-                        });
+                        h.par_sort_by(|a, b| crate::pattern::compare_points(&a.0, &b.0));
                     }
                     fzf_matched = h.into_iter().map(|(_, i)| i).collect();
                     fzf_last_sort = now;
@@ -2838,8 +2877,18 @@ pub fn match_positions_case(line: &str, pat: &str, case: crate::fzf::Case) -> Ve
     // ranking was based on — a greedy left-to-right scan can mark others.
     let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
     let text = crate::algo::Text::new(line);
-    let hit = crate::algo::fuzzy_match_v2(cased, &text, &p, true)
-        .or_else(|| crate::algo::exact_match_naive(cased, &text, &p, true));
+    let hit =
+        crate::algo::fuzzy_match_v2(&crate::algo::Scheme::DEFAULT, cased, true, &text, &p, true)
+            .or_else(|| {
+                crate::algo::exact_match_naive(
+                    &crate::algo::Scheme::DEFAULT,
+                    cased,
+                    true,
+                    &text,
+                    &p,
+                    true,
+                )
+            });
     match hit {
         Some((_, Some(mut pos))) => {
             pos.sort_unstable();

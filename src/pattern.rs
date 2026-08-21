@@ -46,16 +46,33 @@ pub struct Term {
 
 impl Term {
     /// Run this term's matcher against one line.
-    fn run(&self, input: &Text, with_pos: bool) -> Option<(Match, Option<Vec<usize>>)> {
+    fn run(
+        &self,
+        scheme: &crate::algo::Scheme,
+        forward: bool,
+        algo_v1: bool,
+        input: &Text,
+        with_pos: bool,
+    ) -> Option<(Match, Option<Vec<usize>>)> {
         let f = match self.typ {
-            TermType::Fuzzy => algo::fuzzy_match_v2,
+            TermType::Fuzzy => match algo_v1 {
+                true => algo::fuzzy_match_v1,
+                false => algo::fuzzy_match_v2,
+            },
             TermType::Exact => algo::exact_match_naive,
             TermType::ExactBoundary => algo::exact_match_boundary,
             TermType::Prefix => algo::prefix_match,
             TermType::Suffix => algo::suffix_match,
             TermType::Equal => algo::equal_match,
         };
-        f(self.case_sensitive, input, &self.text, with_pos)
+        f(
+            scheme,
+            self.case_sensitive,
+            forward,
+            input,
+            &self.text,
+            with_pos,
+        )
     }
 }
 
@@ -81,12 +98,70 @@ pub struct Pattern {
     /// inverse term or an `|` can WIDEN it, and then the old hit set is not a
     /// superset of the new one.
     pub cacheable: bool,
+    /// `--scheme`: which characters count as boundaries and what a match just
+    /// after one is worth. Carried on the pattern so the scorer never depends on
+    /// a process-wide setting.
+    pub scheme: crate::algo::Scheme,
+    /// Scan direction, and whether the matchers must backtrack for an accurate
+    /// begin offset. Neither is a user option: fzf derives both from the
+    /// `--tiebreak` criteria (core.go:215), because `end` and `pathname` want
+    /// the LAST best match and `chunk`/`pathname` need to know where it starts.
+    forward: bool,
+    with_pos: bool,
+    /// `--algo=v1`: use fzf's older greedy matcher instead of the score matrix.
+    algo_v1: bool,
 }
 
 impl Pattern {
     /// fzf's `BuildPattern` (pattern.go:79). `exact` is `-e`/`--exact`,
     /// `extended` is `-x`/`+x`, `case` is `-i`/`+i`/`--smart-case`.
     pub fn build(query: &str, exact: bool, extended: bool, case: Case) -> Pattern {
+        Pattern::build_with(query, exact, extended, case, crate::algo::Scheme::DEFAULT)
+    }
+
+    /// [`Pattern::build`] under an explicit `--scheme`.
+    pub fn build_with(
+        query: &str,
+        exact: bool,
+        extended: bool,
+        case: Case,
+        scheme: crate::algo::Scheme,
+    ) -> Pattern {
+        Pattern::build_ranked(
+            query,
+            exact,
+            extended,
+            case,
+            scheme,
+            &scheme_criteria(&scheme),
+        )
+    }
+
+    /// [`Pattern::build_with`] told which `--tiebreak` criteria the ranking will
+    /// use, so the matchers can scan in the direction those criteria need.
+    pub fn build_ranked(
+        query: &str,
+        exact: bool,
+        extended: bool,
+        case: Case,
+        scheme: crate::algo::Scheme,
+        criteria: &[Criterion],
+    ) -> Pattern {
+        Pattern::build_full(query, exact, extended, case, scheme, criteria, false)
+    }
+
+    /// [`Pattern::build_ranked`] with `--algo` chosen too.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_full(
+        query: &str,
+        exact: bool,
+        extended: bool,
+        case: Case,
+        scheme: crate::algo::Scheme,
+        criteria: &[Criterion],
+        algo_v1: bool,
+    ) -> Pattern {
+        let (forward, with_pos) = scan_direction(criteria);
         let fuzzy = !exact;
         // Extended mode trims the query's outer spaces (they are term
         // separators, not text) — but an escaped `\ ` at the end is real.
@@ -120,6 +195,10 @@ impl Pattern {
                 term_sets: Vec::new(),
                 sortable: true,
                 cacheable: true,
+                scheme,
+                forward,
+                with_pos,
+                algo_v1,
             };
         }
 
@@ -150,6 +229,10 @@ impl Pattern {
             term_sets,
             sortable,
             cacheable,
+            scheme,
+            forward,
+            with_pos,
+            algo_v1,
         }
     }
 
@@ -193,12 +276,98 @@ impl Pattern {
         pos
     }
 
+    /// The score AND the match bounds for one line — fzf's `MatchItem` in full.
+    /// [`Pattern::score`] is this with the bounds dropped; the tiebreak criteria
+    /// need them, because `begin`, `end`, `chunk` and `pathname` all rank by
+    /// WHERE the match landed rather than how well it scored.
+    pub fn match_line(&self, line: &str) -> Option<Bounds> {
+        if self.is_empty() {
+            return Some(Bounds::empty(0));
+        }
+        let text = Text::new(line);
+        match self.extended {
+            true => self.extended_bounds(&text),
+            false => self.basic_match(&text, self.with_pos).map(|(m, _)| {
+                let mut b = Bounds::empty(m.score);
+                b.add(m.start, m.end);
+                b
+            }),
+        }
+    }
+
     /// fzf's `basicMatch` (pattern.go:403) — `+x`: the whole query is one term.
     fn basic_match(&self, text: &Text, with_pos: bool) -> Option<(Match, Option<Vec<usize>>)> {
         match self.fuzzy {
-            true => algo::fuzzy_match_v2(self.case_sensitive, text, &self.text, with_pos),
-            false => algo::exact_match_naive(self.case_sensitive, text, &self.text, with_pos),
+            true if self.algo_v1 => algo::fuzzy_match_v1(
+                &self.scheme,
+                self.case_sensitive,
+                self.forward,
+                text,
+                &self.text,
+                with_pos,
+            ),
+            true => algo::fuzzy_match_v2(
+                &self.scheme,
+                self.case_sensitive,
+                self.forward,
+                text,
+                &self.text,
+                with_pos,
+            ),
+            false => algo::exact_match_naive(
+                &self.scheme,
+                self.case_sensitive,
+                self.forward,
+                text,
+                &self.text,
+                with_pos,
+            ),
         }
+    }
+
+    /// [`Pattern::extended_match`] keeping the offsets instead of the positions,
+    /// so the tiebreak criteria can see where each term set matched.
+    fn extended_bounds(&self, text: &Text) -> Option<Bounds> {
+        let mut bounds = Bounds::empty(0);
+        for set in &self.term_sets {
+            let mut matched = false;
+            let mut current = 0i32;
+            let mut offset = (0usize, 0usize);
+            for term in set {
+                match term.run(
+                    &self.scheme,
+                    self.forward,
+                    self.algo_v1,
+                    text,
+                    self.with_pos,
+                ) {
+                    Some((m, _)) => {
+                        if term.inv {
+                            continue;
+                        }
+                        current = m.score;
+                        offset = (m.start, m.end);
+                        matched = true;
+                        break;
+                    }
+                    None if term.inv => {
+                        // A satisfied inverse term contributes an EMPTY offset,
+                        // which `Bounds::add` ignores — it locates nothing.
+                        current = 0;
+                        offset = (0, 0);
+                        matched = true;
+                        continue;
+                    }
+                    None => {}
+                }
+            }
+            if !matched {
+                return None;
+            }
+            bounds.score += current;
+            bounds.add(offset.0, offset.1);
+        }
+        Some(bounds)
     }
 
     /// fzf's `extendedMatch` (pattern.go:416). Every term set must produce a
@@ -213,7 +382,7 @@ impl Pattern {
             let mut matched = false;
             let mut current = 0i32;
             for term in set {
-                match term.run(text, with_pos) {
+                match term.run(&self.scheme, self.forward, self.algo_v1, text, with_pos) {
                     Some((m, pos)) => {
                         if term.inv {
                             continue;
@@ -449,4 +618,216 @@ mod tests {
         assert!(p.is_empty());
         assert_eq!(p.score("anything"), Some(0));
     }
+}
+
+/// Where a pattern matched a line, folded across every term set — fzf's
+/// `buildResult` inputs (result.go:32). `min_begin`/`min_end`/`max_end` are
+/// character indices; a term that located nothing (a satisfied `!term`)
+/// contributes an empty offset and is skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    pub score: i32,
+    pub min_begin: usize,
+    pub min_end: usize,
+    pub max_end: usize,
+    /// False when nothing located a position — every position-based criterion
+    /// then scores the worst possible value, as in fzf.
+    pub valid: bool,
+}
+
+impl Bounds {
+    fn empty(score: i32) -> Bounds {
+        Bounds {
+            score,
+            min_begin: u16::MAX as usize,
+            min_end: u16::MAX as usize,
+            max_end: 0,
+            valid: false,
+        }
+    }
+    fn add(&mut self, begin: usize, end: usize) {
+        if begin >= end {
+            return;
+        }
+        self.min_begin = self.min_begin.min(begin);
+        self.min_end = self.min_end.min(end);
+        self.max_end = self.max_end.max(end);
+        self.valid = true;
+    }
+}
+
+/// One ranking criterion — fzf's `criterion` (options.go:268). `Score` is
+/// always first; the rest are the `--tiebreak` list, applied in order, with the
+/// item's input index as the final, implicit tiebreak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Criterion {
+    Score,
+    Chunk,
+    Length,
+    Begin,
+    End,
+    Pathname,
+}
+
+/// fzf's `parseTiebreak` (options.go:1349). `index` adds no criterion — it IS
+/// the implicit final one — but it must come last, and no name may repeat.
+/// `None` for a spec fzf would reject, which keeps the caller's default.
+pub fn parse_tiebreak(spec: &str) -> Option<Vec<Criterion>> {
+    let lowered = spec.to_lowercase();
+    let mut out = vec![Criterion::Score];
+    let mut seen: Vec<&str> = Vec::new();
+    let mut has_index = false;
+    for name in lowered.split(',') {
+        // A repeat is an error, and `index` must be last — it is the implicit
+        // final criterion, so nothing may follow it.
+        if seen.contains(&name) || has_index {
+            return None;
+        }
+        seen.push(name);
+        match name {
+            "index" => has_index = true,
+            "chunk" => out.push(Criterion::Chunk),
+            "pathname" => out.push(Criterion::Pathname),
+            "length" => out.push(Criterion::Length),
+            "begin" => out.push(Criterion::Begin),
+            "end" => out.push(Criterion::End),
+            _ => return None,
+        }
+    }
+    // fzf's points vector is four slots wide: score plus at most three tiebreaks.
+    match out.len() > 4 {
+        true => None,
+        false => Some(out),
+    }
+}
+
+/// The criteria a `--scheme` implies when `--tiebreak` is not given — fzf's
+/// `parseScheme` (options.go:1336).
+pub fn scheme_criteria(scheme: &crate::algo::Scheme) -> Vec<Criterion> {
+    if *scheme == crate::algo::Scheme::PATH {
+        return vec![Criterion::Score, Criterion::Pathname, Criterion::Length];
+    }
+    if *scheme == crate::algo::Scheme::HISTORY {
+        return vec![Criterion::Score];
+    }
+    vec![Criterion::Score, Criterion::Length]
+}
+
+/// fzf's `buildResultFromBounds` (result.go:54): pack the criteria into four
+/// `u16` slots, best-first, so ordering is one integer comparison per pair.
+///
+/// The slots fill from the END (`points[3 - idx]`), which is what makes the
+/// packed comparison in [`compare_points`] read criteria in declaration order.
+pub fn points(line: &str, b: &Bounds, criteria: &[Criterion]) -> [u16; 4] {
+    let text: Vec<char> = line.chars().collect();
+    let num_chars = text.len();
+    let as_u16 = |v: i64| v.clamp(0, u16::MAX as i64) as u16;
+    let mut pts = [0u16; 4];
+    for (idx, criterion) in criteria.iter().enumerate().take(4) {
+        let val = match criterion {
+            // Higher score sorts first, so it is stored inverted.
+            Criterion::Score => u16::MAX - as_u16(b.score as i64),
+            Criterion::Chunk if b.valid => {
+                // Widen the match to the whitespace-delimited chunk holding it;
+                // the shorter that chunk, the better the match fits.
+                let mut s = b.min_begin;
+                while s >= 1 && !text[s - 1].is_whitespace() {
+                    s -= 1;
+                }
+                let mut e = b.max_end;
+                while e < num_chars && !text[e].is_whitespace() {
+                    e += 1;
+                }
+                as_u16((e - s) as i64)
+            }
+            Criterion::Length => as_u16(trim_length(line) as i64),
+            Criterion::Pathname if b.valid => {
+                // Prefer a match in the last path segment. fzf scans BYTES here
+                // while `min_begin` counts characters; the two agree on the
+                // ASCII paths this criterion exists for, and the port keeps the
+                // comparison as fzf makes it.
+                let bytes = line.as_bytes();
+                let last_delim = bytes
+                    .iter()
+                    .rposition(|c| *c == b'/' || *c == b'\\')
+                    .map(|i| i as i64)
+                    .unwrap_or(-1);
+                match last_delim <= b.min_begin as i64 {
+                    true => as_u16(b.min_begin as i64 - last_delim),
+                    false => u16::MAX,
+                }
+            }
+            Criterion::Begin | Criterion::End if b.valid => {
+                let mut white_prefix = 0usize;
+                for (i, r) in text.iter().enumerate() {
+                    white_prefix = i;
+                    if i == b.min_begin || !r.is_whitespace() {
+                        break;
+                    }
+                }
+                let trim = trim_length(line) as i64;
+                match criterion {
+                    // Earlier match first.
+                    Criterion::Begin => as_u16(b.min_end as i64 - white_prefix as i64),
+                    // Later END first — the match reaching further into the line
+                    // is the better one, normalized by the line's own length.
+                    _ => as_u16(
+                        u16::MAX as i64
+                            - (u16::MAX as i64 * (b.max_end as i64 - white_prefix as i64))
+                                / (trim + 1),
+                    ),
+                }
+            }
+            // A criterion with nothing to measure scores the worst value.
+            _ => u16::MAX,
+        };
+        pts[3 - idx] = val;
+    }
+    pts
+}
+
+/// fzf's `compareRanks` (result_x86.go): the four slots read as one integer,
+/// most significant first, then the item's input index breaks a full tie.
+pub fn compare_points(a: &[u16; 4], b: &[u16; 4]) -> std::cmp::Ordering {
+    for i in (0..4).rev() {
+        match a[i].cmp(&b[i]) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// The length fzf's `length` criterion compares — `Chars.TrimLength`, the
+/// character count with surrounding whitespace removed.
+fn trim_length(s: &str) -> usize {
+    s.trim().chars().count()
+}
+
+/// fzf's `core.go:215`: the `--tiebreak` criteria decide how the matchers scan.
+/// Returns `(forward, with_pos)`.
+///
+/// `end` and `pathname` want the LAST best match rather than the first, so they
+/// scan backwards. `chunk` and `pathname` rank by WHERE the match begins, and
+/// the begin offset is only accurate when the matcher backtracks — fzf skips
+/// that work otherwise, and says so at the bottom of `FuzzyMatchV2`.
+///
+/// The walk starts at the LAST criterion, so an earlier one wins a conflict.
+/// `Score` (always first) is skipped, as in fzf.
+pub fn scan_direction(criteria: &[Criterion]) -> (bool, bool) {
+    let mut forward = true;
+    let mut with_pos = false;
+    for c in criteria.iter().skip(1).rev() {
+        match c {
+            Criterion::Chunk => with_pos = true,
+            Criterion::End => forward = false,
+            Criterion::Begin => forward = true,
+            Criterion::Pathname => {
+                with_pos = true;
+                forward = false;
+            }
+            _ => {}
+        }
+    }
+    (forward, with_pos)
 }

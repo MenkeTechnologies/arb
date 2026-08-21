@@ -216,9 +216,12 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
 
 - **Fuzzy match** — fzf's own algorithm (`FuzzyMatchV2`, ported from the Go
   source in `src/algo.rs`): the same score matrix, boundary/camelCase bonuses,
-  gap penalties and `--tiebreak=length` ordering, so a query returns the same
-  ranking `fzf` returns, down to the line order. **Smart-case**: a lowercase
-  query is case-insensitive, any uppercase makes it case-sensitive.
+  gap penalties and the packed four-slot rank key, so a query returns the same
+  ranking `fzf` returns, down to the line order. `--scheme` and `--tiebreak`
+  reorder it the way they reorder fzf — including the scan direction and
+  begin-offset backtrace fzf derives from the criteria rather than from a flag.
+  **Smart-case**: a lowercase query is case-insensitive, any uppercase makes it
+  case-sensitive.
 - **Extended search** — fzf's query language, ported from the Go source
   (`pattern.go`) in `src/pattern.rs`, and on by default exactly as in fzf. A
   query is a list of terms; every term must match, and a sigil changes how one
@@ -267,7 +270,10 @@ Honored: `--layout`/`--reverse`, `--border[=STYLE]`, `--info=STYLE`, `--color`
 without the codes), `-d`/`--delimiter` + `-n`/`--nth` + `--with-nth` (field
 selection, fzf's tokenizer), `--header-lines`, `--print-query`, `--expect`
 (fzf's output contract: query line, accepting key, then the selection — what
-`fzf-tab` parses), `--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
+`fzf-tab` parses), `--tiebreak` (all six criteria: `length`, `index`, `begin`,
+`end`, `chunk`, `pathname`), `--scheme` (`default`/`path`/`history`), `--algo`
+(`v2`/`v1`), `--read0` + `--print0` (NUL record framing), `--accept-nth` (print
+fields, or a `{n}` template, instead of the line), `--tail=N`, `--bind` (`up`, `down`, `page-up`,
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
 `ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`,

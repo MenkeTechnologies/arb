@@ -9,12 +9,10 @@
 //!
 //! Ported: `FuzzyMatchV2` (with its `asciiFuzzyIndex` prefilter and position
 //! backtrace), `ExactMatchNaive` + `calculateScore` (fzf's `--exact`), and the
-//! `charClassOf`/`bonusFor` scoring tables. fzf's `--scheme=path|history`
-//! variants and its single/two-character fast paths are not ported; the fast
-//! paths are optimizations of the general path this file implements, and the
-//! schemes are options arb does not accept yet.
-
-use std::sync::OnceLock;
+//! `charClassOf`/`bonusFor` scoring tables, `PrefixMatch`/`SuffixMatch`/
+//! `EqualMatch`/`ExactMatchBoundary`, and all three `--scheme` variants (see
+//! [`Scheme`]). fzf's single/two-character fast paths are not ported — they are
+//! optimizations of the general path this file implements, not different answers.
 
 // ── Scoring constants (algo.go:112-153) ─────────────────────────────────────
 const SCORE_MATCH: i16 = 16;
@@ -25,12 +23,6 @@ const BONUS_NON_WORD: i16 = SCORE_MATCH / 2;
 const BONUS_CAMEL123: i16 = BONUS_BOUNDARY + SCORE_GAP_EXTENSION;
 const BONUS_CONSECUTIVE: i16 = -(SCORE_GAP_START + SCORE_GAP_EXTENSION);
 const BONUS_FIRST_CHAR_MULTIPLIER: i16 = 2;
-/// `--scheme=default`: extra bonus after whitespace or at the start of a line.
-const BONUS_BOUNDARY_WHITE: i16 = BONUS_BOUNDARY + 2;
-/// `--scheme=default`: extra bonus after `/`, `,`, `:`, `;` or `|`.
-const BONUS_BOUNDARY_DELIMITER: i16 = BONUS_BOUNDARY + 1;
-
-const DELIMITER_CHARS: &str = "/,:;|";
 const WHITE_CHARS: &str = " \t\n\u{b}\u{c}\r\u{85}\u{a0}";
 
 /// The class of a character, in fzf's order — `bonusFor` compares against it.
@@ -46,76 +38,69 @@ enum CharClass {
     Number = 6,
 }
 
-/// `--scheme=default` starts as if the line were preceded by whitespace.
-const INITIAL_CHAR_CLASS: CharClass = CharClass::White;
+/// fzf's `--scheme` (algo.go:176 `Init`): which characters count as delimiters
+/// and how much a match just after whitespace or a delimiter is worth. The
+/// three schemes tune the same scorer for three shapes of input.
+///
+/// This is a VALUE, not the package-level globals fzf keeps, because arb is a
+/// library as well as a binary — a process-wide scheme would make the scorer's
+/// answer depend on whichever caller ran `Init` last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scheme {
+    bonus_boundary_white: i16,
+    bonus_boundary_delimiter: i16,
+    delimiter_chars: &'static str,
+    initial_char_class: CharClass,
+    matrix: [[i16; 7]; 7],
+}
 
-fn char_class_of_ascii(c: u8) -> CharClass {
-    if c.is_ascii_lowercase() {
-        CharClass::Lower
-    } else if c.is_ascii_uppercase() {
-        CharClass::Upper
-    } else if c.is_ascii_digit() {
-        CharClass::Number
-    } else if WHITE_CHARS.contains(c as char) {
-        CharClass::White
-    } else if DELIMITER_CHARS.contains(c as char) {
-        CharClass::Delimiter
-    } else {
-        CharClass::NonWord
+impl Default for Scheme {
+    fn default() -> Self {
+        Scheme::DEFAULT
     }
 }
 
-fn char_class_of_non_ascii(c: char) -> CharClass {
-    if c.is_lowercase() {
-        CharClass::Lower
-    } else if c.is_uppercase() {
-        CharClass::Upper
-    } else if c.is_numeric() {
-        CharClass::Number
-    } else if c.is_alphabetic() {
-        CharClass::Letter
-    } else if c.is_whitespace() {
-        CharClass::White
-    } else if DELIMITER_CHARS.contains(c) {
-        CharClass::Delimiter
-    } else {
-        CharClass::NonWord
-    }
-}
+impl Scheme {
+    /// `--scheme=default`: generic input. A match after whitespace scores
+    /// highest, and `/,:;|` all count as delimiters.
+    pub const DEFAULT: Scheme = Scheme::build(
+        BONUS_BOUNDARY + 2,
+        BONUS_BOUNDARY + 1,
+        "/,:;|",
+        CharClass::White,
+    );
+    /// `--scheme=path`: file paths. Only `/` is a delimiter, a whitespace
+    /// boundary loses its extra weight, and the line starts as if it followed a
+    /// delimiter — so the first path segment ranks like any other.
+    pub const PATH: Scheme = Scheme::build(
+        BONUS_BOUNDARY,
+        BONUS_BOUNDARY + 1,
+        "/",
+        CharClass::Delimiter,
+    );
+    /// `--scheme=history`: command history. Whitespace and delimiter boundaries
+    /// are worth the same, so no part of a command line is privileged.
+    pub const HISTORY: Scheme =
+        Scheme::build(BONUS_BOUNDARY, BONUS_BOUNDARY, "/,:;|", CharClass::White);
 
-fn char_class_of(c: char) -> CharClass {
-    match u8::try_from(c as u32) {
-        Ok(b) if c.is_ascii() => char_class_of_ascii(b),
-        _ => char_class_of_non_ascii(c),
-    }
-}
-
-/// algo.go:268 — the bonus for `class` when it follows `prev`.
-fn bonus_for(prev: CharClass, class: CharClass) -> i16 {
-    if class >= CharClass::NonWord {
-        match prev {
-            CharClass::White => return BONUS_BOUNDARY_WHITE,
-            CharClass::Delimiter => return BONUS_BOUNDARY_DELIMITER,
-            CharClass::NonWord => return BONUS_BOUNDARY,
-            _ => {}
+    /// Look a scheme up by fzf's name. `None` for anything else, which is what
+    /// makes an unknown `--scheme` fall back rather than silently rescore.
+    pub fn by_name(name: &str) -> Option<Scheme> {
+        match name {
+            "default" => Some(Scheme::DEFAULT),
+            "path" => Some(Scheme::PATH),
+            "history" => Some(Scheme::HISTORY),
+            _ => None,
         }
     }
-    if prev == CharClass::Lower && class == CharClass::Upper
-        || prev != CharClass::Number && class == CharClass::Number
-    {
-        return BONUS_CAMEL123;
-    }
-    match class {
-        CharClass::NonWord | CharClass::Delimiter => BONUS_NON_WORD,
-        CharClass::White => BONUS_BOUNDARY_WHITE,
-        _ => 0,
-    }
-}
 
-/// The 7×7 bonus lookup fzf builds in `Init` (algo.go:212).
-fn bonus_matrix() -> &'static [[i16; 7]; 7] {
-    static M: OnceLock<[[i16; 7]; 7]> = OnceLock::new();
-    M.get_or_init(|| {
+    /// Precompute the 7×7 bonus lookup fzf builds in `Init` (algo.go:212).
+    const fn build(
+        white: i16,
+        delimiter: i16,
+        delimiter_chars: &'static str,
+        initial: CharClass,
+    ) -> Scheme {
         const CLASSES: [CharClass; 7] = [
             CharClass::White,
             CharClass::NonWord,
@@ -126,17 +111,96 @@ fn bonus_matrix() -> &'static [[i16; 7]; 7] {
             CharClass::Number,
         ];
         let mut m = [[0i16; 7]; 7];
-        for (i, prev) in CLASSES.iter().enumerate() {
-            for (j, class) in CLASSES.iter().enumerate() {
-                m[i][j] = bonus_for(*prev, *class);
+        let mut i = 0;
+        while i < 7 {
+            let mut j = 0;
+            while j < 7 {
+                m[i][j] = bonus_for(CLASSES[i], CLASSES[j], white, delimiter);
+                j += 1;
             }
+            i += 1;
         }
-        m
-    })
+        Scheme {
+            bonus_boundary_white: white,
+            bonus_boundary_delimiter: delimiter,
+            delimiter_chars,
+            initial_char_class: initial,
+            matrix: m,
+        }
+    }
+
+    /// The bonus for a match at the very start of a line.
+    fn boundary_white(&self) -> i16 {
+        self.bonus_boundary_white
+    }
+
+    fn char_class_of_ascii(&self, c: u8) -> CharClass {
+        if c.is_ascii_lowercase() {
+            CharClass::Lower
+        } else if c.is_ascii_uppercase() {
+            CharClass::Upper
+        } else if c.is_ascii_digit() {
+            CharClass::Number
+        } else if WHITE_CHARS.contains(c as char) {
+            CharClass::White
+        } else if self.delimiter_chars.contains(c as char) {
+            CharClass::Delimiter
+        } else {
+            CharClass::NonWord
+        }
+    }
+
+    fn char_class_of_non_ascii(&self, c: char) -> CharClass {
+        if c.is_lowercase() {
+            CharClass::Lower
+        } else if c.is_uppercase() {
+            CharClass::Upper
+        } else if c.is_numeric() {
+            CharClass::Number
+        } else if c.is_alphabetic() {
+            CharClass::Letter
+        } else if c.is_whitespace() {
+            CharClass::White
+        } else if self.delimiter_chars.contains(c) {
+            CharClass::Delimiter
+        } else {
+            CharClass::NonWord
+        }
+    }
+
+    fn char_class_of(&self, c: char) -> CharClass {
+        match c.is_ascii() {
+            true => self.char_class_of_ascii(c as u8),
+            false => self.char_class_of_non_ascii(c),
+        }
+    }
+
+    fn bonus_of(&self, prev: CharClass, class: CharClass) -> i16 {
+        self.matrix[prev as usize][class as usize]
+    }
 }
 
-fn bonus_of(prev: CharClass, class: CharClass) -> i16 {
-    bonus_matrix()[prev as usize][class as usize]
+/// algo.go:268 — the bonus for `class` when it follows `prev`, under one
+/// scheme's two boundary weights.
+const fn bonus_for(prev: CharClass, class: CharClass, white: i16, delimiter: i16) -> i16 {
+    if class as u8 >= CharClass::NonWord as u8 {
+        match prev {
+            CharClass::White => return white,
+            CharClass::Delimiter => return delimiter,
+            CharClass::NonWord => return BONUS_BOUNDARY,
+            _ => {}
+        }
+    }
+    if (matches!(prev, CharClass::Lower) && matches!(class, CharClass::Upper))
+        || (!matches!(prev, CharClass::Number) && matches!(class, CharClass::Number))
+    {
+        return BONUS_CAMEL123;
+    }
+    match class {
+        CharClass::NonWord | CharClass::Delimiter => BONUS_NON_WORD,
+        CharClass::White => white,
+        _ => 0,
+    }
 }
 
 /// The haystack, indexed by CHARACTER like fzf's `util.Chars`. An all-ASCII
@@ -262,7 +326,9 @@ fn ascii_fuzzy_index(
 /// `case_sensitive` is false, exactly as fzf requires of its callers. Returns
 /// the match and, when asked, the matched character positions for highlighting.
 pub fn fuzzy_match_v2(
+    scheme: &Scheme,
     case_sensitive: bool,
+    forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -297,7 +363,9 @@ pub fn fuzzy_match_v2(
         s.resize(n, m);
         let (h0, c0, b, f, t, hm, cm) = s.buffers();
         fuzzy_match_v2_inner(
+            scheme,
             case_sensitive,
+            forward,
             input,
             pattern,
             with_pos,
@@ -384,7 +452,9 @@ thread_local! {
 /// The body of [`fuzzy_match_v2`], with the scratch buffers handed in.
 #[allow(clippy::too_many_arguments)]
 fn fuzzy_match_v2_inner(
+    scheme: &Scheme,
     case_sensitive: bool,
+    forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -406,19 +476,19 @@ fn fuzzy_match_v2_inner(
     let pchar0 = pattern[0];
     let mut pchar = pattern[0];
     let mut prev_h0 = 0i16;
-    let mut prev_class = INITIAL_CHAR_CLASS;
+    let mut prev_class = scheme.initial_char_class;
     let mut in_gap = false;
     for off in 0..n {
         let mut ch = t[off];
         let class = if ch.is_ascii() {
-            let cl = char_class_of_ascii(ch as u8);
+            let cl = scheme.char_class_of_ascii(ch as u8);
             if !case_sensitive && cl == CharClass::Upper {
                 ch = ((ch as u8) + 32) as char;
                 t[off] = ch;
             }
             cl
         } else {
-            let cl = char_class_of_non_ascii(ch);
+            let cl = scheme.char_class_of_non_ascii(ch);
             if !case_sensitive && cl == CharClass::Upper {
                 ch = ch.to_lowercase().next().unwrap_or(ch);
             }
@@ -426,7 +496,7 @@ fn fuzzy_match_v2_inner(
             cl
         };
 
-        let bonus = bonus_of(prev_class, class);
+        let bonus = scheme.bonus_of(prev_class, class);
         b[off] = bonus;
         prev_class = class;
 
@@ -443,10 +513,14 @@ fn fuzzy_match_v2_inner(
             let score = SCORE_MATCH + bonus * BONUS_FIRST_CHAR_MULTIPLIER;
             h0[off] = score;
             c0[off] = 1;
-            if m == 1 && score > max_score {
+            // `forward` is not a user option — fzf derives it from the
+            // `--tiebreak` criteria (core.go:215). Scanning backwards means
+            // "keep the LAST best position", which is `>=` instead of `>`, and
+            // the early exit on a boundary bonus only applies going forwards.
+            if m == 1 && (forward && score > max_score || !forward && score >= max_score) {
                 max_score = score;
                 max_score_pos = off;
-                if bonus >= BONUS_BOUNDARY {
+                if forward && bonus >= BONUS_BOUNDARY {
                     break;
                 }
             }
@@ -533,7 +607,7 @@ fn fuzzy_match_v2_inner(
             c[row + fv - f0 + k] = consecutive;
             in_gap = s1 < s2;
             let score = s1.max(s2).max(0);
-            if pidx == m - 1 && score > max_score {
+            if pidx == m - 1 && (forward && score > max_score || !forward && score >= max_score) {
                 max_score = score;
                 max_score_pos = col;
             }
@@ -588,6 +662,7 @@ fn fuzzy_match_v2_inner(
 /// fzf's `calculateScore` (algo.go) — scores an already-located exact match so
 /// `--exact` ranks on the same scale as fuzzy matching.
 fn calculate_score(
+    scheme: &Scheme,
     case_sensitive: bool,
     text: &Text,
     pattern: &[char],
@@ -598,13 +673,13 @@ fn calculate_score(
     let (mut pidx, mut score, mut in_gap, mut consecutive, mut first_bonus) =
         (0usize, 0i32, false, 0i32, 0i16);
     let mut pos = with_pos.then(|| Vec::with_capacity(pattern.len()));
-    let mut prev_class = INITIAL_CHAR_CLASS;
+    let mut prev_class = scheme.initial_char_class;
     if sidx > 0 {
-        prev_class = char_class_of(text.get(sidx - 1));
+        prev_class = scheme.char_class_of(text.get(sidx - 1));
     }
     for idx in sidx..eidx {
         let mut ch = text.get(idx);
-        let class = char_class_of(ch);
+        let class = scheme.char_class_of(ch);
         if !case_sensitive {
             ch = ch.to_lowercase().next().unwrap_or(ch);
         }
@@ -613,7 +688,7 @@ fn calculate_score(
                 p.push(idx);
             }
             score += SCORE_MATCH as i32;
-            let mut bonus = bonus_of(prev_class, class);
+            let mut bonus = scheme.bonus_of(prev_class, class);
             if consecutive == 0 {
                 first_bonus = bonus;
             } else {
@@ -644,16 +719,117 @@ fn calculate_score(
     (score, pos)
 }
 
-/// fzf's `ExactMatchNaive` (algo.go:1112) — `--exact` and an extended `'term`:
-/// the substring occurrence with the best boundary bonus, scored like a fuzzy
-/// match.
-pub fn exact_match_naive(
+/// fzf's `FuzzyMatchV1` (algo.go:1022) — `--algo=v1`. A greedy two-pass scan
+/// rather than V2's score matrix: walk forward to the first alignment that
+/// consumes the pattern, then walk back from its end to pull the start as far
+/// right as it will go. It finds a match wherever V2 does, but not always the
+/// same one, so the ranking differs.
+pub fn fuzzy_match_v1(
+    scheme: &Scheme,
     case_sensitive: bool,
+    forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
 ) -> Option<(Match, Option<Vec<usize>>)> {
-    exact_match(case_sensitive, false, input, pattern, with_pos)
+    if pattern.is_empty() {
+        return Some((
+            Match {
+                start: 0,
+                end: 0,
+                score: 0,
+            },
+            with_pos.then(Vec::new),
+        ));
+    }
+    ascii_fuzzy_index(input, pattern, case_sensitive)?;
+
+    let len_runes = input.len();
+    let len_pattern = pattern.len();
+    let at = |i: usize, max: usize| -> usize {
+        match forward {
+            true => i,
+            false => max - i - 1,
+        }
+    };
+    let fold = |c: char| -> char {
+        match case_sensitive {
+            true => c,
+            false => c.to_lowercase().next().unwrap_or(c),
+        }
+    };
+
+    // Pass 1: the earliest end position that completes the pattern.
+    let mut pidx = 0usize;
+    let mut sidx: Option<usize> = None;
+    let mut eidx: Option<usize> = None;
+    for index in 0..len_runes {
+        let ch = fold(input.get(at(index, len_runes)));
+        if ch == pattern[at(pidx, len_pattern)] {
+            if sidx.is_none() {
+                sidx = Some(index);
+            }
+            pidx += 1;
+            if pidx == len_pattern {
+                eidx = Some(index + 1);
+                break;
+            }
+        }
+    }
+    let (mut sidx, eidx) = (sidx?, eidx?);
+
+    // Pass 2: walk back from the end so the match is as tight as possible.
+    pidx -= 1;
+    for index in (sidx..eidx).rev() {
+        let tidx = at(index, len_runes);
+        let ch = fold(input.get(tidx));
+        if ch == pattern[at(pidx, len_pattern)] {
+            match pidx.checked_sub(1) {
+                Some(p) => pidx = p,
+                None => {
+                    sidx = index;
+                    break;
+                }
+            }
+        }
+    }
+    // Both indices are positions in the WALK; a backward walk maps them back.
+    let (sidx, eidx) = match forward {
+        true => (sidx, eidx),
+        false => (len_runes - eidx, len_runes - sidx),
+    };
+    let (score, pos) =
+        calculate_score(scheme, case_sensitive, input, pattern, sidx, eidx, with_pos);
+    Some((
+        Match {
+            start: sidx,
+            end: eidx,
+            score,
+        },
+        pos,
+    ))
+}
+
+/// fzf's `ExactMatchNaive` (algo.go:1112) — `--exact` and an extended `'term`:
+/// the substring occurrence with the best boundary bonus, scored like a fuzzy
+/// match.
+pub fn exact_match_naive(
+    scheme: &Scheme,
+    case_sensitive: bool,
+    forward: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    exact_match(
+        scheme,
+        case_sensitive,
+        forward,
+        false,
+        input,
+        pattern,
+        with_pos,
+    )
 }
 
 /// fzf's `ExactMatchBoundary` (algo.go:1116) — an extended `'term'` (quoted on
@@ -661,20 +837,32 @@ pub fn exact_match_naive(
 /// word boundary, and scored on its own scale so it can compete with the other
 /// term types in an OR set.
 pub fn exact_match_boundary(
+    scheme: &Scheme,
     case_sensitive: bool,
+    forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
 ) -> Option<(Match, Option<Vec<usize>>)> {
-    exact_match(case_sensitive, true, input, pattern, with_pos)
+    exact_match(
+        scheme,
+        case_sensitive,
+        forward,
+        true,
+        input,
+        pattern,
+        with_pos,
+    )
 }
 
 /// fzf's `exactMatchNaive` (algo.go:1120), the shared body behind
-/// [`exact_match_naive`] and [`exact_match_boundary`]. `forward` is always true
-/// here — arb has no `--no-forward`, so fzf's `indexAt` collapses to the index
-/// itself and the reversed branches drop out.
+/// [`exact_match_naive`] and [`exact_match_boundary`]. `forward` walks the line
+/// and the pattern from the right instead of the left (fzf's `indexAt`), which
+/// is what the `end` and `pathname` tiebreaks ask for.
 fn exact_match(
+    scheme: &Scheme,
     case_sensitive: bool,
+    forward: bool,
     boundary_check: bool,
     input: &Text,
     pattern: &[char],
@@ -708,28 +896,44 @@ fn exact_match(
     let mut bbonus = 0i16;
     let mut best_bonus = -1i16;
     let mut index: isize = 0;
+    // fzf's `indexAt` (algo.go:97): going backwards, position `i` of the walk is
+    // character `len - i - 1`, and likewise for the pattern — so the same loop
+    // scans right-to-left and finds the LAST best occurrence instead of the first.
+    let at = |i: isize, max: usize| -> usize {
+        match forward {
+            true => i as usize,
+            false => max - i as usize - 1,
+        }
+    };
     while index < len_runes as isize {
-        let mut ch = input.get(index as usize);
+        let index_ = at(index, len_runes);
+        let mut ch = input.get(index_);
         if !case_sensitive {
             ch = ch.to_lowercase().next().unwrap_or(ch);
         }
-        let mut ok = ch == pattern[pidx];
+        let pidx_ = at(pidx as isize, len_pattern);
+        let mut ok = ch == pattern[pidx_];
         if ok {
-            if pidx == 0 {
-                bonus = bonus_at(input, index as usize);
+            if pidx_ == 0 {
+                bonus = bonus_at(scheme, input, index_);
             }
             if boundary_check {
-                if pidx == 0 {
+                if forward && pidx_ == 0 {
                     bbonus = bonus;
+                } else if !forward && pidx_ == len_pattern - 1 {
+                    bbonus = match index_ < len_runes - 1 {
+                        true => bonus_at(scheme, input, index_ + 1),
+                        false => scheme.boundary_white(),
+                    };
                 }
                 ok = bbonus >= BONUS_BOUNDARY;
-                if ok && pidx == 0 {
-                    ok = index == 0
-                        || char_class_of(input.get(index as usize - 1)) <= CharClass::Delimiter;
+                if ok && pidx_ == 0 {
+                    ok = index_ == 0
+                        || scheme.char_class_of(input.get(index_ - 1)) <= CharClass::Delimiter;
                 }
-                if ok && pidx == len_pattern - 1 {
-                    ok = index as usize == len_runes - 1
-                        || char_class_of(input.get(index as usize + 1)) <= CharClass::Delimiter;
+                if ok && pidx_ == len_pattern - 1 {
+                    ok = index_ == len_runes - 1
+                        || scheme.char_class_of(input.get(index_ + 1)) <= CharClass::Delimiter;
                 }
             }
         }
@@ -755,8 +959,15 @@ fn exact_match(
         index += 1;
     }
     let best_pos = best_pos?;
-    let sidx = best_pos + 1 - len_pattern;
-    let eidx = best_pos + 1;
+    // `best_pos` is a position in the WALK, so a backward walk has to be mapped
+    // back onto the line before it means anything (algo.go:1196).
+    let (sidx, eidx) = match forward {
+        true => (best_pos + 1 - len_pattern, best_pos + 1),
+        false => (
+            len_runes - (best_pos + 1),
+            len_runes - (best_pos + 1 - len_pattern),
+        ),
+    };
     let (score, pos) = match boundary_check {
         // A boundary match is scored on its own scale (algo.go:1211): the
         // boundary bonus, docked for an `_` on either side so underscore
@@ -777,10 +988,10 @@ fn exact_match(
                 score -= deduct;
             }
             score += SCORE_MATCH as i32 * len_pattern as i32
-                + BONUS_BOUNDARY_WHITE as i32 * (len_pattern as i32 + 1);
+                + scheme.boundary_white() as i32 * (len_pattern as i32 + 1);
             (score, with_pos.then(|| (sidx..eidx).collect()))
         }
-        false => calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos),
+        false => calculate_score(scheme, case_sensitive, input, pattern, sidx, eidx, with_pos),
     };
     Some((
         Match {
@@ -796,7 +1007,11 @@ fn exact_match(
 /// is skipped unless the term itself starts with a space, so an indented line
 /// still prefix-matches.
 pub fn prefix_match(
+    scheme: &Scheme,
     case_sensitive: bool,
+    // fzf's prefix/suffix/equal matchers ignore the scan direction — they are
+    // anchored, so there is only one place to look either way.
+    _forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -828,7 +1043,8 @@ pub fn prefix_match(
         }
     }
     let (sidx, eidx) = (trimmed, trimmed + pattern.len());
-    let (score, pos) = calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos);
+    let (score, pos) =
+        calculate_score(scheme, case_sensitive, input, pattern, sidx, eidx, with_pos);
     Some((
         Match {
             start: sidx,
@@ -843,7 +1059,11 @@ pub fn prefix_match(
 /// [`prefix_match`]: trailing whitespace is ignored unless the term ends with a
 /// space.
 pub fn suffix_match(
+    scheme: &Scheme,
     case_sensitive: bool,
+    // fzf's prefix/suffix/equal matchers ignore the scan direction — they are
+    // anchored, so there is only one place to look either way.
+    _forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -878,7 +1098,8 @@ pub fn suffix_match(
         }
     }
     let (sidx, eidx) = (trimmed - pattern.len(), trimmed);
-    let (score, pos) = calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos);
+    let (score, pos) =
+        calculate_score(scheme, case_sensitive, input, pattern, sidx, eidx, with_pos);
     Some((
         Match {
             start: sidx,
@@ -893,7 +1114,11 @@ pub fn suffix_match(
 /// surrounding whitespace aside, must BE the term. Scored on a flat scale of its
 /// own, well above what a fuzzy match of the same length can reach.
 pub fn equal_match(
+    scheme: &Scheme,
     case_sensitive: bool,
+    // fzf's prefix/suffix/equal matchers ignore the scan direction — they are
+    // anchored, so there is only one place to look either way.
+    _forward: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -922,8 +1147,8 @@ pub fn equal_match(
             return None;
         }
     }
-    let score = (SCORE_MATCH as i32 + BONUS_BOUNDARY_WHITE as i32) * len_pattern as i32
-        + (BONUS_FIRST_CHAR_MULTIPLIER as i32 - 1) * BONUS_BOUNDARY_WHITE as i32;
+    let score = (SCORE_MATCH as i32 + scheme.boundary_white() as i32) * len_pattern as i32
+        + (BONUS_FIRST_CHAR_MULTIPLIER as i32 - 1) * scheme.boundary_white() as i32;
     Some((
         Match {
             start: trimmed_start,
@@ -936,13 +1161,13 @@ pub fn equal_match(
 
 /// algo.go:298 — the bonus at one position, with the start of the line treated
 /// as if it followed whitespace.
-fn bonus_at(input: &Text, idx: usize) -> i16 {
+fn bonus_at(scheme: &Scheme, input: &Text, idx: usize) -> i16 {
     if idx == 0 {
-        return BONUS_BOUNDARY_WHITE;
+        return scheme.boundary_white();
     }
-    bonus_of(
-        char_class_of(input.get(idx - 1)),
-        char_class_of(input.get(idx)),
+    scheme.bonus_of(
+        scheme.char_class_of(input.get(idx - 1)),
+        scheme.char_class_of(input.get(idx)),
     )
 }
 
@@ -975,12 +1200,13 @@ mod tests {
 
     fn score(text: &str, pat: &str) -> Option<i32> {
         let (p, cs) = prepare_pattern(pat);
-        fuzzy_match_v2(cs, &Text::new(text), &p, false).map(|(m, _)| m.score)
+        fuzzy_match_v2(&Scheme::DEFAULT, cs, true, &Text::new(text), &p, false)
+            .map(|(m, _)| m.score)
     }
 
     fn positions(text: &str, pat: &str) -> Option<Vec<usize>> {
         let (p, cs) = prepare_pattern(pat);
-        fuzzy_match_v2(cs, &Text::new(text), &p, true).map(|(_, pos)| {
+        fuzzy_match_v2(&Scheme::DEFAULT, cs, true, &Text::new(text), &p, true).map(|(_, pos)| {
             let mut v = pos.unwrap();
             v.sort_unstable();
             v
@@ -997,7 +1223,15 @@ mod tests {
         // (`start` is only backtraced when positions are requested, exactly as
         // in fzf — without them it stays at the first candidate offset.)
         let p: Vec<char> = "obz".chars().collect();
-        let (m, _) = fuzzy_match_v2(false, &Text::new("fooBarbaz1"), &p, true).unwrap();
+        let (m, _) = fuzzy_match_v2(
+            &Scheme::DEFAULT,
+            false,
+            true,
+            &Text::new("fooBarbaz1"),
+            &p,
+            true,
+        )
+        .unwrap();
         assert_eq!((m.start, m.end), (2, 9));
         assert_eq!(
             m.score,
@@ -1005,13 +1239,21 @@ mod tests {
         );
         // A word-boundary start earns the doubled first-char bonus.
         let (p, cs) = prepare_pattern("fbb");
-        let (m, _) = fuzzy_match_v2(cs, &Text::new("foo bar baz"), &p, true).unwrap();
+        let (m, _) = fuzzy_match_v2(
+            &Scheme::DEFAULT,
+            cs,
+            true,
+            &Text::new("foo bar baz"),
+            &p,
+            true,
+        )
+        .unwrap();
         assert_eq!((m.start, m.end), (0, 9));
         assert_eq!(
             m.score,
             (SCORE_MATCH * 3
-                + BONUS_BOUNDARY_WHITE * BONUS_FIRST_CHAR_MULTIPLIER
-                + BONUS_BOUNDARY_WHITE * 2
+                + Scheme::DEFAULT.boundary_white() * BONUS_FIRST_CHAR_MULTIPLIER
+                + Scheme::DEFAULT.boundary_white() * 2
                 + 2 * SCORE_GAP_START
                 + 4 * SCORE_GAP_EXTENSION) as i32
         );
@@ -1043,10 +1285,20 @@ mod tests {
     #[test]
     fn exact_prefers_the_boundary_occurrence() {
         let (p, cs) = prepare_pattern("bar");
-        let (m, _) = exact_match_naive(cs, &Text::new("foobar bar"), &p, false).unwrap();
+        let (m, _) = exact_match_naive(
+            &Scheme::DEFAULT,
+            cs,
+            true,
+            &Text::new("foobar bar"),
+            &p,
+            false,
+        )
+        .unwrap();
         // The stand-alone "bar" wins over the one glued to "foo".
         assert_eq!((m.start, m.end), (7, 10));
-        assert!(exact_match_naive(cs, &Text::new("br"), &p, false).is_none());
+        assert!(
+            exact_match_naive(&Scheme::DEFAULT, cs, true, &Text::new("br"), &p, false).is_none()
+        );
     }
 
     #[test]

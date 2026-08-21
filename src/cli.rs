@@ -822,15 +822,7 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &crate::fzf::Look) ->
             lines.drain(..lines.len() - n);
         }
     }
-    let order = crate::tui::rank(
-        &lines,
-        pat,
-        exact,
-        no_sort,
-        look.tiebreak_length,
-        look.tac,
-        look,
-    );
+    let order = crate::tui::rank(&lines, pat, exact, no_sort, look.tac, look);
     let out = io::stdout();
     let mut out = BufWriter::new(out.lock());
     // `--print0`: records are NUL-terminated, for `xargs -0` downstream.

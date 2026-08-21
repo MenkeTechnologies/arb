@@ -684,7 +684,10 @@ impl PreviewWindow {
     /// Split `body` into (list, preview) rectangles. `None` means the preview is
     /// not drawn — `hidden`, or a size of zero, which fzf documents as "preview
     /// window will not be visible, but fzf will still execute the command".
-    pub fn split(&self, body: ratatui::layout::Rect) -> (ratatui::layout::Rect, Option<ratatui::layout::Rect>) {
+    pub fn split(
+        &self,
+        body: ratatui::layout::Rect,
+    ) -> (ratatui::layout::Rect, Option<ratatui::layout::Rect>) {
         use ratatui::layout::{Constraint, Layout};
         if self.hidden {
             return (body, None);
@@ -706,7 +709,9 @@ impl PreviewWindow {
         }
         let rest = total - want;
         let constraints = match self.pos {
-            PreviewPos::Up | PreviewPos::Left => [Constraint::Length(want), Constraint::Length(rest)],
+            PreviewPos::Up | PreviewPos::Left => {
+                [Constraint::Length(want), Constraint::Length(rest)]
+            }
             PreviewPos::Down | PreviewPos::Right => {
                 [Constraint::Length(rest), Constraint::Length(want)]
             }
@@ -786,17 +791,24 @@ pub struct Look {
     /// (fzf's default is 3, which is why its list starts sliding well before the
     /// cursor reaches the edge).
     pub scroll_off: usize,
-    /// fzf's default `--tiebreak=length`: equally-scored matches rank shortest
-    /// first (`--tiebreak=index` turns this off and keeps input order). The
-    /// other criteria fzf offers (`begin`, `end`, `chunk`, `pathname`) parse but
-    /// fall back to this pair.
-    pub tiebreak_length: bool,
+    /// `--tiebreak`: the ranking criteria after score, in order, with the
+    /// item's input index as the implicit last one. Defaults to what the
+    /// `--scheme` implies (`length` for `default`).
+    pub tiebreak: Vec<crate::pattern::Criterion>,
     /// `--preview-window`: where the preview box goes and how big it is.
     pub preview_window: PreviewWindow,
     /// `--bind` bindings, in declaration order (later wins for the same key).
     pub binds: Vec<(Key, Vec<Action>)>,
     /// `-i`/`--ignore-case`, `+i`/`--no-ignore-case`, `--smart-case`.
     pub case: Case,
+    /// `--algo=v1|v2`: which fuzzy matcher runs. `v2` (the default) is the
+    /// score-matrix one; `v1` is fzf's older greedy scan, kept because it finds
+    /// a different alignment and so ranks differently.
+    pub algo_v1: bool,
+    /// `--scheme=default|path|history`: which characters count as boundaries
+    /// and what a match just after one is worth (fzf's `Init`, algo.go:176).
+    /// `path` also changes the default tiebreak order.
+    pub scheme: crate::algo::Scheme,
     /// `--tail=N`: keep only the last N candidates. fzf applies this to the
     /// candidate list, so the dropped lines are not matched, not merely hidden.
     pub tail: Option<usize>,
@@ -841,10 +853,15 @@ impl Default for Look {
             min_height_plus: true,
             scrollbar: true,
             scroll_off: 3,
-            tiebreak_length: true,
+            tiebreak: vec![
+                crate::pattern::Criterion::Score,
+                crate::pattern::Criterion::Length,
+            ],
             preview_window: PreviewWindow::default(),
             binds: Vec::new(),
             case: Case::Smart,
+            algo_v1: false,
+            scheme: crate::algo::Scheme::DEFAULT,
             tail: None,
             read0: false,
             print0: false,
@@ -1241,13 +1258,10 @@ impl Look {
                 "--no-color" => look.colors = Colors::bw(),
                 "--tiebreak" => {
                     let (v, sep) = flag_value(a, next);
-                    // Only the FIRST criterion decides the order arb can model.
-                    look.tiebreak_length = !matches!(
-                        v.as_deref()
-                            .and_then(|v| v.split(',').next().map(str::to_string))
-                            .as_deref(),
-                        Some("index")
-                    );
+                    // A spec fzf would reject leaves the current criteria alone.
+                    if let Some(c) = v.as_deref().and_then(crate::pattern::parse_tiebreak) {
+                        look.tiebreak = c;
+                    }
                     i += usize::from(sep);
                 }
                 "--scroll-off" => {
@@ -1276,6 +1290,28 @@ impl Look {
                 // fzf's `--extended-exact` is `-x -e` in one flag (and has no
                 // negation of its own). The exact half is applied in `cli.rs`.
                 "--extended-exact" => look.extended = true,
+                "--algo" => {
+                    let (v, sep) = flag_value(a, next);
+                    match v.as_deref() {
+                        Some("v1") => look.algo_v1 = true,
+                        Some("v2") => look.algo_v1 = false,
+                        // An unknown algo keeps the default, as fzf rejects it.
+                        _ => {}
+                    }
+                    i += usize::from(sep);
+                }
+                "--scheme" => {
+                    let (v, sep) = flag_value(a, next);
+                    // An unrecognized scheme keeps the default, the way fzf
+                    // rejects it rather than scoring with something else.
+                    if let Some(s) = v.as_deref().and_then(crate::algo::Scheme::by_name) {
+                        look.scheme = s;
+                        // A scheme carries its own tiebreak order, and fzf lets
+                        // whichever of `--scheme`/`--tiebreak` comes last win.
+                        look.tiebreak = crate::pattern::scheme_criteria(&s);
+                    }
+                    i += usize::from(sep);
+                }
                 // Record framing: NUL in, NUL out.
                 "--read0" => look.read0 = true,
                 "--no-read0" => look.read0 = false,
@@ -1538,7 +1574,12 @@ mod tests {
     #[test]
     fn hidden_and_zero_size_draw_no_pane() {
         use ratatui::layout::Rect;
-        let body = Rect { x: 0, y: 0, width: 100, height: 30 };
+        let body = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 30,
+        };
         let (list, pane) = PreviewWindow::parse("hidden").split(body);
         assert!(pane.is_none(), "hidden draws nothing");
         assert_eq!(list, body, "and the list takes the whole body");
@@ -1551,7 +1592,12 @@ mod tests {
     #[test]
     fn the_split_places_and_sizes_the_pane() {
         use ratatui::layout::Rect;
-        let body = Rect { x: 0, y: 0, width: 100, height: 30 };
+        let body = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 30,
+        };
 
         let (list, pane) = PreviewWindow::parse("right,60%").split(body);
         let pane = pane.expect("drawn");
@@ -1577,7 +1623,12 @@ mod tests {
     #[test]
     fn the_list_always_keeps_a_cell() {
         use ratatui::layout::Rect;
-        let body = Rect { x: 0, y: 0, width: 10, height: 4 };
+        let body = Rect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 4,
+        };
         // An oversized request must not leave zero columns to pick from.
         let (list, pane) = PreviewWindow::parse("right,100%").split(body);
         assert_eq!(list.width, 1);
@@ -1586,11 +1637,7 @@ mod tests {
 
     #[test]
     fn look_parses_the_flag_in_both_spellings() {
-        let attached = Look::parse(&[
-            "arb".into(),
-            "--fzf".into(),
-            "--preview-window=up,7".into(),
-        ]);
+        let attached = Look::parse(&["arb".into(), "--fzf".into(), "--preview-window=up,7".into()]);
         assert_eq!(attached.preview_window.pos, PreviewPos::Up);
         assert_eq!(attached.preview_window.size, PreviewSize::Cells(7));
         let separate = Look::parse(&[
@@ -1602,5 +1649,4 @@ mod tests {
         assert_eq!(separate.preview_window.pos, PreviewPos::Down);
         assert_eq!(separate.preview_window.size, PreviewSize::Percent(20));
     }
-
 }

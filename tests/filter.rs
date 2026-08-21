@@ -93,7 +93,7 @@ fn rank_orders_by_score_then_trimmed_length_then_input() {
         "docs/manual.md  ", // boundary too, but longer — and padded
     ];
     let look = arb::fzf::Look::default();
-    let order = rank(&lines, "ma", false, false, true, false, &look);
+    let order = rank(&lines, "ma", false, false, false, &look);
     // This is `fzf --filter ma` on the same four lines, verbatim: a
     // start-of-line match first, then the boundary match after `/`, then the
     // mid-word one, then the longer boundary match.
@@ -106,12 +106,12 @@ fn rank_orders_by_score_then_trimmed_length_then_input() {
     // `TrimLength`), so the padded line ties on its trimmed width of 14.
     assert_eq!(arb::tui::trim_length("docs/manual.md  "), 14);
     // `--no-sort` keeps input order for the same match set.
-    let unsorted = rank(&lines, "ma", false, true, true, false, &look);
+    let unsorted = rank(&lines, "ma", false, true, false, &look);
     let mut expected = unsorted.clone();
     expected.sort_unstable();
     assert_eq!(unsorted, expected);
     // `--tac` walks the same matches backwards.
-    let tac = rank(&lines, "ma", false, true, true, true, &look);
+    let tac = rank(&lines, "ma", false, true, true, &look);
     let mut rev = unsorted.clone();
     rev.reverse();
     assert_eq!(tac, rev);
@@ -128,7 +128,6 @@ fn exact_mode_is_substring_but_still_ranked() {
         "bar",
         true,
         false,
-        true,
         false,
         &arb::fzf::Look::default(),
     );
@@ -140,7 +139,6 @@ fn exact_mode_is_substring_but_still_ranked() {
         "bar",
         true,
         false,
-        true,
         false,
         &arb::fzf::Look::default()
     )
@@ -151,7 +149,6 @@ fn exact_mode_is_substring_but_still_ranked() {
             "bar",
             false,
             false,
-            true,
             false,
             &arb::fzf::Look::default()
         ),
@@ -242,7 +239,6 @@ fn ranked(query: &str) -> Vec<&'static str> {
         query,
         false,
         false,
-        true,
         false,
         &arb::fzf::Look::default(),
     );
@@ -264,7 +260,7 @@ fn spaces_and_terms_together() {
         extended: false,
         ..arb::fzf::Look::default()
     };
-    assert!(arb::tui::rank(&CORPUS, "src rs", false, false, true, false, &plain).is_empty());
+    assert!(arb::tui::rank(&CORPUS, "src rs", false, false, false, &plain).is_empty());
 }
 
 /// `|` ORs the terms on either side of it into one set, and the set is scored
@@ -362,4 +358,115 @@ fn only_plain_queries_are_safe_to_narrow_incrementally() {
     // Growing `src` into `src | docs` really does widen the set, which is what
     // makes the gate necessary rather than merely cautious.
     assert!(ranked("src | docs").len() > ranked("src").len());
+}
+
+// ── Scoring schemes and tiebreak criteria ──────────────────────────────────
+// Expectations captured from `fzf --scheme=… --filter …` and
+// `fzf --tiebreak=… --filter …` on fzf 0.74.3.
+
+/// Rank `lines` under an explicit `Look`.
+fn ranked_with(lines: &[&'static str], query: &str, look: &arb::fzf::Look) -> Vec<&'static str> {
+    let order = arb::tui::rank(lines, query, false, false, false, look);
+    order.into_iter().map(|i| lines[i]).collect()
+}
+
+/// `--tiebreak=pathname` prefers a match inside the LAST path segment. It needs
+/// both of the settings fzf derives from the criteria rather than from a flag:
+/// a backward scan, and the backtrace that makes the begin offset accurate.
+/// Without either, both lines score the same and input order survives.
+#[test]
+fn pathname_tiebreak_prefers_the_last_segment() {
+    let lines: [&str; 2] = ["/conf/x/y", "/usr/local/etc/conf"];
+    let look = arb::fzf::Look {
+        tiebreak: arb::pattern::parse_tiebreak("pathname").unwrap(),
+        ..arb::fzf::Look::default()
+    };
+    assert_eq!(
+        ranked_with(&lines, "conf", &look),
+        vec!["/usr/local/etc/conf", "/conf/x/y"]
+    );
+    // The two score identically, so `index` leaves them in input order — which
+    // is what makes the case above a real test of the criterion.
+    let by_index = arb::fzf::Look {
+        tiebreak: arb::pattern::parse_tiebreak("index").unwrap(),
+        ..arb::fzf::Look::default()
+    };
+    assert_eq!(
+        ranked_with(&lines, "conf", &by_index),
+        vec!["/conf/x/y", "/usr/local/etc/conf"]
+    );
+}
+
+/// fzf derives the scan direction and the need for a backtrace from the
+/// criteria (core.go:215) — neither is a user-facing option, and getting them
+/// wrong silently changes the order for four of the six tiebreaks.
+#[test]
+fn scan_direction_follows_the_criteria() {
+    use arb::pattern::{parse_tiebreak, scan_direction};
+    let dir = |s: &str| scan_direction(&parse_tiebreak(s).unwrap());
+    assert_eq!(dir("length"), (true, false));
+    assert_eq!(dir("begin"), (true, false));
+    assert_eq!(dir("index"), (true, false));
+    assert_eq!(dir("end"), (false, false)); // last best match
+    assert_eq!(dir("chunk"), (true, true)); // needs an accurate begin
+    assert_eq!(dir("pathname"), (false, true)); // both
+                                                // An earlier criterion wins: the walk runs last-to-first.
+    assert_eq!(dir("begin,end"), (true, false));
+    assert_eq!(dir("end,begin"), (false, false));
+}
+
+/// A `--tiebreak` spec fzf rejects must not silently reorder — duplicates, an
+/// `index` that isn't last, unknown names and over-long lists all keep the
+/// caller's criteria.
+#[test]
+fn invalid_tiebreak_specs_are_rejected() {
+    use arb::pattern::parse_tiebreak;
+    assert!(parse_tiebreak("length,length").is_none());
+    assert!(parse_tiebreak("index,length").is_none());
+    assert!(parse_tiebreak("nonsense").is_none());
+    assert!(parse_tiebreak("begin,end,chunk,length").is_none());
+    assert!(parse_tiebreak("begin,end,chunk").is_some());
+}
+
+/// `--scheme=path` stops treating a whitespace boundary as special and makes
+/// `/` the only delimiter, so a path ranks by its segments. It also carries its
+/// own tiebreak order.
+#[test]
+fn path_scheme_brings_its_own_criteria() {
+    use arb::pattern::{scheme_criteria, Criterion};
+    assert_eq!(
+        scheme_criteria(&arb::algo::Scheme::PATH),
+        vec![Criterion::Score, Criterion::Pathname, Criterion::Length]
+    );
+    assert_eq!(
+        scheme_criteria(&arb::algo::Scheme::HISTORY),
+        vec![Criterion::Score]
+    );
+    assert_eq!(
+        scheme_criteria(&arb::algo::Scheme::DEFAULT),
+        vec![Criterion::Score, Criterion::Length]
+    );
+}
+
+/// `--accept-nth` prints fields, not lines. A field carries the delimiter that
+/// followed it, so joining fields 2 and 3 of `a:b:c` is `b:c` — only the very
+/// last delimiter is stripped.
+#[test]
+fn accept_nth_keeps_inner_delimiters() {
+    use arb::fzf::{AcceptNth, Nth};
+    let by = |s: &str| AcceptNth::parse(s).unwrap().render("a:b:c", Some(":"), 7);
+    assert_eq!(by("2,3"), "b:c");
+    assert_eq!(by("2"), "b");
+    assert_eq!(by("2.."), "b:c");
+    assert_eq!(by("-1"), "c");
+    // A template splices literal text and `{n}`, the line's input index.
+    assert_eq!(by("[{n}] {2}"), "[7] b");
+    assert_eq!(by("{1}-{3}"), "a-c");
+    // A bare field list is not a template, and a template needs a placeholder.
+    assert!(matches!(
+        AcceptNth::parse("2,3"),
+        Some(AcceptNth::Fields(_))
+    ));
+    assert!(AcceptNth::parse("no placeholder here").is_none());
+    assert_eq!(Nth::parse_list("2,3").len(), 2);
 }
