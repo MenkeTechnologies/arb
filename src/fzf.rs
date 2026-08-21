@@ -782,6 +782,11 @@ pub struct Look {
     pub binds: Vec<(Key, Vec<Action>)>,
     /// `-i`/`--ignore-case`, `+i`/`--no-ignore-case`, `--smart-case`.
     pub case: Case,
+    /// `-x`/`--extended` (fzf's DEFAULT) vs `+x`/`--no-extended`. Extended makes
+    /// the query a term list — space-separated terms are AND'd, `|` ORs them,
+    /// and `'exact` / `^prefix` / `suffix$` / `!inverse` change how a term
+    /// matches. `+x` makes the whole query one literal fuzzy term.
+    pub extended: bool,
 }
 
 impl Default for Look {
@@ -813,6 +818,7 @@ impl Default for Look {
             preview_window: PreviewWindow::default(),
             binds: Vec::new(),
             case: Case::Smart,
+            extended: true,
         }
     }
 }
@@ -1128,6 +1134,10 @@ impl Look {
                 "-i" | "--ignore-case" => look.case = Case::Ignore,
                 "+i" | "--no-ignore-case" => look.case = Case::Respect,
                 "--smart-case" => look.case = Case::Smart,
+                // fzf's query language. Extended is the DEFAULT — `+x` is what
+                // turns the query back into a single literal fuzzy term.
+                "-x" | "--extended" => look.extended = true,
+                "+x" | "--no-extended" => look.extended = false,
                 "--with-shell" => {
                     let (v, sep) = flag_value(a, next);
                     look.with_shell = v.filter(|v| !v.is_empty());

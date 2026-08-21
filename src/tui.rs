@@ -337,10 +337,16 @@ pub fn item_text<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow
 
 /// What a query matches against for one line: the whole line by default, the
 /// `--nth` fields when asked, with the SGR codes removed under `--ansi`.
-pub fn search_key(line: &str, look: &crate::fzf::Look) -> String {
-    let plain = |s: &str| match look.ansi {
-        true => crate::fzf::strip_ansi(s),
-        false => s.to_string(),
+/// Borrows in the default case — no `--nth`, no `--ansi` — because this runs
+/// once per LINE. Returning an owned `String` here cost a malloc plus a full
+/// copy of every line in the corpus before the matcher even looked at it, which
+/// on a selective query was more work than the match. Only a projection or an
+/// SGR strip, which genuinely build a new string, allocate.
+pub fn search_key<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    let plain = |s: &'a str| match look.ansi {
+        true => Cow::Owned(crate::fzf::strip_ansi(s)),
+        false => Cow::Borrowed(s),
     };
     if look.nth.is_empty() && look.with_nth.is_empty() {
         return plain(line);
@@ -351,7 +357,11 @@ pub fn search_key(line: &str, look: &crate::fzf::Look) -> String {
         true => &look.with_nth,
         false => &look.nth,
     };
-    plain(&crate::fzf::transform(&tokens, ranges, delim))
+    let projected = crate::fzf::transform(&tokens, ranges, delim);
+    Cow::Owned(match look.ansi {
+        true => crate::fzf::strip_ansi(&projected),
+        false => projected,
+    })
 }
 
 /// Rank a whole corpus against one query the way the picker does: score across
@@ -368,19 +378,23 @@ pub fn rank(
     tac: bool,
     look: &crate::fzf::Look,
 ) -> Vec<usize> {
+    // Parse the query ONCE, not once per line: the term list, its `Vec<char>`
+    // and the smart-case decision are per-query work.
+    let pattern = crate::pattern::Pattern::build(pat, exact, look.extended, look.case);
     let mut hits: Vec<(i32, usize)> = lines
         .par_iter()
         .enumerate()
-        .filter_map(|(i, line)| {
-            score_line(&search_key(line, look), pat, exact, look.case).map(|s| (s, i))
-        })
+        .filter_map(|(i, line)| pattern.score(&search_key(line, look)).map(|s| (s, i)))
         .collect();
     hits.par_sort_by_key(|(_, i)| *i);
     // `--tac` reversed the input, so every order derived from it reverses too.
     if tac {
         hits.reverse();
     }
-    if !no_sort {
+    // A query of nothing but inverse terms scores every survivor 0, so fzf
+    // leaves them in input order rather than letting the tiebreak reshuffle them
+    // (`sortable`, pattern.go:100).
+    if !no_sort && pattern.sortable {
         hits.sort_by(|a, b| {
             b.0.cmp(&a.0).then_with(|| match tiebreak_length {
                 true => trim_length(lines[a.1]).cmp(&trim_length(lines[b.1])),
@@ -393,6 +407,10 @@ pub fn rank(
 
 /// Score a line against the query with the active mode (exact substring or
 /// fuzzy) and case mode (`--smart-case` by default, `-i`/`+i` to pin it).
+///
+/// This is the `+x` matcher — one query, one term. Extended queries go through
+/// [`crate::pattern::Pattern`], which also avoids re-parsing the query for every
+/// line; prefer it for anything that scores more than a handful of lines.
 pub fn score_line(line: &str, pat: &str, exact: bool, case: crate::fzf::Case) -> Option<i32> {
     if pat.is_empty() {
         return Some(0);
@@ -1250,6 +1268,11 @@ pub fn run(
             c.look.clone(),
         )
     };
+    // The parsed form of `fzf_filter`, rebuilt only when the query changes —
+    // never per line and never per frame. `fzf_filter`'s sentinel forces the
+    // first frame to replace this.
+    let mut fzf_pattern =
+        crate::pattern::Pattern::build("", fzf_exact, fzf_look.extended, fzf_look.case);
 
     // `timeout Ns …` idle reactions: track the last stream `total` and when it
     // last advanced; each timeout fires once per idle span, re-armed on a new line.
@@ -1431,13 +1454,29 @@ pub fn run(
                 let n = fzf_cands.len();
                 let empty = filter.is_empty();
                 if filter != fzf_filter {
+                    let next = crate::pattern::Pattern::build(
+                        &filter,
+                        fzf_exact,
+                        fzf_look.extended,
+                        fzf_look.case,
+                    );
                     // fzf's query-extension trick: typing another char can only
                     // narrow the current matches (fuzzy match is monotonic), so
                     // re-filter the existing hit set instead of rescanning the
                     // whole (million-line) buffer. Only a non-prefix change
                     // (backspace, new query) does a full — parallel — rescan.
-                    let extends =
-                        !empty && !fzf_filter.is_empty() && filter.starts_with(&fzf_filter);
+                    //
+                    // Monotonic is a property of PLAIN terms only. An extended
+                    // query can WIDEN as it grows — `a` → `a | b` adds an OR
+                    // branch, `!a` → `!ab` rejects fewer lines — and then the old
+                    // hit set is not a superset of the new one. fzf gates its own
+                    // cache on exactly this (`cacheable`, pattern.go:115), so the
+                    // shortcut needs both the old and new query to qualify.
+                    let extends = !empty
+                        && !fzf_filter.is_empty()
+                        && filter.starts_with(&fzf_filter)
+                        && fzf_pattern.cacheable
+                        && next.cacheable;
                     if empty {
                         fzf_hits.clear();
                         fzf_matched.clear();
@@ -1447,13 +1486,7 @@ pub fn run(
                         fzf_hits = old
                             .into_iter()
                             .filter_map(|(_, i)| {
-                                score_line(
-                                    fzf_cands[i as usize].key(),
-                                    &filter,
-                                    fzf_exact,
-                                    fzf_look.case,
-                                )
-                                .map(|s| (s, i))
+                                next.score(fzf_cands[i as usize].key()).map(|s| (s, i))
                             })
                             .collect();
                         // keep fzf_processed — new candidates scored below
@@ -1463,13 +1496,11 @@ pub fn run(
                         fzf_hits = fzf_cands
                             .par_iter()
                             .enumerate()
-                            .filter_map(|(i, cand)| {
-                                score_line(cand.key(), &filter, fzf_exact, fzf_look.case)
-                                    .map(|s| (s, i as u32))
-                            })
+                            .filter_map(|(i, cand)| next.score(cand.key()).map(|s| (s, i as u32)))
                             .collect();
                         fzf_processed = n;
                     }
+                    fzf_pattern = next;
                     fzf_filter = filter.clone();
                     fzf_last_sort = Instant::now() - Duration::from_secs(1);
                 }
@@ -1477,9 +1508,7 @@ pub fn run(
                 for (i, cand) in fzf_cands.iter().enumerate().take(n).skip(fzf_processed) {
                     if empty {
                         fzf_matched.push(i as u32);
-                    } else if let Some(sc) =
-                        score_line(cand.key(), &filter, fzf_exact, fzf_look.case)
-                    {
+                    } else if let Some(sc) = fzf_pattern.score(cand.key()) {
                         fzf_hits.push((sc, i as u32));
                     }
                 }
@@ -1501,8 +1530,10 @@ pub fn run(
                     // best-first, breaking ties fzf's way: `--tiebreak=length`
                     // (its default) puts the shorter match first, and the sort
                     // is stable so anything still equal keeps input order —
-                    // which is fzf's final `index` criterion.
-                    if !fzf_no_sort {
+                    // which is fzf's final `index` criterion. A query of nothing
+                    // but inverse terms is not `sortable` — every survivor scores
+                    // 0, so fzf keeps them in input order.
+                    if !fzf_no_sort && fzf_pattern.sortable {
                         h.par_sort_by(|a, b| {
                             b.0.cmp(&a.0).then_with(|| {
                                 if fzf_look.tiebreak_length {
@@ -1608,6 +1639,7 @@ pub fn run(
                     matched,
                     &fzf_cands,
                     &filter,
+                    &fzf_pattern,
                     sel,
                     fzf_start,
                     &marks,
@@ -2824,7 +2856,7 @@ pub fn match_positions_case(line: &str, pat: &str, case: crate::fzf::Case) -> Ve
 /// column shows the `--marker` glyph for a Tab-marked row.
 fn fzf_line(
     line: &str,
-    filter: &str,
+    pattern: &crate::pattern::Pattern,
     width: usize,
     marked: bool,
     current: bool,
@@ -2924,14 +2956,15 @@ fn fzf_line(
     } else {
         Span::styled(" ".repeat(mark_w), row_bg)
     };
-    if filter.is_empty() {
+    if pattern.is_empty() {
         let mut spans = vec![pointer, gutter];
         spans.extend(styled_run(0, text, base_style));
         return Line::from(spans);
     }
-    let pos: std::collections::HashSet<usize> = match_positions_case(&text, filter, look.case)
-        .into_iter()
-        .collect();
+    // Highlight what the QUERY matched, term by term — an extended query marks
+    // the characters each of its terms hit, not the characters a fuzzy match of
+    // the raw query text would have hit.
+    let pos: std::collections::HashSet<usize> = pattern.positions(&text).into_iter().collect();
     // Matched characters take fzf's `hl` / `hl+` slot.
     let hl = if current { colors.hl_plus } else { colors.hl }
         .fg()
@@ -3014,6 +3047,9 @@ fn render_fzf(
     matched: &[u32],
     cands: &[FzfCand],
     filter: &str,
+    // The parsed `filter`, built once per query by the run loop — the rows use
+    // it for highlighting, so nothing re-parses the query per frame or per row.
+    pattern: &crate::pattern::Pattern,
     sel: usize,
     // `prev_start`: the previous frame's scroll offset, so the window slides
     // like fzf's instead of being recomputed from the cursor every frame.
@@ -3280,7 +3316,7 @@ fn render_fzf(
             let current = n > 0 && pos == sel;
             let row = fzf_line(
                 disp,
-                filter,
+                pattern,
                 inner_w,
                 mark_set.contains(orig.as_ref()),
                 current,

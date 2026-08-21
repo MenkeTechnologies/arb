@@ -217,3 +217,149 @@ fn ansi_codes_are_colour_not_content() {
     };
     assert_eq!(arb::tui::search_key(line, &both), "alpha");
 }
+
+// ── fzf's extended search (`-x`, the default) ───────────────────────────────
+// Every expectation below is the verbatim output of `fzf --filter QUERY` on
+// `CORPUS`, captured from fzf 0.74.3 — order included, since the ranking is
+// half of what a picker is.
+
+/// The corpus these cases rank, in input order.
+const CORPUS: [&str; 7] = [
+    "src/main.rs",
+    "src/algo.rs",
+    "tests/main.rs",
+    "docs/main.md",
+    "Makefile",
+    "main.rs",
+    "src/main_test.rs",
+];
+
+/// Rank `CORPUS` with fzf's default flags (extended on, smart-case,
+/// `--tiebreak=length`) and return the lines, best first.
+fn ranked(query: &str) -> Vec<&'static str> {
+    let order = arb::tui::rank(
+        &CORPUS,
+        query,
+        false,
+        false,
+        true,
+        false,
+        &arb::fzf::Look::default(),
+    );
+    order.into_iter().map(|i| CORPUS[i]).collect()
+}
+
+/// The whole point of extended mode: a space is an AND of two terms, not a
+/// literal character. Getting this wrong silently returns a near-empty set for
+/// the most ordinary query a person types.
+#[test]
+fn spaces_and_terms_together() {
+    assert_eq!(
+        ranked("src rs"),
+        vec!["src/main.rs", "src/algo.rs", "src/main_test.rs"]
+    );
+    // `+x` turns the same query back into one literal term — the space has to
+    // appear in the line, so nothing here matches.
+    let plain = arb::fzf::Look {
+        extended: false,
+        ..arb::fzf::Look::default()
+    };
+    assert!(arb::tui::rank(&CORPUS, "src rs", false, false, true, false, &plain).is_empty());
+}
+
+/// `|` ORs the terms on either side of it into one set, and the set is scored
+/// by whichever term matched.
+#[test]
+fn bar_ors_the_terms_around_it() {
+    assert_eq!(
+        ranked("src | docs"),
+        vec![
+            "docs/main.md",
+            "src/main.rs",
+            "src/algo.rs",
+            "src/main_test.rs"
+        ]
+    );
+}
+
+/// `^`/`$` anchor, and together they demand the whole line.
+#[test]
+fn anchors_restrict_where_a_term_may_match() {
+    assert_eq!(
+        ranked("^src"),
+        vec!["src/main.rs", "src/algo.rs", "src/main_test.rs"]
+    );
+    assert_eq!(
+        ranked("rs$"),
+        vec![
+            "main.rs",
+            "src/main.rs",
+            "src/algo.rs",
+            "tests/main.rs",
+            "src/main_test.rs"
+        ]
+    );
+    assert_eq!(ranked("^main.rs$"), vec!["main.rs"]);
+}
+
+/// `!` inverts a term. `!'` inverts a FUZZY one — the quote flips exactness in
+/// the opposite direction once the term is already inverse.
+#[test]
+fn inverse_terms_subtract() {
+    assert_eq!(ranked("!src rs"), vec!["main.rs", "tests/main.rs"]);
+    assert_eq!(
+        ranked("main !test"),
+        vec!["main.rs", "src/main.rs", "docs/main.md"]
+    );
+    // Inverse-fuzzy: `src/main_test.rs` has s-r-c as a subsequence, so it goes
+    // too — an inverse EXACT term (`!src`) would have kept it.
+    assert_eq!(
+        ranked("!'src"),
+        vec!["tests/main.rs", "docs/main.md", "Makefile", "main.rs"]
+    );
+}
+
+/// A query of nothing but inverse terms scores every survivor 0, so fzf leaves
+/// them in INPUT order instead of letting the length tiebreak reorder them
+/// (`sortable`, pattern.go:100). Sorting here would put `Makefile` first.
+#[test]
+fn inverse_only_query_keeps_input_order() {
+    assert_eq!(
+        ranked("!'src"),
+        vec!["tests/main.rs", "docs/main.md", "Makefile", "main.rs"]
+    );
+}
+
+/// `'term'` (quoted both sides) matches only at a word boundary, unlike `'term`
+/// which matches any substring.
+#[test]
+fn quoted_term_matches_on_boundaries() {
+    assert_eq!(
+        ranked("'main'"),
+        vec![
+            "main.rs",
+            "src/main.rs",
+            "docs/main.md",
+            "tests/main.rs",
+            "src/main_test.rs"
+        ]
+    );
+}
+
+/// The incremental re-filter in the picker may only reuse the previous hit set
+/// when growing the query can only NARROW it. An `|` or a `!` breaks that, and
+/// reusing the old hits there drops lines that should have appeared.
+#[test]
+fn only_plain_queries_are_safe_to_narrow_incrementally() {
+    use arb::fzf::Case;
+    use arb::pattern::Pattern;
+    let cacheable = |q: &str| Pattern::build(q, false, true, Case::Smart).cacheable;
+    assert!(cacheable("src"));
+    assert!(cacheable("src rs"));
+    assert!(!cacheable("src | docs"));
+    assert!(!cacheable("!src"));
+    assert!(!cacheable("^src"));
+    // Growing `src` into `src | docs` really does widen the set, which is what
+    // makes the gate necessary rather than merely cautious.
+    assert!(ranked("src | docs").len() > ranked("src").len());
+}

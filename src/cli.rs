@@ -620,10 +620,10 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
                     out.push("--exact".to_string());
                     continue;
                 }
-                // The case flags reach the picker through `fzf::Look`, which
-                // read them off the full argv. `-x`/`+x` switch fzf's
-                // extended-search operators, which arb's matcher doesn't have,
-                // and `+c` is fzf's undocumented legacy no-color short form.
+                // The case flags and `-x`/`+x` (extended search on/off) reach the
+                // matcher through `fzf::Look`, which read them off the full
+                // argv; clap knows none of them. `+c` is fzf's undocumented
+                // legacy no-color short form.
                 "-i" | "+i" | "-x" | "+x" | "+c" => continue,
                 // `+m` cancels an earlier `-m`; `+s` is `--no-sort`.
                 "+m" => {

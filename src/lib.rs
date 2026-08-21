@@ -27,6 +27,7 @@ pub mod jqval;
 pub mod lexer;
 pub mod lsp;
 pub mod parser;
+pub mod pattern;
 pub mod pkg;
 pub mod pty;
 pub mod query;

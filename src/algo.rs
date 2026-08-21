@@ -176,6 +176,21 @@ impl<'a> Text<'a> {
             Text::Runes(_) => &[],
         }
     }
+    /// `Chars.LeadingWhitespaces` (util/chars.go) — how many whitespace
+    /// characters the line opens with. `^prefix` and `==equal` skip them so an
+    /// indented line still prefix-matches.
+    fn leading_whitespaces(&self) -> usize {
+        (0..self.len())
+            .take_while(|i| self.get(*i).is_whitespace())
+            .count()
+    }
+    /// `Chars.TrailingWhitespaces` — the mirror of [`Text::leading_whitespaces`],
+    /// used by `suffix$` and `==equal`.
+    fn trailing_whitespaces(&self) -> usize {
+        (0..self.len())
+            .take_while(|i| self.get(self.len() - 1 - *i).is_whitespace())
+            .count()
+    }
 }
 
 /// One match, in fzf's terms.
@@ -629,10 +644,38 @@ fn calculate_score(
     (score, pos)
 }
 
-/// fzf's `ExactMatchNaive` (algo.go:808) — `--exact`: the substring occurrence
-/// with the best boundary bonus, scored like a fuzzy match.
+/// fzf's `ExactMatchNaive` (algo.go:1112) — `--exact` and an extended `'term`:
+/// the substring occurrence with the best boundary bonus, scored like a fuzzy
+/// match.
 pub fn exact_match_naive(
     case_sensitive: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    exact_match(case_sensitive, false, input, pattern, with_pos)
+}
+
+/// fzf's `ExactMatchBoundary` (algo.go:1116) — an extended `'term'` (quoted on
+/// both sides): [`exact_match_naive`] restricted to occurrences that sit on a
+/// word boundary, and scored on its own scale so it can compete with the other
+/// term types in an OR set.
+pub fn exact_match_boundary(
+    case_sensitive: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    exact_match(case_sensitive, true, input, pattern, with_pos)
+}
+
+/// fzf's `exactMatchNaive` (algo.go:1120), the shared body behind
+/// [`exact_match_naive`] and [`exact_match_boundary`]. `forward` is always true
+/// here — arb has no `--no-forward`, so fzf's `indexAt` collapses to the index
+/// itself and the reversed branches drop out.
+fn exact_match(
+    case_sensitive: bool,
+    boundary_check: bool,
     input: &Text,
     pattern: &[char],
     with_pos: bool,
@@ -659,6 +702,10 @@ pub fn exact_match_naive(
     let mut pidx = 0usize;
     let mut best_pos: Option<usize> = None;
     let mut bonus = 0i16;
+    // The boundary bonus captured at the occurrence's FIRST character — it has
+    // to outlive the iteration that set it, because the check runs again on
+    // every later character of the same occurrence.
+    let mut bbonus = 0i16;
     let mut best_bonus = -1i16;
     let mut index: isize = 0;
     while index < len_runes as isize {
@@ -666,10 +713,27 @@ pub fn exact_match_naive(
         if !case_sensitive {
             ch = ch.to_lowercase().next().unwrap_or(ch);
         }
-        if ch == pattern[pidx] {
+        let mut ok = ch == pattern[pidx];
+        if ok {
             if pidx == 0 {
                 bonus = bonus_at(input, index as usize);
             }
+            if boundary_check {
+                if pidx == 0 {
+                    bbonus = bonus;
+                }
+                ok = bbonus >= BONUS_BOUNDARY;
+                if ok && pidx == 0 {
+                    ok = index == 0
+                        || char_class_of(input.get(index as usize - 1)) <= CharClass::Delimiter;
+                }
+                if ok && pidx == len_pattern - 1 {
+                    ok = index as usize == len_runes - 1
+                        || char_class_of(input.get(index as usize + 1)) <= CharClass::Delimiter;
+                }
+            }
+        }
+        if ok {
             pidx += 1;
             if pidx == len_pattern {
                 if bonus > best_bonus {
@@ -693,6 +757,77 @@ pub fn exact_match_naive(
     let best_pos = best_pos?;
     let sidx = best_pos + 1 - len_pattern;
     let eidx = best_pos + 1;
+    let (score, pos) = match boundary_check {
+        // A boundary match is scored on its own scale (algo.go:1211): the
+        // boundary bonus, docked for an `_` on either side so underscore
+        // boundaries rank below the others, plus a base that lets it compete
+        // with the fuzzy/exact terms it shares an OR set with.
+        // (fzf reads its live `bonus` here rather than `bestBonus`; under
+        // `boundary_check` an accepted occurrence always has
+        // `bonus >= BONUS_BOUNDARY`, so it always breaks out of the loop with
+        // the two holding the same value.)
+        true => {
+            let mut score = best_bonus as i32;
+            let mut deduct = (best_bonus - BONUS_BOUNDARY) as i32 + 1;
+            if sidx > 0 && input.get(sidx - 1) == '_' {
+                score -= deduct + 1;
+                deduct = 1;
+            }
+            if eidx < len_runes && input.get(eidx) == '_' {
+                score -= deduct;
+            }
+            score += SCORE_MATCH as i32 * len_pattern as i32
+                + BONUS_BOUNDARY_WHITE as i32 * (len_pattern as i32 + 1);
+            (score, with_pos.then(|| (sidx..eidx).collect()))
+        }
+        false => calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos),
+    };
+    Some((
+        Match {
+            start: sidx,
+            end: eidx,
+            score,
+        },
+        pos,
+    ))
+}
+
+/// fzf's `PrefixMatch` (algo.go:1228) — an extended `^term`. Leading whitespace
+/// is skipped unless the term itself starts with a space, so an indented line
+/// still prefix-matches.
+pub fn prefix_match(
+    case_sensitive: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    if pattern.is_empty() {
+        return Some((
+            Match {
+                start: 0,
+                end: 0,
+                score: 0,
+            },
+            with_pos.then(Vec::new),
+        ));
+    }
+    let trimmed = match pattern[0].is_whitespace() {
+        true => 0,
+        false => input.leading_whitespaces(),
+    };
+    if input.len() - trimmed < pattern.len() {
+        return None;
+    }
+    for (i, p) in pattern.iter().enumerate() {
+        let mut ch = input.get(trimmed + i);
+        if !case_sensitive {
+            ch = ch.to_lowercase().next().unwrap_or(ch);
+        }
+        if ch != *p {
+            return None;
+        }
+    }
+    let (sidx, eidx) = (trimmed, trimmed + pattern.len());
     let (score, pos) = calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos);
     Some((
         Match {
@@ -701,6 +836,101 @@ pub fn exact_match_naive(
             score,
         },
         pos,
+    ))
+}
+
+/// fzf's `SuffixMatch` (algo.go:1260) — an extended `term$`. The mirror of
+/// [`prefix_match`]: trailing whitespace is ignored unless the term ends with a
+/// space.
+pub fn suffix_match(
+    case_sensitive: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    let len_runes = input.len();
+    let trim_trailing = match pattern.last() {
+        Some(c) => !c.is_whitespace(),
+        None => true,
+    };
+    let trimmed = match trim_trailing {
+        true => len_runes - input.trailing_whitespaces(),
+        false => len_runes,
+    };
+    if pattern.is_empty() {
+        return Some((
+            Match {
+                start: trimmed,
+                end: trimmed,
+                score: 0,
+            },
+            with_pos.then(Vec::new),
+        ));
+    }
+    let diff = trimmed.checked_sub(pattern.len())?;
+    for (i, p) in pattern.iter().enumerate() {
+        let mut ch = input.get(i + diff);
+        if !case_sensitive {
+            ch = ch.to_lowercase().next().unwrap_or(ch);
+        }
+        if ch != *p {
+            return None;
+        }
+    }
+    let (sidx, eidx) = (trimmed - pattern.len(), trimmed);
+    let (score, pos) = calculate_score(case_sensitive, input, pattern, sidx, eidx, with_pos);
+    Some((
+        Match {
+            start: sidx,
+            end: eidx,
+            score,
+        },
+        pos,
+    ))
+}
+
+/// fzf's `EqualMatch` (algo.go:1294) — an extended `^term$`: the whole line,
+/// surrounding whitespace aside, must BE the term. Scored on a flat scale of its
+/// own, well above what a fuzzy match of the same length can reach.
+pub fn equal_match(
+    case_sensitive: bool,
+    input: &Text,
+    pattern: &[char],
+    with_pos: bool,
+) -> Option<(Match, Option<Vec<usize>>)> {
+    let len_pattern = pattern.len();
+    if len_pattern == 0 {
+        return None;
+    }
+    let trimmed_start = match pattern[0].is_whitespace() {
+        true => 0,
+        false => input.leading_whitespaces(),
+    };
+    let trimmed_end = match pattern[len_pattern - 1].is_whitespace() {
+        true => 0,
+        false => input.trailing_whitespaces(),
+    };
+    if input.len().checked_sub(trimmed_start + trimmed_end)? != len_pattern {
+        return None;
+    }
+    for (i, p) in pattern.iter().enumerate() {
+        let mut ch = input.get(trimmed_start + i);
+        if !case_sensitive {
+            ch = ch.to_lowercase().next().unwrap_or(ch);
+        }
+        if ch != *p {
+            return None;
+        }
+    }
+    let score = (SCORE_MATCH as i32 + BONUS_BOUNDARY_WHITE as i32) * len_pattern as i32
+        + (BONUS_FIRST_CHAR_MULTIPLIER as i32 - 1) * BONUS_BOUNDARY_WHITE as i32;
+    Some((
+        Match {
+            start: trimmed_start,
+            end: trimmed_start + len_pattern,
+            score,
+        },
+        with_pos.then(|| (trimmed_start..trimmed_start + len_pattern).collect()),
     ))
 }
 

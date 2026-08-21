@@ -62,7 +62,8 @@ displays it. Highlights:
   control's path used as a value is its current state — arb filters and maps the
   downstream output live.
 - **fzf superset + orchestrator** — `arb --fzf` is a fuzzy select mode (rank,
-  smart-case, multi-select, preview); `arb 'PROD | _ | CONS'` runs a whole
+  smart-case, fzf's extended query language, multi-select, preview);
+  `arb 'PROD | _ | CONS'` runs a whole
   pipeline with arb as the `_` stage, hooking each command's fds so producer
   **stderr lands in a pane** instead of corrupting the TUI.
 - **Runs on fusevm** — the compute core (expressions and the `calc` pipeline op)
@@ -218,6 +219,32 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
   gap penalties and `--tiebreak=length` ordering, so a query returns the same
   ranking `fzf` returns, down to the line order. **Smart-case**: a lowercase
   query is case-insensitive, any uppercase makes it case-sensitive.
+- **Extended search** — fzf's query language, ported from the Go source
+  (`pattern.go`) in `src/pattern.rs`, and on by default exactly as in fzf. A
+  query is a list of terms; every term must match, and a sigil changes how one
+  matches:
+
+  | term | matches |
+  | --- | --- |
+  | `main` | fuzzy |
+  | `'main` | exact substring |
+  | `'main'` | exact, on a word boundary |
+  | `^src` | at the start of the line |
+  | `rs$` | at the end of the line |
+  | `^main.rs$` | the whole line |
+  | `!test` | lines that do NOT contain it |
+  | `a \| b` | either one (an OR set) |
+  | `my\ file` | a literal space, not a term break |
+
+  ```sh
+  git ls-files | arb --fzf --filter '^src rs$ !test'  # under src/, ends in rs, not a test
+  git ls-files | arb --fzf --filter '^src | ^lib'     # under either directory
+  ```
+
+  `!`, `^` and `$` compose (`!^src`, `!rs$`), and `'` flips exactness in both
+  directions — under `-e`/`--exact` a `'term` is the FUZZY one. `+x` /
+  `--no-extended` turns the whole query back into a single literal fuzzy term;
+  `-x` / `--extended` is the default.
 - **`-f`/`--filter STR`** — the matcher without the UI: print the ranked matches
   and exit. Scored across cores, so a million-line corpus filters in a fraction
   of a second (`find / | arb --fzf --filter conf`).
@@ -243,7 +270,9 @@ selection, fzf's tokenizer), `--header-lines`, `--print-query`, `--expect`
 `fzf-tab` parses), `--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
-`ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`/`--sort`,
+`ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`,
+`-x`/`--extended` + `+x`/`--no-extended` (extended is the default, as in fzf),
+`--no-sort`/`--sort`,
 `-i`/`--ignore-case` + `+i`/`--no-ignore-case` + `--smart-case` (smart-case is the
 default, as in fzf), `-q`/`--query`, `-m`/`--multi[=MAX]`, `-f`/`--filter`, `--prompt`, `--header`, `--height`
 (`100%` means full screen and runs on the alternate screen, as in fzf, so
@@ -727,8 +756,8 @@ the terminal or the browser) is complete:
   resolved from `~/.arb/pkg`; `arb publish [GIT_URL]` upserts the package's entry
   into the index and pushes it — default registry
   [`MenkeTechnologies/arb-registry`](https://github.com/MenkeTechnologies/arb-registry)).
-- **fzf mode** — `arb --fzf` (rank, smart-case, multi-select, preview) and
-  pipeline orchestration (`arb 'PROD | _ | CONS'`).
+- **fzf mode** — `arb --fzf` (rank, smart-case, extended search, multi-select,
+  preview) and pipeline orchestration (`arb 'PROD | _ | CONS'`).
 - **Self-sourcing specs** — a spec can declare its own stream source: `spawn CMD`
   (or `spawn { … }`) launches a producer whose stdout feeds the stream, `< FILE`
   reads a file, and `! CMD every Ns` re-runs CMD on a timer (headless: once). So
