@@ -878,8 +878,14 @@ fn run(full_argv: &[String]) -> io::Result<()> {
 
     if cli.list {
         let mut out = io::stdout().lock();
-        for (name, desc) in spec::list_presets() {
+        // Description, then the invocation the preset's header documents,
+        // indented under it. Every preset reads a stream someone has to supply,
+        // so the name and the blurb alone are not enough to run one.
+        for (name, desc, example) in spec::list_presets() {
             writeln!(out, "{name:<10} {desc}")?;
+            if !example.is_empty() {
+                writeln!(out, "{:<10} {example}", "")?;
+            }
         }
         return Ok(());
     }
@@ -935,8 +941,11 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             crate::hosted::exit(1);
         };
         let mut out = io::stdout().lock();
-        for (name, desc) in spec::list_user_presets(&dir) {
+        for (name, desc, example) in spec::list_user_presets(&dir) {
             writeln!(out, "{name:<10} {desc}")?;
+            if !example.is_empty() {
+                writeln!(out, "{:<10} {example}", "")?;
+            }
         }
         return Ok(());
     }
@@ -1125,7 +1134,16 @@ fn run(full_argv: &[String]) -> io::Result<()> {
     // A producer (`--run`/`spawn`/`< file`) or a `poll` source supplies the
     // stream itself, so stdin is not required even on an interactive tty.
     if needs_stdin && producer.is_none() && poll.is_none() && io::stdin().is_terminal() {
-        eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
+        // The spec documents what feeds it in its own header comment. Print THAT
+        // rather than a generic `find / | arb` — for `arb -p git` the useful
+        // answer is `git log --oneline | arb -p git`, and it is already written
+        // down two lines into the preset.
+        match spec_example(&cli, sniffed) {
+            ex if ex.is_empty() => {
+                eprintln!("arb: spec reads stdin but nothing is piped — e.g. `find / | arb`");
+            }
+            ex => eprintln!("arb: spec reads stdin but nothing is piped — try:\narb:   {ex}"),
+        }
         crate::hosted::exit(2);
     }
 
@@ -1680,6 +1698,24 @@ fn install_cmd(file: &str, as_name: Option<&str>) -> io::Result<()> {
             eprintln!("arb: {e}");
             crate::hosted::exit(1);
         }
+    }
+}
+
+/// The invocation the loaded spec documents in its own header comment: a
+/// preset's (`-p NAME`, or the one a sniffed stream picked) resolved the way
+/// `import` resolves it, a spec FILE's read off disk. Empty when the spec is
+/// `-e SRC`, or when its header is prose rather than a command line.
+fn spec_example(cli: &Cli, sniffed: Option<&str>) -> String {
+    if let Some(name) = cli.preset.as_deref().or(sniffed) {
+        return spec::preset_example(name);
+    }
+    match cli
+        .spec
+        .as_deref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+    {
+        Some(src) => spec::example_comment(&src),
+        None => String::new(),
     }
 }
 

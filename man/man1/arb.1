@@ -78,7 +78,11 @@ is run as a pipeline instead of loaded as a spec.
 .BR \-l ", " \-\-list
 List available presets (bundled stdlib +
 .IR ~/.arb/lib )
-and exit.
+and exit. Each is printed as its name and description, with the invocation its
+header documents
+.RB ( "git log \-\-oneline | arb \-p git" )
+indented underneath \(em every preset renders a stream it does not produce, so
+the name alone will not run one.
 .TP
 .BI \-\-save \ NAME
 Save a spec (the
@@ -101,7 +105,9 @@ Name to install the spec under (defaults to the file stem).
 Remove a named preset from the library, then exit.
 .TP
 .B \-\-installed
-List only installed (user\-library) presets, then exit.
+List only installed (user\-library) presets, then exit. Same two lines per
+preset as
+.BR \-\-list .
 .SS Modes
 .TP
 .BR \-r ", " \-\-repl

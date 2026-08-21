@@ -401,7 +401,9 @@ arb --uninstall api                                             # remove it
 ```
 
 Installed specs live in `~/.arb/lib` (override with `$ARB_LIB`); the first `#`
-comment line is the description shown by `--installed`/`--list`. Install
+comment line is the description shown by `--installed`/`--list`, and the second
+is the invocation that feeds it — printed under the description there, and again
+if you run the spec with nothing piped in. Install
 validates the spec before adding it, so the library only holds runnable
 dashboards. A shared spec is any `.arb` file today; a remote registry (install by
 URL/name) plugs into the same resolver next.

@@ -15,14 +15,21 @@ fn temp_lib(label: &str) -> std::path::PathBuf {
 fn install_list_and_uninstall_preset() {
     use arb::spec::{install_preset, list_user_presets, uninstall_preset};
     let dir = temp_lib("roundtrip");
-    let src = "# my dashboard\ngauge .g -max 100\nsource .g { in; count }";
+    let src =
+        "# my dashboard\n#   seq 1 9 | arb -p mydash\ngauge .g -max 100\nsource .g { in; count }";
     let path = install_preset(&dir, "mydash", src).expect("install ok");
     assert!(path.exists());
 
+    // A user preset lists like a bundled one: name, description, and the
+    // invocation its own header documents.
     let listed = list_user_presets(&dir);
     assert_eq!(
         listed,
-        vec![("mydash".to_string(), "my dashboard".to_string())]
+        vec![(
+            "mydash".to_string(),
+            "my dashboard".to_string(),
+            "seq 1 9 | arb -p mydash".to_string()
+        )]
     );
 
     assert!(uninstall_preset(&dir, "mydash").unwrap());
@@ -173,11 +180,43 @@ fn every_stdlib_preset_carries_passing_self_tests() {
 fn list_presets_includes_stdlib() {
     let names: Vec<String> = arb::spec::list_presets()
         .into_iter()
-        .map(|(n, _)| n)
+        .map(|(n, _, _)| n)
         .collect();
     for want in ["nums", "logs", "http", "json", "table", "top"] {
         assert!(names.contains(&want.to_string()), "missing preset {want}");
     }
+}
+
+#[test]
+fn every_stdlib_preset_documents_how_to_feed_it() {
+    // Every preset reads a stream someone has to supply, so its header carries
+    // the invocation that supplies it — `arb --list` prints it and so does the
+    // "nothing is piped" error. A preset without one leaves the user with a
+    // name, a blurb, and no way to run it.
+    for (name, _desc, example) in arb::spec::list_presets() {
+        assert!(
+            example.contains(&format!("arb -p {name}")),
+            "preset `{name}` has no example invocation in its header: {example:?}"
+        );
+        assert!(
+            example.contains('|'),
+            "preset `{name}`'s example does not pipe anything in: {example:?}"
+        );
+    }
+}
+
+#[test]
+fn an_example_comes_only_from_the_header_and_only_if_it_names_arb() {
+    use arb::spec::example_comment;
+    assert_eq!(
+        example_comment("# desc\n#   seq 1 9 | arb -p x\ngauge .g"),
+        "seq 1 9 | arb -p x"
+    );
+    // Prose second line, no command: no example rather than a wrong one.
+    assert_eq!(example_comment("# desc\n# more prose\ngauge .g"), "");
+    // A comment BELOW the spec body is documentation, not the header.
+    assert_eq!(example_comment("# desc\ngauge .g\n#  x | arb -p y"), "");
+    assert_eq!(example_comment(""), "");
 }
 
 #[test]

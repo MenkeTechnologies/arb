@@ -179,7 +179,7 @@ fn build_static_completions() -> Vec<String> {
         .map(|s| (*s).to_string())
         .collect();
     // Preset names complete after `import ` and as `-p` targets.
-    v.extend(spec::list_presets().into_iter().map(|(name, _)| name));
+    v.extend(spec::list_presets().into_iter().map(|(name, _, _)| name));
     v.sort();
     v.dedup();
     v
@@ -511,8 +511,11 @@ fn handle_dot_command(line: &str, buffer: &Arc<Mutex<Vec<String>>>) -> bool {
             true
         }
         ".presets" => {
-            for (name, desc) in spec::list_presets() {
+            for (name, desc, example) in spec::list_presets() {
                 println!("  {name:<10} {desc}");
+                if !example.is_empty() {
+                    println!("  {:<10} {example}", "");
+                }
             }
             true
         }

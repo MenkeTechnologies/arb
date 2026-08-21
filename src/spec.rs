@@ -1645,16 +1645,15 @@ fn bundled_module(name: &str) -> Option<&'static str> {
     })
 }
 
-/// List available presets as `(name, description)` — bundled stdlib plus any
-/// user modules in `~/.arb/lib`. The description is the preset's first `#` line.
-pub fn list_presets() -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = STDLIB_NAMES
+/// List available presets as `(name, description, example)` — bundled stdlib
+/// plus any user modules in `~/.arb/lib`. The description is the preset's first
+/// `#` line, the example its second (empty when the header has none).
+pub fn list_presets() -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = STDLIB_NAMES
         .iter()
         .map(|n| {
-            (
-                n.to_string(),
-                first_comment(bundled_module(n).unwrap_or("")),
-            )
+            let src = bundled_module(n).unwrap_or("");
+            (n.to_string(), first_comment(src), example_comment(src))
         })
         .collect();
     if let Some(dir) = lib_dir() {
@@ -1667,6 +1666,34 @@ fn first_comment(src: &str) -> String {
     src.lines()
         .find_map(|l| l.trim().strip_prefix('#'))
         .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The invocation a spec documents in its own header — the second `#` line of
+/// every stdlib preset, e.g. `#   git log --oneline | arb -p git`. Every preset
+/// carries one, but until it is printed the user has to open the file to find
+/// out what feeds it, which is the whole failure mode of "spec reads stdin but
+/// nothing is piped".
+///
+/// Taken from the leading comment block only, and only from a line that names
+/// `arb` — a spec whose header is prose, not a command line, has no example
+/// rather than a wrong one.
+pub fn example_comment(src: &str) -> String {
+    src.lines()
+        .map_while(|l| l.trim().strip_prefix('#'))
+        .skip(1)
+        .map(str::trim)
+        .find(|l| l.contains("arb"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The documented invocation for a preset NAME, resolved the way `import` would
+/// resolve it — so a user's `~/.arb/lib/NAME.arb` shadows the bundled preset's
+/// example just as it shadows its body.
+pub fn preset_example(name: &str) -> String {
+    resolve_module(name)
+        .map(|src| example_comment(&src))
         .unwrap_or_default()
 }
 
@@ -1764,9 +1791,10 @@ pub fn uninstall_preset(dir: &std::path::Path, name: &str) -> std::io::Result<bo
     }
 }
 
-/// List installed user presets in `dir` as `(name, description)`, sorted by name.
-/// The description is the preset's first `#` comment line.
-pub fn list_user_presets(dir: &std::path::Path) -> Vec<(String, String)> {
+/// List installed user presets in `dir` as `(name, description, example)`,
+/// sorted by name. The description is the preset's first `#` comment line, the
+/// example its second.
+pub fn list_user_presets(dir: &std::path::Path) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -1774,7 +1802,7 @@ pub fn list_user_presets(dir: &std::path::Path) -> Vec<(String, String)> {
             if path.extension().and_then(|s| s.to_str()) == Some("arb") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     let src = std::fs::read_to_string(&path).unwrap_or_default();
-                    out.push((stem.to_string(), first_comment(&src)));
+                    out.push((stem.to_string(), first_comment(&src), example_comment(&src)));
                 }
             }
         }
