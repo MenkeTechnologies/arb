@@ -29,13 +29,18 @@ arb save dash.arb as api      # register a user preset
 winning — and honors the presentation set (`--layout`/`--reverse`, `--border`,
 `--info`, `--color`, `--pointer`, `--marker`, `--ellipsis`, `--scrollbar`,
 `--scroll-off`, `--cycle`, `--tac`, `--tiebreak`, `--bind`, `--min-height`,
-`--ansi`) on top of the matching and I/O set (`--exact`, `--no-sort`, `--query`,
+`--ansi`) on top of the matching and I/O set (`--exact`, `--no-sort`/`--sort`,
+`-q`/`--query`, `-i`/`--ignore-case`, `+i`/`--no-ignore-case`, `--smart-case`,
 `--multi`, `--prompt`, `--header`, `--header-lines`, `--height`, `--preview`,
 `-f`/`--filter`, `-d`/`--delimiter`, `-n`/`--nth`, `--with-nth`,
 `--print-query`, `--expect`, `--with-shell`). Child processes (a `--preview`
 command) start with `$SHELL -c` like fzf's, not `sh -c`. A repeated option takes
 its LAST value, as fzf does — `$FZF_DEFAULT_OPTS` and the call site both setting `--prompt` is the
-normal case, not an error. Matching
+normal case, not an error. The whole fzf 0.74 option surface parses, including
+every `--no-X` negation, which cancels an earlier `--X` rather than being
+dropped — `--preview CMD --no-preview` leaves no preview — and an
+optional-value option consumes the next word only under fzf's own rule for it
+(a word that isn't a flag for `--border`, a number for `--gap`). Matching
 itself is fzf's algorithm, ported from `src/algo/algo.go` into `src/algo.rs`
 (`FuzzyMatchV2` + `ExactMatchNaive`), so rankings are identical line for line —
 verifiable with `--filter`, which prints the ranked matches without a UI.

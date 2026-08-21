@@ -707,6 +707,18 @@ impl PreviewWindow {
     }
 }
 
+/// How the query's case is read. fzf's default is smart-case — a query typed
+/// in lowercase matches either case, and one uppercase character anywhere makes
+/// the whole query case-sensitive. `-i`/`--ignore-case` and `+i`/
+/// `--no-ignore-case` pin it either way; `--smart-case` restores the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Case {
+    #[default]
+    Smart,
+    Ignore,
+    Respect,
+}
+
 /// The resolved presentation of the picker: everything the renderer and the key
 /// handler need in order to match fzf.
 #[derive(Clone, Debug)]
@@ -768,6 +780,8 @@ pub struct Look {
     pub preview_window: PreviewWindow,
     /// `--bind` bindings, in declaration order (later wins for the same key).
     pub binds: Vec<(Key, Vec<Action>)>,
+    /// `-i`/`--ignore-case`, `+i`/`--no-ignore-case`, `--smart-case`.
+    pub case: Case,
 }
 
 impl Default for Look {
@@ -798,6 +812,7 @@ impl Default for Look {
             tiebreak_length: true,
             preview_window: PreviewWindow::default(),
             binds: Vec::new(),
+            case: Case::Smart,
         }
     }
 }
@@ -1053,6 +1068,7 @@ impl Look {
                 }
                 "--no-info" => look.info = Info::Hidden,
                 "--inline-info" => look.info = Info::Inline(" < ".to_string()),
+                "--no-inline-info" => look.info = Info::Default,
                 "--pointer" => {
                     let (v, sep) = flag_value(a, next);
                     if let Some(v) = v {
@@ -1103,8 +1119,15 @@ impl Look {
                 "--cycle" => look.cycle = true,
                 "--no-cycle" => look.cycle = false,
                 "--tac" => look.tac = true,
+                "--no-tac" => look.tac = false,
                 "--ansi" => look.ansi = true,
                 "--print-query" => look.print_query = true,
+                "--no-print-query" => look.print_query = false,
+                // fzf's case flags. The default is smart-case, so `--smart-case`
+                // after an `-i` from `$FZF_DEFAULT_OPTS` puts it back.
+                "-i" | "--ignore-case" => look.case = Case::Ignore,
+                "+i" | "--no-ignore-case" => look.case = Case::Respect,
+                "--smart-case" => look.case = Case::Smart,
                 "--with-shell" => {
                     let (v, sep) = flag_value(a, next);
                     look.with_shell = v.filter(|v| !v.is_empty());
@@ -1122,6 +1145,11 @@ impl Look {
                     i += usize::from(sep);
                 }
                 "--no-ansi" => look.ansi = false,
+                "--no-expect" => look.expect.clear(),
+                "--no-header-lines" => look.header_lines = 0,
+                // `--scrollbar[=CHARS]` puts the bar back after a `--no-scrollbar`.
+                // arb draws fzf's default glyph, so only the on/off state is read.
+                "--scrollbar" => look.scrollbar = true,
                 "--delimiter" | "-d" => {
                     let (v, sep) = match attached {
                         Some(v) => (Some(v), false),

@@ -294,7 +294,12 @@ pub fn filter_matches(line: &str, filter: &str) -> bool {
 /// ([`crate::algo`]) — same ranking as `fzf` for the same query, smart-case
 /// included. An empty pattern matches everything with score 0.
 pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
-    let (p, cased) = crate::algo::prepare_pattern(pat);
+    fuzzy_score_case(line, pat, crate::fzf::Case::Smart)
+}
+
+/// [`fuzzy_score`] under an explicit `-i`/`+i`/`--smart-case` mode.
+pub fn fuzzy_score_case(line: &str, pat: &str, case: crate::fzf::Case) -> Option<i32> {
+    let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
     crate::algo::fuzzy_match_v2(cased, &crate::algo::Text::new(line), &p, false)
         .map(|(m, _)| m.score)
 }
@@ -302,7 +307,12 @@ pub fn fuzzy_score(line: &str, pat: &str) -> Option<i32> {
 /// fzf `--exact`/`-e`: the best substring occurrence, scored on the same scale
 /// as a fuzzy match (fzf's `ExactMatchNaive`).
 pub fn exact_score(line: &str, pat: &str) -> Option<i32> {
-    let (p, cased) = crate::algo::prepare_pattern(pat);
+    exact_score_case(line, pat, crate::fzf::Case::Smart)
+}
+
+/// [`exact_score`] under an explicit `-i`/`+i`/`--smart-case` mode.
+pub fn exact_score_case(line: &str, pat: &str, case: crate::fzf::Case) -> Option<i32> {
+    let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
     crate::algo::exact_match_naive(cased, &crate::algo::Text::new(line), &p, false)
         .map(|(m, _)| m.score)
 }
@@ -361,7 +371,9 @@ pub fn rank(
     let mut hits: Vec<(i32, usize)> = lines
         .par_iter()
         .enumerate()
-        .filter_map(|(i, line)| score_line(&search_key(line, look), pat, exact).map(|s| (s, i)))
+        .filter_map(|(i, line)| {
+            score_line(&search_key(line, look), pat, exact, look.case).map(|s| (s, i))
+        })
         .collect();
     hits.par_sort_by_key(|(_, i)| *i);
     // `--tac` reversed the input, so every order derived from it reverses too.
@@ -379,15 +391,16 @@ pub fn rank(
     hits.into_iter().map(|(_, i)| i).collect()
 }
 
-/// Score a line against the query with the active mode (exact substring or fuzzy).
-pub fn score_line(line: &str, pat: &str, exact: bool) -> Option<i32> {
+/// Score a line against the query with the active mode (exact substring or
+/// fuzzy) and case mode (`--smart-case` by default, `-i`/`+i` to pin it).
+pub fn score_line(line: &str, pat: &str, exact: bool, case: crate::fzf::Case) -> Option<i32> {
     if pat.is_empty() {
         return Some(0);
     }
     if exact {
-        exact_score(line, pat)
+        exact_score_case(line, pat, case)
     } else {
-        fuzzy_score(line, pat)
+        fuzzy_score_case(line, pat, case)
     }
 }
 
@@ -1434,8 +1447,13 @@ pub fn run(
                         fzf_hits = old
                             .into_iter()
                             .filter_map(|(_, i)| {
-                                score_line(fzf_cands[i as usize].key(), &filter, fzf_exact)
-                                    .map(|s| (s, i))
+                                score_line(
+                                    fzf_cands[i as usize].key(),
+                                    &filter,
+                                    fzf_exact,
+                                    fzf_look.case,
+                                )
+                                .map(|s| (s, i))
                             })
                             .collect();
                         // keep fzf_processed — new candidates scored below
@@ -1446,7 +1464,8 @@ pub fn run(
                             .par_iter()
                             .enumerate()
                             .filter_map(|(i, cand)| {
-                                score_line(cand.key(), &filter, fzf_exact).map(|s| (s, i as u32))
+                                score_line(cand.key(), &filter, fzf_exact, fzf_look.case)
+                                    .map(|s| (s, i as u32))
                             })
                             .collect();
                         fzf_processed = n;
@@ -1458,7 +1477,9 @@ pub fn run(
                 for (i, cand) in fzf_cands.iter().enumerate().take(n).skip(fzf_processed) {
                     if empty {
                         fzf_matched.push(i as u32);
-                    } else if let Some(sc) = score_line(cand.key(), &filter, fzf_exact) {
+                    } else if let Some(sc) =
+                        score_line(cand.key(), &filter, fzf_exact, fzf_look.case)
+                    {
                         fzf_hits.push((sc, i as u32));
                     }
                 }
@@ -2771,13 +2792,19 @@ fn render_control(
 /// Char indices in `line` that the fuzzy pattern matched (greedy, in order) —
 /// used to highlight matched characters, fzf-style. Smart-case like `fuzzy_score`.
 pub fn match_positions(line: &str, pat: &str) -> Vec<usize> {
+    match_positions_case(line, pat, crate::fzf::Case::Smart)
+}
+
+/// [`match_positions`] under an explicit `-i`/`+i`/`--smart-case` mode, so the
+/// highlight marks exactly the characters the score was built from.
+pub fn match_positions_case(line: &str, pat: &str, case: crate::fzf::Case) -> Vec<usize> {
     if pat.is_empty() {
         return Vec::new();
     }
     // The positions come from the SAME alignment that produced the score
     // (fzf's backtrace), so the highlight always marks the characters the
     // ranking was based on — a greedy left-to-right scan can mark others.
-    let (p, cased) = crate::algo::prepare_pattern(pat);
+    let (p, cased) = crate::algo::prepare_pattern_case(pat, case);
     let text = crate::algo::Text::new(line);
     let hit = crate::algo::fuzzy_match_v2(cased, &text, &p, true)
         .or_else(|| crate::algo::exact_match_naive(cased, &text, &p, true));
@@ -2902,8 +2929,9 @@ fn fzf_line(
         spans.extend(styled_run(0, text, base_style));
         return Line::from(spans);
     }
-    let pos: std::collections::HashSet<usize> =
-        match_positions(&text, filter).into_iter().collect();
+    let pos: std::collections::HashSet<usize> = match_positions_case(&text, filter, look.case)
+        .into_iter()
+        .collect();
     // Matched characters take fzf's `hl` / `hl+` slot.
     let hl = if current { colors.hl_plus } else { colors.hl }
         .fg()

@@ -57,9 +57,18 @@ _arb() {
     '--header=[fzf header line shown above the list]:header:' \
     '--exact[fzf: exact substring match (not fuzzy)]' \
     '--no-sort[fzf: keep input order (no score sort)]' \
-    '--query=[fzf: initial query]:query:' \
+    '--sort[fzf: score sort (cancels --no-sort)]' \
+    '(-q --query)'{-q+,--query=}'[fzf: initial query]:query:' \
     '(-m --multi)'{-m,--multi}'[fzf: multi-select (Tab marks)]' \
     '--height=[fzf height: inline in N rows or N% (not full-screen)]:height:' \
+    '(-i +i --ignore-case --no-ignore-case --smart-case)'{-i,--ignore-case}'[fzf: case-insensitive match]' \
+    '(-i +i --ignore-case --no-ignore-case --smart-case)'{+i,--no-ignore-case}'[fzf: case-sensitive match]' \
+    '(-i +i --ignore-case --no-ignore-case --smart-case)--smart-case[fzf: smart-case match (default)]' \
+    '--no-preview[fzf: cancel an earlier --preview]' \
+    '--no-header[fzf: cancel an earlier --header]' \
+    '--no-height[fzf: cancel an earlier --height]' \
+    '--no-multi[fzf: cancel an earlier --multi]' \
+    '--no-exact[fzf: cancel an earlier --exact]' \
     '(-h --help)'{-h,--help}'[Show help]' \
     '(-V --version)'{-V,--version}'[Show version]' \
     '*::spec file or preview -- CMD:_files -g "*.arb"' \

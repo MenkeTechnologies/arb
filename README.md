@@ -243,8 +243,9 @@ selection, fzf's tokenizer), `--header-lines`, `--print-query`, `--expect`
 `fzf-tab` parses), `--tiebreak` (`length` vs `index`), `--bind` (`up`, `down`, `page-up`,
 `page-down`, `half-page-up`, `half-page-down`, `first`, `last`, `toggle`,
 `toggle-all`, `accept`, `abort`, `clear-query`, `backward-delete-char`,
-`ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`,
-`--query`, `-m`/`--multi`, `-f`/`--filter`, `--prompt`, `--header`, `--height`
+`ignore`, and `+`-chains like `tab:toggle+down`), `-e`/`--exact`, `--no-sort`/`--sort`,
+`-i`/`--ignore-case` + `+i`/`--no-ignore-case` + `--smart-case` (smart-case is the
+default, as in fzf), `-q`/`--query`, `-m`/`--multi[=MAX]`, `-f`/`--filter`, `--prompt`, `--header`, `--height`
 (`100%` means full screen and runs on the alternate screen, as in fzf, so
 quitting restores the terminal; anything smaller draws below the cursor,
 scrolling to make room, with fzf's `--min-height=10+` floor on percentages),
@@ -253,6 +254,15 @@ written against your shell works). A binding naming an action arb has no equival
 (`execute(…)`, preview control, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.
+
+Every fzf 0.74 option parses, negations included: `--no-X` cancels an earlier
+`--X` exactly as fzf's does, so `--preview CMD --no-preview` ends up with no
+preview rather than aborting the run. That is what `_fzf_complete_kill` sends
+(`-m --header-lines=1 --no-preview --wrap`), and what a `--no-`prefixed flag in
+`$FZF_DEFAULT_OPTS` sends on every single call. An option whose value is
+optional follows fzf's rule for it too — `--border STYLE` takes the next word,
+`--border --preview CMD` does not, and `--gap N` takes it only when it is a
+number — so the flag behind it is never swallowed.
 
 The picker uses fzf's own palette, not arb's theme, unless a theme is asked for
 explicitly (`--theme NAME`, a spec `theme` directive, or the live `Ctrl-T`

@@ -719,7 +719,19 @@ fn bonus_at(input: &Text, idx: usize) -> i16 {
 /// fzf's smart case: a pattern with any uppercase character matches case
 /// sensitively; otherwise it is lowercased and the match ignores case.
 pub fn prepare_pattern(pattern: &str) -> (Vec<char>, bool) {
-    let case_sensitive = pattern.chars().any(char::is_uppercase);
+    prepare_pattern_case(pattern, crate::fzf::Case::Smart)
+}
+
+/// [`prepare_pattern`] under an explicit case mode: smart-case is fzf's default
+/// (and what `prepare_pattern` uses), `-i`/`--ignore-case` forces the
+/// insensitive path, `+i`/`--no-ignore-case` the sensitive one. Only the
+/// insensitive path folds the pattern — a sensitive match compares it as typed.
+pub fn prepare_pattern_case(pattern: &str, case: crate::fzf::Case) -> (Vec<char>, bool) {
+    let case_sensitive = match case {
+        crate::fzf::Case::Smart => pattern.chars().any(char::is_uppercase),
+        crate::fzf::Case::Ignore => false,
+        crate::fzf::Case::Respect => true,
+    };
     let chars = match case_sensitive {
         true => pattern.chars().collect(),
         false => pattern.chars().flat_map(char::to_lowercase).collect(),

@@ -219,6 +219,22 @@ is
 .TP
 .B \-\-no\-sort
 Keep input order (no score sort).
+.B \-\-sort
+puts the score sort back (fzf's
+.BR +s / \-s ).
+.TP
+.BR \-i ", " \-\-ignore\-case ", " +i ", " \-\-no\-ignore\-case ", " \-\-smart\-case
+Case mode for the query. The default is smart\-case: a lowercase query matches
+either case, one uppercase character makes the whole query case\-sensitive.
+.B \-i
+pins it insensitive,
+.B +i
+sensitive, and
+.B \-\-smart\-case
+restores the default (so a call site can undo an
+.B \-i
+that came in from
+.BR FZF_DEFAULT_OPTS ).
 .TP
 .BI \-f ", " \-\-filter " STR"
 Print the lines matching
@@ -260,13 +276,17 @@ this is the output contract
 .B fzf\-tab
 parses.
 .TP
-.BI \-\-query \ STR
+.BR \-q ", " \-\-query " \fISTR\fR"
 Start with this query in the filter.
 .TP
-.BR \-m ", " \-\-multi
+.BR \-m ", " \-\-multi [ =\fIMAX\fR ]
 Enable multi\-select (accepted for compat;
 .B arb
-always allows Tab\-marking).
+always allows Tab\-marking). fzf's
+.I MAX
+cap is accepted and ignored \(em
+.B arb
+does not cap the marks.
 .TP
 .BI \-\-height \ N|N%
 Render inline in
@@ -341,7 +361,17 @@ line, so an explicit flag still wins. Presentation options
 .BR \-\-cycle ", " \-\-tac ", " \-\-tiebreak ", " \-\-bind )
 drive the picker, so it renders the same as
 .BR fzf (1)
-with the same configuration.
+with the same configuration. Every other
+.BR fzf (1)
+0.74 option parses too \(em including each
+.BI \-\-no\- X
+negation, which cancels an earlier
+.BI \-\- X
+the way fzf's does
+.RB ( "\-\-preview CMD \-\-no\-preview"
+leaves no preview) \(em so a flag
+.B arb
+never modeled cannot abort the run.
 .TP
 .B FZF_DEFAULT_OPTS_FILE
 A file of the same options, read before

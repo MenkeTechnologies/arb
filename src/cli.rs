@@ -359,98 +359,183 @@ struct Cli {
     down: Vec<String>,
 }
 
+/// One word of a rewritten argv, so the helpers below can consume a flag's
+/// separate value out of the same iterator the loop is walking.
+type Argv = std::iter::Peekable<std::vec::IntoIter<String>>;
+
+/// fzf's rule for a flag whose value is OPTIONAL: `--border STYLE` takes the
+/// next word, `--border --preview CMD` does not (a value never starts with
+/// `-`), and `--gap 2` takes it only because a gap size is a number. Getting
+/// this wrong swallows the flag that follows, which is how `--color` used to
+/// eat a `--preview` behind it.
+fn eats_next(next: Option<&String>, numeric: bool) -> bool {
+    match next {
+        Some(v) if numeric => v.parse::<i64>().is_ok(),
+        Some(v) => !v.starts_with('-'),
+        None => false,
+    }
+}
+
+/// fzf's `--no-X` cancels an earlier `--X` — last one wins. For the options arb
+/// declares itself that can't be a silent drop: `--preview CMD --no-preview`
+/// has to reach clap with no preview at all, so the pending flag (and its
+/// separate value) is removed from the rewritten argv.
+fn cancel(out: &mut Vec<String>, names: &[&str], takes_value: bool) {
+    let Some(i) = out.iter().rposition(|a| {
+        names
+            .iter()
+            .any(|n| a == n || a.starts_with(&format!("{n}=")))
+    }) else {
+        return;
+    };
+    let attached = out[i].contains('=');
+    out.remove(i);
+    if takes_value && !attached && i < out.len() {
+        out.remove(i);
+    }
+}
+
 /// Rewrite argv so `arb --fzf` tolerates the `fzf` binary's flags (for drop-in
-/// use like `ZPWR_FZF='arb --fzf'`): translate fzf's `+`-negations (`+m`→`+m`
-/// disables multi, `+s`→keep order) and DROP the flags clap doesn't declare,
-/// consuming a value for the value-taking ones. Flags arb honors
-/// (`-e`, `--no-sort`, `--query`, `-m`, `--nth`, `--preview`, `--prompt`,
-/// `--header`, `--height`) pass through to clap untouched.
+/// use like `ZPWR_FZF='arb --fzf'`): translate fzf's `+`-negations and short
+/// forms, cancel an arb flag when its `--no-X` follows it, and DROP the flags
+/// clap doesn't declare, consuming a value for the value-taking ones. Flags arb
+/// honors (`-e`, `--no-sort`, `--query`, `-m`, `--preview`, `--prompt`,
+/// `--header`, `--height`, `--filter`) pass through to clap untouched.
 fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
     // Presentation flags (`--border`, `--layout`, `--info`, `--color`,
-    // `--pointer`, `--marker`, `--bind`, …) are stripped HERE but not ignored:
-    // `fzf::Look::parse` already read them off the full argv, so they drive the
-    // picker's look while clap only ever sees arb's own options. The rest
-    // (`--ansi`, `--tiebreak`, …) genuinely have no arb analog and are dropped.
-    // Every fzf 0.74 option except the eight arb declares itself (`--preview`,
-    // `--prompt`, `--header`, `--height`, `--query`, `--exact`, `--no-sort`,
-    // `--multi`). The lists are exhaustive on purpose: an unknown flag makes
-    // clap abort, which would break the drop-in for anyone whose
-    // `$FZF_DEFAULT_OPTS` mentions a flag arb never modeled.
+    // `--pointer`, `--marker`, `--bind`, the case flags, …) are stripped HERE
+    // but not ignored: `fzf::Look::parse` already read them off the full argv,
+    // so they drive the picker's look while clap only ever sees arb's own
+    // options. The rest (`--tiebreak`, `--walker`, …) genuinely have no arb
+    // analog and are dropped.
+    //
+    // The four lists are fzf 0.74's whole option surface minus the nine arb
+    // declares (`--preview`, `--prompt`, `--header`, `--height`, `--query`,
+    // `--exact`, `--no-sort`, `--multi`, `--filter`). They are exhaustive on
+    // purpose: an unknown flag makes clap abort, which would break the drop-in
+    // for anyone whose `$FZF_DEFAULT_OPTS` mentions a flag arb never modeled.
+    // The split is by how a value attaches, which the fzf man page does NOT
+    // document — it shows the `[=VALUE]` forms but not which of those also
+    // swallow a separate next word — so it was probed off the `fzf` binary:
+    // `fzf -f a FLAG XYZZY` reports `unknown option: XYZZY` exactly when FLAG
+    // left the word alone.
+    //
+    // Never takes a value — every `--no-*` negation lives here too.
     const DROP_BOOL: &[&str] = &[
         "--ambidouble",
         "--ansi",
         "--bash",
+        "--bench",
         "--black",
-        "--border",
+        "--bold",
+        "--clear",
         "--cycle",
         "--disabled",
         "--exit-0",
-        "-0",
         "--extended",
         "--filepath-word",
         "--fish",
-        "--footer-border",
-        "--footer-label",
-        "--gap",
-        "--header-border",
         "--header-first",
-        "--header-lines-border",
         "--highlight-line",
+        "--ignore-case",
         "--inline-info",
-        "--input-border",
-        "--input-label",
         "--keep-right",
-        "--list-border",
-        "--list-label",
-        "--listen",
         "--literal",
         "--man",
+        "--no-ambidouble",
+        "--no-ansi",
+        "--no-black",
         "--no-bold",
         "--no-border",
+        "--no-border-label",
         "--no-clear",
         "--no-color",
         "--no-cycle",
+        "--no-exit-0",
+        "--no-expect",
+        "--no-extended",
+        "--no-filepath-word",
+        "--no-footer",
+        "--no-footer-border",
+        "--no-footer-label",
+        "--no-gap",
+        "--no-gap-line",
+        "--no-header-border",
+        "--no-header-first",
+        "--no-header-label",
+        "--no-header-lines",
+        "--no-header-lines-border",
+        "--no-highlight-line",
+        "--no-history",
         "--no-hscroll",
+        "--no-id-nth",
+        "--no-ignore-case",
         "--no-info",
+        "--no-info-command",
+        "--no-inline-info",
         "--no-input",
+        "--no-input-border",
+        "--no-input-label",
+        "--no-keep-right",
+        "--no-list-border",
+        "--no-list-label",
+        "--no-listen",
+        "--no-listen-unsafe",
+        "--no-literal",
+        "--no-margin",
         "--no-mouse",
         "--no-multi-line",
+        "--no-padding",
+        "--no-popup",
+        "--no-preview-border",
+        "--no-preview-label",
+        "--no-print-query",
+        "--no-print0",
+        "--no-raw",
+        "--no-read0",
         "--no-reverse",
         "--no-scrollbar",
+        "--no-select-1",
         "--no-separator",
+        "--no-sync",
+        "--no-tac",
+        "--no-tail",
+        "--no-tmux",
+        "--no-track",
         "--no-tty-default",
         "--no-unicode",
+        "--no-wrap",
+        "--no-wrap-word",
         "--nushell",
-        "--popup",
-        "--preview-border",
-        "--preview-label",
         "--print-query",
         "--print0",
         "--raw",
         "--read0",
         "--reverse",
         "--select-1",
-        "-1",
         "--smart-case",
-        "--sort",
         "--sync",
         "--tac",
         "--track",
-        "--wrap",
+        "--unicode",
+        "--wrap-word",
         "--zsh",
+        "-0",
+        "-1",
     ];
+    // Always takes one: fzf consumes the next word even when it looks like a
+    // flag (`--prompt --exact` really does set the prompt to `--exact`).
     const DROP_VALUE: &[&str] = &[
         "--accept-nth",
         "--algo",
-        "--bench",
         "--bind",
         "--border-label",
         "--border-label-pos",
-        "--color",
         "--delimiter",
         "--ellipsis",
         "--expect",
         "--footer",
+        "--footer-label",
         "--footer-label-pos",
         "--freeze-left",
         "--freeze-right",
@@ -466,9 +551,11 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--id-nth",
         "--info",
         "--info-command",
+        "--input-label",
         "--input-label-pos",
         "--jump-labels",
         "--layout",
+        "--list-label",
         "--list-label-pos",
         "--margin",
         "--marker",
@@ -477,18 +564,19 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--nth",
         "--padding",
         "--pointer",
+        "--preview-label",
         "--preview-label-pos",
         "--preview-window",
         "--preview-wrap-sign",
         "--scheme",
         "--scroll-off",
-        "--scrollbar",
         "--separator",
         "--style",
         "--tabstop",
         "--tail",
         "--threads",
         "--tiebreak",
+        "--tty-default",
         "--walker",
         "--walker-root",
         "--walker-skip",
@@ -496,43 +584,163 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--with-shell",
         "--wrap-sign",
     ];
+    // `--border[=STYLE]`: the next word is the value only when it isn't a flag.
+    const DROP_OPT_STR: &[&str] = &[
+        "--border",
+        "--color",
+        "--footer-border",
+        "--gap-line",
+        "--header-border",
+        "--header-lines-border",
+        "--input-border",
+        "--list-border",
+        "--listen",
+        "--listen-unsafe",
+        "--popup",
+        "--preview-border",
+        "--scrollbar",
+        "--tmux",
+        "--wrap",
+    ];
+    // `--gap[=N]`: the next word is the value only when it is a number.
+    const DROP_OPT_NUM: &[&str] = &["--gap"];
+    // The arb flags an fzf `--no-X` / `+x` has to cancel, with whether the
+    // cancelled flag carries a separate value.
+    const MULTI: &[&str] = &["--multi", "-m"];
+
     let argv: Vec<String> = args.collect();
     // Only rewrite fzf short-flags when in fzf mode (else `-e` stays `--eval`).
     let fzf = argv.iter().any(|a| a == "--fzf");
-    let mut out = Vec::new();
-    let mut it = argv.into_iter().peekable();
+    let mut out: Vec<String> = Vec::new();
+    let mut it: Argv = argv.into_iter().peekable();
     while let Some(a) = it.next() {
-        if fzf && a == "-e" {
-            out.push("--exact".to_string());
-            continue;
-        }
-        // fzf short flags with an attached value and no arb analog: `-nFIELDS`
-        // (nth), `-dCHAR` (delimiter). Drop them (and a following value if the
-        // flag stands alone, e.g. `-n 2..`).
-        if fzf && (a.starts_with("-n") || a.starts_with("-d")) {
-            if a.len() == 2 {
-                it.next(); // `-n 2..` — consume the separate value
+        if fzf {
+            match a.as_str() {
+                "-e" => {
+                    out.push("--exact".to_string());
+                    continue;
+                }
+                // The case flags reach the picker through `fzf::Look`, which
+                // read them off the full argv. `-x`/`+x` switch fzf's
+                // extended-search operators, which arb's matcher doesn't have,
+                // and `+c` is fzf's undocumented legacy no-color short form.
+                "-i" | "+i" | "-x" | "+x" | "+c" => continue,
+                // `+m` cancels an earlier `-m`; `+s` is `--no-sort`.
+                "+m" => {
+                    cancel(&mut out, MULTI, false);
+                    continue;
+                }
+                "+s" => {
+                    cancel(&mut out, &["--no-sort"], false);
+                    out.push("--no-sort".to_string());
+                    continue;
+                }
+                _ => {}
             }
-            continue;
-        }
-        // fzf `+m` disables multi, `+s` disables sort (keep input order).
-        match a.as_str() {
-            "+m" => {
-                continue; // arb is single-select unless -m is given, so +m is a no-op
+            // `-q STR` / `-qSTR`: fzf's short `--query`.
+            if let Some(rest) = a.strip_prefix("-q") {
+                let v = match rest.is_empty() {
+                    true => it.next().unwrap_or_default(),
+                    false => rest.to_string(),
+                };
+                out.push("--query".to_string());
+                out.push(v);
+                continue;
             }
-            "+s" => {
+            // `-n FIELDS` / `-d CHAR`, attached or separate: `fzf::Look` already
+            // read them off the full argv, so clap must not see them.
+            if let Some(rest) = a.strip_prefix("-n").or_else(|| a.strip_prefix("-d")) {
+                if rest.is_empty() {
+                    it.next();
+                }
+                continue;
+            }
+            // `-m[MAX]` / `-s[MAX]`: fzf caps how many lines can be marked
+            // and how many the sort covers. arb has no cap, so only the on/off
+            // half of each survives.
+            if let Some(rest) = a.strip_prefix("-m") {
+                if rest.is_empty() && eats_next(it.peek(), true) {
+                    it.next();
+                }
+                cancel(&mut out, MULTI, false);
+                out.push("--multi".to_string());
+                continue;
+            }
+            if let Some(rest) = a.strip_prefix("-s") {
+                if rest.is_empty() && eats_next(it.peek(), true) {
+                    it.next();
+                }
+                cancel(&mut out, &["--no-sort"], false);
+                continue;
+            }
+        }
+        let key = a.split('=').next().unwrap_or(&a);
+        // fzf's `--no-X` cancels an earlier `--X`. For the options arb models
+        // itself that means removing the pending flag from the rewritten argv,
+        // not dropping the negation.
+        match key {
+            "--no-preview" => {
+                cancel(&mut out, &["--preview"], true);
+                continue;
+            }
+            "--no-height" => {
+                cancel(&mut out, &["--height"], true);
+                continue;
+            }
+            "--no-header" => {
+                cancel(&mut out, &["--header"], true);
+                continue;
+            }
+            "--no-multi" => {
+                cancel(&mut out, MULTI, false);
+                continue;
+            }
+            "--no-exact" => {
+                cancel(&mut out, &["--exact"], false);
+                continue;
+            }
+            "--no-sort" => {
+                cancel(&mut out, &["--no-sort"], false);
                 out.push("--no-sort".to_string());
+                continue;
+            }
+            // `--sort[=MAX]` puts the score sort back after a `--no-sort`.
+            "--sort" => {
+                cancel(&mut out, &["--no-sort"], false);
+                if !a.contains('=') && eats_next(it.peek(), true) {
+                    it.next();
+                }
+                continue;
+            }
+            // `--multi[=MAX]`: the cap is dropped, the flag kept.
+            "--multi" => {
+                cancel(&mut out, MULTI, false);
+                out.push("--multi".to_string());
+                if !a.contains('=') && eats_next(it.peek(), true) {
+                    it.next();
+                }
                 continue;
             }
             _ => {}
         }
-        let key = a.split('=').next().unwrap_or(&a);
         if DROP_BOOL.contains(&key) {
             continue;
         }
         if DROP_VALUE.contains(&key) {
             // `--flag=val` carries its value; `--flag val` consumes the next arg.
             if !a.contains('=') {
+                it.next();
+            }
+            continue;
+        }
+        if DROP_OPT_STR.contains(&key) {
+            if !a.contains('=') && eats_next(it.peek(), false) {
+                it.next();
+            }
+            continue;
+        }
+        if DROP_OPT_NUM.contains(&key) {
+            if !a.contains('=') && eats_next(it.peek(), true) {
                 it.next();
             }
             continue;
@@ -2183,5 +2391,136 @@ mod tests {
             out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
             Some(&"q".to_string())
         );
+    }
+
+    #[test]
+    fn a_no_flag_cancels_the_arb_option_it_negates() {
+        // fzf's `--no-X` is last-one-wins over an earlier `--X`, so for the
+        // options arb declares the negation has to REMOVE the flag (and its
+        // separate value) instead of being dropped on the floor. Dropping it is
+        // what made `--no-preview` reach clap and abort the whole run.
+        let out = run(&[
+            "arb",
+            "--fzf",
+            "--preview",
+            "cat {}",
+            "--no-preview",
+            "--height",
+            "40%",
+            "--no-height",
+            "--header=H",
+            "--no-header",
+            "-m",
+            "--no-multi",
+            "--exact",
+            "--no-exact",
+            "--query",
+            "q",
+        ]);
+        for a in ["--preview", "cat {}", "--height", "40%", "--exact", "-m"] {
+            assert!(!out.iter().any(|o| o == a), "{a} survived its --no- form");
+        }
+        assert!(!out.iter().any(|o| o.starts_with("--header")));
+        assert!(!out.iter().any(|o| o.starts_with("--no-")));
+        // Everything else still lands.
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"q".to_string())
+        );
+    }
+
+    #[test]
+    fn sort_and_multi_take_their_optional_count_back() {
+        // `--sort[=MAX]` puts the score sort back after `--no-sort`, and both it
+        // and `--multi[=MAX]` swallow a SEPARATE count — but only a numeric one.
+        let out = run(&["arb", "--fzf", "--no-sort", "--sort", "20", "--multi=5"]);
+        assert!(!out.iter().any(|a| a == "--no-sort" || a == "20"));
+        assert_eq!(out.iter().filter(|a| *a == "--multi").count(), 1);
+        // A non-numeric word after `--sort` is the next argument, not its count.
+        let out = run(&["arb", "--fzf", "--sort", "--query", "q"]);
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"q".to_string())
+        );
+        // `+m`/`+s` are the same negations in fzf's short spelling.
+        let out = run(&["arb", "--fzf", "-m5", "+m", "-s", "+s"]);
+        assert!(!out.iter().any(|a| a == "--multi" || a == "5"));
+        assert_eq!(out, vec!["arb", "--fzf", "--no-sort"]);
+    }
+
+    #[test]
+    fn an_optional_value_flag_only_eats_a_real_value() {
+        // `--border[=STYLE]` takes the next word only when it isn't a flag —
+        // fzf's own rule. Consuming unconditionally ate the flag behind it, so
+        // `--color --preview CMD` silently lost the preview.
+        let out = run(&[
+            "arb",
+            "--fzf",
+            "--color",
+            "--preview",
+            "cat {}",
+            "--border",
+            "rounded",
+            "--gap",
+            "--query",
+            "q",
+        ]);
+        assert_eq!(
+            out.iter()
+                .position(|a| a == "--preview")
+                .map(|i| &out[i + 1]),
+            Some(&"cat {}".to_string())
+        );
+        assert!(!out.iter().any(|a| a == "rounded" || a == "--border"));
+        assert_eq!(
+            out.iter().position(|a| a == "--query").map(|i| &out[i + 1]),
+            Some(&"q".to_string())
+        );
+        // `--gap[=N]` is numeric, so it eats `2` but never a word.
+        let out = run(&["arb", "--fzf", "--gap", "2", "--query", "q"]);
+        assert!(!out.iter().any(|a| a == "2"));
+    }
+
+    #[test]
+    fn fzf_short_flags_translate_or_drop() {
+        // `-q` is fzf's short --query, attached or separate.
+        assert_eq!(
+            run(&["arb", "--fzf", "-qfoo"]),
+            vec!["arb", "--fzf", "--query", "foo"]
+        );
+        assert_eq!(
+            run(&["arb", "--fzf", "-q", "foo"]),
+            vec!["arb", "--fzf", "--query", "foo"]
+        );
+        // Case mode reaches the picker through `fzf::Look`; `-x`/`+x` switch
+        // extended-search operators arb's matcher doesn't have; `+c` is fzf's
+        // legacy no-color. None of them may reach clap.
+        assert_eq!(
+            run(&["arb", "--fzf", "-i", "+i", "-x", "+x", "+c"]),
+            vec!["arb", "--fzf"]
+        );
+        // Outside fzf mode the same words are arb's own and pass through.
+        assert!(run(&["arb", "-e", "gauge .g"]).iter().any(|a| a == "-e"));
+    }
+
+    #[test]
+    fn case_flags_drive_the_matcher() {
+        use crate::fzf::{Case, Look};
+        let look = |args: &[&str]| {
+            Look::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).case
+        };
+        assert_eq!(look(&["arb", "--fzf"]), Case::Smart);
+        assert_eq!(look(&["arb", "--fzf", "-i"]), Case::Ignore);
+        assert_eq!(look(&["arb", "--fzf", "--ignore-case"]), Case::Ignore);
+        assert_eq!(look(&["arb", "--fzf", "+i"]), Case::Respect);
+        // Later wins, so `--smart-case` at the call site undoes an `-i` that
+        // came in from `$FZF_DEFAULT_OPTS`.
+        assert_eq!(look(&["arb", "--fzf", "-i", "--smart-case"]), Case::Smart);
+        // A lowercase query is case-blind under smart-case, sensitive under +i.
+        use crate::tui::fuzzy_score_case;
+        assert!(fuzzy_score_case("README", "read", Case::Smart).is_some());
+        assert!(fuzzy_score_case("README", "read", Case::Respect).is_none());
+        assert!(fuzzy_score_case("readme", "READ", Case::Smart).is_none());
+        assert!(fuzzy_score_case("readme", "READ", Case::Ignore).is_some());
     }
 }
