@@ -357,21 +357,39 @@ pub fn item_text<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow
 /// on a selective query was more work than the match. Only a projection or an
 /// SGR strip, which genuinely build a new string, allocate.
 pub fn search_key<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow<'a, str> {
+    // The two compose, in this order: `--with-nth` replaces the item text, then
+    // `--nth` selects fields from THAT. Applying both to the original line
+    // instead makes `--with-nth 2,3 --nth 1` search a field that no longer
+    // exists in the item fzf would have searched.
+    let item = rank_text(line, look);
+    if look.nth.is_empty() {
+        return item;
+    }
+    let delim = look.delimiter.as_deref();
+    let tokens = crate::fzf::tokenize(&item, delim);
+    // The SGR strip, if any, already happened in `rank_text`.
+    std::borrow::Cow::Owned(crate::fzf::transform(&tokens, &look.nth, delim))
+}
+
+/// The item text one line contributes: the `--with-nth` projection, or the line
+/// itself. `--with-nth` REPLACES the item — fzf rebuilds it at ingest — so it is
+/// what `length` measures and what `--nth` then selects from. `--nth` alone only
+/// redirects what the QUERY sees and leaves the item as it was.
+///
+/// The fields keep the delimiters that followed them (fzf's `JoinTokens`),
+/// because the projection is a new line of text rather than a field slice:
+/// `--with-nth 2` of `/a/bb/ccc` is `a/`, and a query of `a/` matches it.
+pub fn rank_text<'a>(line: &'a str, look: &crate::fzf::Look) -> std::borrow::Cow<'a, str> {
     use std::borrow::Cow;
-    let plain = |s: &'a str| match look.ansi {
-        true => Cow::Owned(crate::fzf::strip_ansi(s)),
-        false => Cow::Borrowed(s),
-    };
-    if look.nth.is_empty() && look.with_nth.is_empty() {
-        return plain(line);
+    if look.with_nth.is_empty() {
+        return match look.ansi {
+            true => Cow::Owned(crate::fzf::strip_ansi(line)),
+            false => Cow::Borrowed(line),
+        };
     }
     let delim = look.delimiter.as_deref();
     let tokens = crate::fzf::tokenize(line, delim);
-    let ranges = match look.nth.is_empty() {
-        true => &look.with_nth,
-        false => &look.nth,
-    };
-    let projected = crate::fzf::transform(&tokens, ranges, delim);
+    let projected = crate::fzf::transform_join(&tokens, &look.with_nth);
     Cow::Owned(match look.ansi {
         true => crate::fzf::strip_ansi(&projected),
         false => projected,
@@ -411,11 +429,15 @@ pub fn rank(
         .enumerate()
         .filter_map(|(i, line)| {
             let key = search_key(line, look);
-            pattern
-                .match_line(&key)
-                .map(|b| (crate::pattern::points(&key, &b, &look.tiebreak), i))
+            pattern.match_line(&key).map(|b| {
+                let item = rank_text(line, look);
+                (crate::pattern::points(&item, &key, &b, &look.tiebreak), i)
+            })
         })
         .collect();
+    // rayon's `collect` does NOT guarantee input order through a `filter_map`,
+    // and the tiebreaks below rely on it: anything the criteria tie on must come
+    // back in the order it arrived (fzf's implicit `index` criterion).
     hits.par_sort_by_key(|(_, i)| *i);
     // `--tac` reversed the input, so every order derived from it reverses too.
     if tac {
@@ -1526,7 +1548,15 @@ pub fn run(
                             .filter_map(|(_, i)| {
                                 let key = fzf_cands[i as usize].key();
                                 next.match_line(key).map(|b| {
-                                    (crate::pattern::points(key, &b, &fzf_look.tiebreak), i)
+                                    (
+                                        crate::pattern::points(
+                                            fzf_cands[i as usize].disp(),
+                                            key,
+                                            &b,
+                                            &fzf_look.tiebreak,
+                                        ),
+                                        i,
+                                    )
                                 })
                             })
                             .collect();
@@ -1540,7 +1570,12 @@ pub fn run(
                             .filter_map(|(i, cand)| {
                                 next.match_line(cand.key()).map(|b| {
                                     (
-                                        crate::pattern::points(cand.key(), &b, &fzf_look.tiebreak),
+                                        crate::pattern::points(
+                                            cand.disp(),
+                                            cand.key(),
+                                            &b,
+                                            &fzf_look.tiebreak,
+                                        ),
                                         i as u32,
                                     )
                                 })
@@ -1557,7 +1592,8 @@ pub fn run(
                     if empty {
                         fzf_matched.push(i as u32);
                     } else if let Some(b) = fzf_pattern.match_line(cand.key()) {
-                        let key = crate::pattern::points(cand.key(), &b, &fzf_look.tiebreak);
+                        let key =
+                            crate::pattern::points(cand.disp(), cand.key(), &b, &fzf_look.tiebreak);
                         fzf_hits.push((key, i as u32));
                     }
                 }

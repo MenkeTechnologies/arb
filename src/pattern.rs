@@ -718,8 +718,21 @@ pub fn scheme_criteria(scheme: &crate::algo::Scheme) -> Vec<Criterion> {
 ///
 /// The slots fill from the END (`points[3 - idx]`), which is what makes the
 /// packed comparison in [`compare_points`] read criteria in declaration order.
-pub fn points(line: &str, b: &Bounds, criteria: &[Criterion]) -> [u16; 4] {
-    let text: Vec<char> = line.chars().collect();
+/// `item` is the WHOLE line and `key` is what the query matched against — the
+/// two differ under `--nth`. fzf measures `length` on the item (`item.TrimLength`,
+/// result.go:81) while the match offsets are relative to the matched token, so
+/// each criterion has to be told which of the two it is about.
+pub fn points(item: &str, key: &str, b: &Bounds, criteria: &[Criterion]) -> [u16; 4] {
+    // Only `chunk`, `begin` and `end` index the line by character, and this runs
+    // once per MATCHING line — so decoding every line up front would spend an
+    // allocation per hit for the default criteria, which never look at it.
+    let needs_chars = criteria
+        .iter()
+        .any(|c| matches!(c, Criterion::Chunk | Criterion::Begin | Criterion::End));
+    let text: Vec<char> = match needs_chars {
+        true => key.chars().collect(),
+        false => Vec::new(),
+    };
     let num_chars = text.len();
     let as_u16 = |v: i64| v.clamp(0, u16::MAX as i64) as u16;
     let mut pts = [0u16; 4];
@@ -740,13 +753,15 @@ pub fn points(line: &str, b: &Bounds, criteria: &[Criterion]) -> [u16; 4] {
                 }
                 as_u16((e - s) as i64)
             }
-            Criterion::Length => as_u16(trim_length(line) as i64),
+            // The ITEM, not the matched field: a `--nth` projection narrows what
+            // the query sees, not how long the line is.
+            Criterion::Length => as_u16(trim_length(item) as i64),
             Criterion::Pathname if b.valid => {
                 // Prefer a match in the last path segment. fzf scans BYTES here
                 // while `min_begin` counts characters; the two agree on the
                 // ASCII paths this criterion exists for, and the port keeps the
                 // comparison as fzf makes it.
-                let bytes = line.as_bytes();
+                let bytes = key.as_bytes();
                 let last_delim = bytes
                     .iter()
                     .rposition(|c| *c == b'/' || *c == b'\\')
@@ -765,7 +780,7 @@ pub fn points(line: &str, b: &Bounds, criteria: &[Criterion]) -> [u16; 4] {
                         break;
                     }
                 }
-                let trim = trim_length(line) as i64;
+                let trim = trim_length(key) as i64;
                 match criterion {
                     // Earlier match first.
                     Criterion::Begin => as_u16(b.min_end as i64 - white_prefix as i64),

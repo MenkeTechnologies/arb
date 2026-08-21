@@ -795,13 +795,21 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &crate::fzf::Look) ->
         true => b'\0',
         false => b'\n',
     };
-    let mut lines: Vec<&str> = blob
-        .split(|b| *b == sep)
-        // Split on the separator only: a trailing `\r` belongs to the line
-        // (macOS `Icon\r` entries are real, and fzf scores them with the CR in
-        // place).
-        .map(|l| std::str::from_utf8(l).unwrap_or(""))
-        .collect();
+    // Validate the WHOLE stream once rather than once per line. It is the same
+    // work either way, but one pass over the blob runs wide while a million tiny
+    // ones cannot, and `str::split` on an ASCII separator searches with the same
+    // machinery. Invalid UTF-8 falls back to the per-line path, which keeps its
+    // old behaviour of dropping just the offending line.
+    // Split on the separator only: a trailing `\r` belongs to the line (macOS
+    // `Icon\r` entries are real, and fzf scores them with the CR in place).
+    let sep_char = sep as char;
+    let mut lines: Vec<&str> = match std::str::from_utf8(&blob) {
+        Ok(text) => text.split(sep_char).collect(),
+        Err(_) => blob
+            .split(|b| *b == sep)
+            .map(|l| std::str::from_utf8(l).unwrap_or(""))
+            .collect(),
+    };
     // A trailing separator yields one empty tail element that was never a line.
     if lines.last() == Some(&"") {
         lines.pop();

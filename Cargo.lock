@@ -144,6 +144,7 @@ dependencies = [
  "clap",
  "fusevm",
  "libc",
+ "memchr",
  "nu-ansi-term",
  "percent-encoding",
  "portable-pty",

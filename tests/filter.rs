@@ -470,3 +470,73 @@ fn accept_nth_keeps_inner_delimiters() {
     assert!(AcceptNth::parse("no placeholder here").is_none());
     assert_eq!(Nth::parse_list("2,3").len(), 2);
 }
+
+// ── `--nth` vs `--with-nth` ────────────────────────────────────────────────
+// The two look alike and behave differently in three ways. Each expectation
+// below was read off `fzf -d / … --filter …` on fzf 0.74.3 with the line
+// `/a/bb/ccc`, whose `/`-tokens are ["/", "a/", "bb/", "ccc"].
+
+/// `--with-nth` rebuilds the item, so its fields keep the delimiters that
+/// followed them and a query can match across them. `--nth` only redirects the
+/// query at a field, which is trimmed.
+#[test]
+fn with_nth_keeps_delimiters_and_nth_does_not() {
+    use arb::fzf::{Look, Nth};
+    let look = |with: &str, nth: &str| Look {
+        delimiter: Some("/".into()),
+        with_nth: Nth::parse_list(with),
+        nth: Nth::parse_list(nth),
+        ..Look::default()
+    };
+    // `--with-nth 2` is `a/`, delimiter included.
+    assert_eq!(arb::tui::search_key("/a/bb/ccc", &look("2", "")), "a/");
+    assert_eq!(arb::tui::search_key("/a/bb/ccc", &look("2,3", "")), "a/bb/");
+    // `--nth 2` is `a`, trimmed.
+    assert_eq!(arb::tui::search_key("/a/bb/ccc", &look("", "2")), "a");
+}
+
+/// They COMPOSE, in one order: `--with-nth` replaces the item, then `--nth`
+/// selects from that. Applying both to the original line searches a field that
+/// no longer exists in the item fzf would have searched.
+#[test]
+fn nth_selects_from_the_with_nth_projection() {
+    use arb::fzf::{Look, Nth};
+    let look = Look {
+        delimiter: Some("/".into()),
+        with_nth: Nth::parse_list("2,3"),
+        nth: Nth::parse_list("2"),
+        ..Look::default()
+    };
+    // item = "a/bb/" → its fields are ["a/", "bb/"] → nth 2 is "bb".
+    assert_eq!(arb::tui::search_key("/a/bb/ccc", &look), "bb");
+}
+
+/// The `length` tiebreak measures the ITEM. `--with-nth` changes the item, so it
+/// changes the length; `--nth` does not. Two lines with an identical field 2 and
+/// different overall lengths therefore rank one way under `--nth` and stay in
+/// input order under `--with-nth`.
+#[test]
+fn length_tiebreak_measures_the_item_not_the_searched_field() {
+    use arb::fzf::{Look, Nth};
+    let lines: [&str; 2] = ["/a/xxxxxxxxxxxx", "/a/y"];
+    let ranked = |look: &Look| -> Vec<&'static str> {
+        arb::tui::rank(&lines, "a", false, false, false, look)
+            .into_iter()
+            .map(|i| lines[i])
+            .collect()
+    };
+    let by_nth = Look {
+        delimiter: Some("/".into()),
+        nth: Nth::parse_list("2"),
+        ..Look::default()
+    };
+    // The item is the whole line, so the shorter line wins.
+    assert_eq!(ranked(&by_nth), vec!["/a/y", "/a/xxxxxxxxxxxx"]);
+    let by_with_nth = Look {
+        delimiter: Some("/".into()),
+        with_nth: Nth::parse_list("2"),
+        ..Look::default()
+    };
+    // The item is `a/` for both, so they tie and keep input order.
+    assert_eq!(ranked(&by_with_nth), vec!["/a/xxxxxxxxxxxx", "/a/y"]);
+}

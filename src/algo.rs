@@ -269,14 +269,15 @@ pub struct Match {
 /// when the search is case-insensitive).
 fn try_skip(input: &[u8], case_sensitive: bool, b: u8, from: usize) -> Option<usize> {
     let hay = &input[from..];
-    if !case_sensitive && b.is_ascii_lowercase() {
-        let up = b - 32;
-        return hay
-            .iter()
-            .position(|c| *c == b || *c == up)
-            .map(|i| from + i);
-    }
-    hay.iter().position(|c| *c == b).map(|i| from + i)
+    // fzf reaches for `bytes.IndexByte` here, which is SIMD; `memchr` is the
+    // same thing. This is the matcher's innermost loop — every candidate line
+    // that does NOT match is rejected inside it, so a scalar byte-at-a-time
+    // scan costs the whole corpus.
+    let hit = match !case_sensitive && b.is_ascii_lowercase() {
+        true => memchr::memchr2(b, b - 32, hay),
+        false => memchr::memchr(b, hay),
+    };
+    hit.map(|i| from + i)
 }
 
 /// algo.go:348 — a cheap byte-level prefilter that both rejects impossible
