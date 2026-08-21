@@ -509,6 +509,26 @@ pub fn transform(tokens: &[&str], ranges: &[Nth], delimiter: Option<&str>) -> St
     if ranges.is_empty() {
         return tokens.concat();
     }
+    let mut out = String::new();
+    for r in ranges {
+        let part = transform_join(tokens, std::slice::from_ref(r));
+        match delimiter {
+            Some(d) => out.push_str(part.strip_suffix(d).unwrap_or(&part)),
+            None => out.push_str(&part),
+        }
+    }
+    out
+}
+
+/// fzf's `JoinTokens(Transform(...))`: the selected tokens concatenated as they
+/// were, delimiters and all. A token carries the separator that followed it, so
+/// joining fields 2 and 3 of `a:b:c` gives `b:c` — [`transform`] instead trims
+/// each range, which is what `--nth` matching wants and what `--accept-nth`
+/// printing must not do (fzf strips only the very last delimiter, once).
+pub fn transform_join(tokens: &[&str], ranges: &[Nth]) -> String {
+    if ranges.is_empty() {
+        return tokens.concat();
+    }
     let n = tokens.len() as i32;
     let resolve = |v: i32| if v < 0 { v + n + 1 } else { v };
     let mut out = String::new();
@@ -519,13 +539,8 @@ pub fn transform(tokens: &[&str], ranges: &[Nth], delimiter: Option<&str>) -> St
             (b, Nth::ELLIPSIS) => (resolve(b), n),
             (b, e) => (resolve(b), resolve(e)),
         };
-        let mut part = String::new();
         for idx in begin.max(1)..=end.min(n) {
-            part.push_str(tokens[(idx - 1) as usize]);
-        }
-        match delimiter {
-            Some(d) => out.push_str(part.strip_suffix(d).unwrap_or(&part)),
-            None => out.push_str(&part),
+            out.push_str(tokens[(idx - 1) as usize]);
         }
     }
     out
@@ -782,6 +797,18 @@ pub struct Look {
     pub binds: Vec<(Key, Vec<Action>)>,
     /// `-i`/`--ignore-case`, `+i`/`--no-ignore-case`, `--smart-case`.
     pub case: Case,
+    /// `--tail=N`: keep only the last N candidates. fzf applies this to the
+    /// candidate list, so the dropped lines are not matched, not merely hidden.
+    pub tail: Option<usize>,
+    /// `--read0`: input records are separated by NUL rather than newline —
+    /// what `fd -0` and `find -print0` produce.
+    pub read0: bool,
+    /// `--print0`: output records are terminated by NUL rather than newline —
+    /// what `xargs -0` expects.
+    pub print0: bool,
+    /// `--accept-nth=EXPR`: print only these fields of the accepted line
+    /// instead of the whole line.
+    pub accept_nth: Option<AcceptNth>,
     /// `-x`/`--extended` (fzf's DEFAULT) vs `+x`/`--no-extended`. Extended makes
     /// the query a term list — space-separated terms are AND'd, `|` ORs them,
     /// and `'exact` / `^prefix` / `suffix$` / `!inverse` change how a term
@@ -818,8 +845,116 @@ impl Default for Look {
             preview_window: PreviewWindow::default(),
             binds: Vec::new(),
             case: Case::Smart,
+            tail: None,
+            read0: false,
+            print0: false,
+            accept_nth: None,
             extended: true,
         }
+    }
+}
+
+/// `--accept-nth=EXPR` — what an accepted line prints instead of itself
+/// (fzf's `nthTransformer`, options.go:1265). Two forms: a bare field list, or
+/// a template of literal text with `{FIELDS}` and `{n}` placeholders.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AcceptNth {
+    /// `--accept-nth=2,4..`: the joined fields, nothing else.
+    Fields(Vec<Nth>),
+    /// `--accept-nth='[{n}] {2}'`: literal text with placeholders spliced in.
+    Template(Vec<AcceptPart>),
+}
+
+/// One piece of an `--accept-nth` template.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AcceptPart {
+    Literal(String),
+    Fields(Vec<Nth>),
+    /// `{n}` — the line's zero-based input index.
+    Index,
+}
+
+impl AcceptNth {
+    /// fzf's `nthTransformer`: a spec of only digits, `,`, `-` and `.` is a
+    /// field list; anything else is a template and must hold a placeholder.
+    pub fn parse(spec: &str) -> Option<AcceptNth> {
+        if !spec.is_empty()
+            && spec
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '.'))
+        {
+            let nth = Nth::parse_list(spec);
+            if !nth.is_empty() {
+                return Some(AcceptNth::Fields(nth));
+            }
+        }
+        let mut parts = Vec::new();
+        let mut rest = spec;
+        let mut saw_placeholder = false;
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}').map(|i| open + i) else {
+                break;
+            };
+            let inner = &rest[open + 1..close];
+            let ok = inner == "n"
+                || (!inner.is_empty()
+                    && inner
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '.')));
+            if !ok {
+                // Not a placeholder — keep scanning past this brace.
+                let (lit, tail) = rest.split_at(close + 1);
+                parts.push(AcceptPart::Literal(lit.to_string()));
+                rest = tail;
+                continue;
+            }
+            if open > 0 {
+                parts.push(AcceptPart::Literal(rest[..open].to_string()));
+            }
+            parts.push(match inner {
+                "n" => AcceptPart::Index,
+                f => AcceptPart::Fields(Nth::parse_list(f)),
+            });
+            saw_placeholder = true;
+            rest = &rest[close + 1..];
+        }
+        if !saw_placeholder {
+            return None;
+        }
+        if !rest.is_empty() {
+            parts.push(AcceptPart::Literal(rest.to_string()));
+        }
+        Some(AcceptNth::Template(parts))
+    }
+
+    /// Render one line through the spec. `index` backs `{n}`.
+    pub fn render(&self, line: &str, delimiter: Option<&str>, index: usize) -> String {
+        let tokens = tokenize(line, delimiter);
+        match self {
+            AcceptNth::Fields(nth) => {
+                strip_last_delimiter(&transform_join(&tokens, nth), delimiter)
+            }
+            AcceptNth::Template(parts) => parts
+                .iter()
+                .map(|p| match p {
+                    AcceptPart::Literal(s) => s.clone(),
+                    AcceptPart::Index => index.to_string(),
+                    AcceptPart::Fields(nth) => {
+                        strip_last_delimiter(&transform_join(&tokens, nth), delimiter)
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// fzf's `StripLastDelimiter` (tokenizer.go): a field slice keeps the delimiter
+/// that followed its last token, and that trailing separator is dropped before
+/// the line is printed.
+pub fn strip_last_delimiter(s: &str, delimiter: Option<&str>) -> String {
+    match delimiter {
+        Some(d) => s.strip_suffix(d).unwrap_or(s).to_string(),
+        None => s.trim_end().to_string(),
     }
 }
 
@@ -1138,6 +1273,25 @@ impl Look {
                 // turns the query back into a single literal fuzzy term.
                 "-x" | "--extended" => look.extended = true,
                 "+x" | "--no-extended" => look.extended = false,
+                // fzf's `--extended-exact` is `-x -e` in one flag (and has no
+                // negation of its own). The exact half is applied in `cli.rs`.
+                "--extended-exact" => look.extended = true,
+                // Record framing: NUL in, NUL out.
+                "--read0" => look.read0 = true,
+                "--no-read0" => look.read0 = false,
+                "--print0" => look.print0 = true,
+                "--no-print0" => look.print0 = false,
+                "--tail" => {
+                    let (v, sep) = flag_value(a, next);
+                    look.tail = v.and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0);
+                    i += usize::from(sep);
+                }
+                "--no-tail" => look.tail = None,
+                "--accept-nth" => {
+                    let (v, sep) = flag_value(a, next);
+                    look.accept_nth = v.as_deref().and_then(AcceptNth::parse);
+                    i += usize::from(sep);
+                }
                 "--with-shell" => {
                     let (v, sep) = flag_value(a, next);
                     look.with_shell = v.filter(|v| !v.is_empty());

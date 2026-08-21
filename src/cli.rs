@@ -424,6 +424,7 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
     const DROP_BOOL: &[&str] = &[
         "--ambidouble",
         "--ansi",
+        "--async",
         "--bash",
         "--bench",
         "--black",
@@ -431,17 +432,22 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--clear",
         "--cycle",
         "--disabled",
+        "--enabled",
         "--exit-0",
         "--extended",
         "--filepath-word",
         "--fish",
+        "--force-tty-in",
         "--header-first",
         "--highlight-line",
+        "--hscroll",
         "--ignore-case",
         "--inline-info",
         "--keep-right",
         "--literal",
         "--man",
+        "--multi-line",
+        "--no-256",
         "--no-ambidouble",
         "--no-ansi",
         "--no-black",
@@ -458,6 +464,7 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--no-footer",
         "--no-footer-border",
         "--no-footer-label",
+        "--no-force-tty-in",
         "--no-gap",
         "--no-gap-line",
         "--no-header-border",
@@ -486,6 +493,7 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--no-mouse",
         "--no-multi-line",
         "--no-padding",
+        "--no-phony",
         "--no-popup",
         "--no-preview-border",
         "--no-preview-label",
@@ -504,9 +512,11 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--no-track",
         "--no-tty-default",
         "--no-unicode",
+        "--no-winpty",
         "--no-wrap",
         "--no-wrap-word",
         "--nushell",
+        "--phony",
         "--print-query",
         "--print0",
         "--raw",
@@ -568,6 +578,11 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--preview-label-pos",
         "--preview-window",
         "--preview-wrap-sign",
+        "--profile-block",
+        "--profile-cpu",
+        "--profile-mem",
+        "--profile-mutex",
+        "--proxy-script",
         "--scheme",
         "--scroll-off",
         "--separator",
@@ -576,6 +591,7 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
         "--tail",
         "--threads",
         "--tiebreak",
+        "--toggle-sort",
         "--tty-default",
         "--walker",
         "--walker-root",
@@ -616,8 +632,19 @@ fn fzf_compat_args(args: impl Iterator<Item = String>) -> Vec<String> {
     while let Some(a) = it.next() {
         if fzf {
             match a.as_str() {
-                "-e" => {
+                // `--extended-exact` is fzf's shorthand for `-x -e`; the
+                // extended half is read by `fzf::Look`, the exact half is arb's
+                // own flag.
+                "-e" | "--extended-exact" => {
+                    cancel(&mut out, &["--exact"], false);
                     out.push("--exact".to_string());
+                    continue;
+                }
+                // `+e` cancels an earlier `-e`, the way `+i`/`+x`/`+m`/`+s`
+                // cancel theirs. Without this the short and long spellings of
+                // the same negation (`+e` and `--no-exact`) disagree.
+                "+e" => {
+                    cancel(&mut out, &["--exact"], false);
                     continue;
                 }
                 // The case flags and `-x`/`+x` (extended search on/off) reach the
@@ -762,15 +789,38 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &crate::fzf::Look) ->
     // work here, and it parallelizes perfectly.
     let mut blob = Vec::new();
     reader.read_to_end(&mut blob)?;
+    // `--read0`: records arrive NUL-separated (`fd -0`, `find -print0`), so a
+    // newline is ordinary text inside one of them.
+    let sep = match look.read0 {
+        true => b'\0',
+        false => b'\n',
+    };
     let mut lines: Vec<&str> = blob
-        .split(|b| *b == b'\n')
-        // Split on `\n` only: a trailing `\r` belongs to the line (macOS `Icon\r`
-        // entries are real, and fzf scores them with the CR in place).
+        .split(|b| *b == sep)
+        // Split on the separator only: a trailing `\r` belongs to the line
+        // (macOS `Icon\r` entries are real, and fzf scores them with the CR in
+        // place).
         .map(|l| std::str::from_utf8(l).unwrap_or(""))
         .collect();
-    // A trailing newline yields one empty tail element that was never a line.
+    // A trailing separator yields one empty tail element that was never a line.
     if lines.last() == Some(&"") {
         lines.pop();
+    }
+    // `--header-lines=N`: the first N lines are a header, not candidates — fzf
+    // excludes them from the filter too, not just from the picker.
+    // `--tail=N`: only the last N lines are candidates at all.
+    // Both drop lines off the FRONT, and `{n}` in `--accept-nth` is the line's
+    // index in the INPUT, so count what was dropped rather than renumbering.
+    let mut dropped = 0usize;
+    if look.header_lines > 0 {
+        dropped += look.header_lines.min(lines.len());
+        lines.drain(..look.header_lines.min(lines.len()));
+    }
+    if let Some(n) = look.tail {
+        if lines.len() > n {
+            dropped += lines.len() - n;
+            lines.drain(..lines.len() - n);
+        }
     }
     let order = crate::tui::rank(
         &lines,
@@ -783,8 +833,28 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &crate::fzf::Look) ->
     );
     let out = io::stdout();
     let mut out = BufWriter::new(out.lock());
+    // `--print0`: records are NUL-terminated, for `xargs -0` downstream.
+    let end = match look.print0 {
+        true => b"\0" as &[u8],
+        false => b"\n",
+    };
+    // `--print-query` puts the query on its own record first — fzf does this in
+    // filter mode too, not only in the picker.
+    if look.print_query {
+        out.write_all(pat.as_bytes())?;
+        out.write_all(end)?;
+    }
     for i in order {
-        writeln!(out, "{}", crate::tui::item_text(lines[i], look))?;
+        let text = crate::tui::item_text(lines[i], look);
+        // `--accept-nth`: print the chosen fields, not the whole line.
+        match &look.accept_nth {
+            Some(spec) => {
+                let rendered = spec.render(&text, look.delimiter.as_deref(), dropped + i);
+                out.write_all(rendered.as_bytes())?;
+            }
+            None => out.write_all(text.as_bytes())?,
+        }
+        out.write_all(end)?;
     }
     out.flush()
 }
