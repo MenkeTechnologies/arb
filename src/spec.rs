@@ -1935,11 +1935,38 @@ fn pipeline_from_body(
                 || c.name.starts_with("map(")
                 || c.name.starts_with("has(")
                 || matches!(c.name.as_str(), "to_entries" | "values")
+                // A jq `@format` string. A leading `@` otherwise means an XPATH
+                // attribute step, so only the nine format NAMES are claimed —
+                // `@href` still selects an attribute.
+                || matches!(
+                    c.name.as_str(),
+                    "@base64" | "@base64d" | "@csv" | "@tsv" | "@json" | "@text" | "@html"
+                        | "@uri" | "@sh"
+                )
+                || c.name.starts_with("@base64 ")
+                || c.name.starts_with("@csv ")
+                || c.name.starts_with("@tsv ")
+                || c.name.starts_with("@json ")
+                || c.name.starts_with("@text ")
+                || c.name.starts_with("@html ")
+                || c.name.starts_with("@uri ")
+                || c.name.starts_with("@sh ")
             {
                 let mut parts = vec![c.name.clone()];
                 parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
-                let jq_ops = crate::jq::translate(&parts.join(" "))?;
-                ops.extend(jq_ops);
+                let src = parts.join(" ");
+                match crate::jq::translate(&src) {
+                    Ok(jq_ops) => ops.extend(jq_ops),
+                    // Outside the translatable subset. That used to be the end of
+                    // it — SPEC §8 listed ~120 constructs as hard errors purely
+                    // because a `Vec<QueryOp>` cannot express them. It compiles as
+                    // a real jq program instead, and only a program that is not
+                    // valid jq EITHER keeps the original refusal.
+                    Err(sub_err) => match crate::query::jq_program(&src) {
+                        Ok(_) => ops.push(QueryOp::JqProgram(src)),
+                        Err(_) => return Err(sub_err.into()),
+                    },
+                }
                 return Ok(());
             }
             // xpath front-end: a body command whose first token is an xpath literal
@@ -2466,7 +2493,28 @@ fn pipeline_from_body(
                         .unwrap_or(usize::MAX);
                     ops.push(QueryOp::Slice(a, b));
                 }
-                other => return Err(format!("source: unknown verb `{other}`").into()),
+                // Not an arb verb. Before reporting one, try the whole command
+                // as a jq PROGRAM: `crate::jq` translates the subset that maps
+                // onto arb's line-stream ops, and `crate::jqlang` runs everything
+                // else as real jq. The native table is matched FIRST and wins
+                // every shared spelling, which is exactly the context rule SPEC
+                // §8 states — a bare alphanumeric word is arb's native verb, and
+                // only what arb has no verb for reaches jq.
+                other => {
+                    let mut parts = vec![other.to_string()];
+                    parts.extend(c.args.iter().map(|a| match a {
+                        Arg::Block(inner) => format!("{{{}}}", block_text(inner)),
+                        x => x.as_str().unwrap_or_default().to_string(),
+                    }));
+                    let src = parts.join(" ");
+                    match crate::query::jq_program(&src) {
+                        Ok(_) => ops.push(QueryOp::JqProgram(src)),
+                        // Report arb's own diagnostic, not jq's parse error: a
+                        // typo'd arb verb is far likelier than a jq program, and
+                        // "unknown verb" is what points at the real mistake.
+                        Err(_) => return Err(format!("source: unknown verb `{other}`").into()),
+                    }
+                }
             }
             Ok(())
         })();

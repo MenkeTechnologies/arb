@@ -23,6 +23,7 @@ pub mod fzf;
 /// `hosted` submodule: running arb inside another process.
 pub mod hosted;
 pub mod jq;
+pub mod jqlang;
 pub mod jqval;
 pub mod lexer;
 pub mod lsp;

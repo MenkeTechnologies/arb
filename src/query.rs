@@ -202,6 +202,22 @@ pub enum QueryOp {
     /// boolean is an error ("boolean (true) has no length") instead of falling back
     /// to the raw line's character count.
     JqLen,
+    /// A COMPLETE jq program, run per line by [`crate::jqlang`].
+    ///
+    /// The ops above are arb's line-stream translations of the jq subset they
+    /// cover, and they keep arb's own promises (identity passes the SOURCE line
+    /// through, so its spacing and number literals survive). They cannot express
+    /// jq's generator semantics — `.a, .b`, `reduce`, `..`, `try`, assignment —
+    /// because a `Vec<QueryOp>` is a stage list, not a language. Anything
+    /// outside that subset compiles to a real jq program instead and runs on
+    /// arb's own jq engine, which is why the constructs SPEC §8 used to list as
+    /// refusals now answer exactly as `jq` does.
+    ///
+    /// The payload is the SOURCE, not a compiled program: `QueryOp` is cloned
+    /// into specs, actors and the web target, so it must stay `Send`-compatible
+    /// plain data. Compilation is memoized per thread by [`jq_program`], so a
+    /// per-line pipeline still parses the program exactly once.
+    JqProgram(String),
     /// jq `select(f)` over jq VALUE semantics: keep the line when `f` is truthy,
     /// where only `false` and `null` are falsy. Distinct from native `Where`,
     /// which evaluates an f64 predicate over a numeric line stream.
@@ -448,6 +464,53 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 cur = out;
             }
+            QueryOp::JqProgram(src) => {
+                let prog = match jq_program(src) {
+                    Ok(p) => p,
+                    Err(msg) => return QueryResult::Error(format!("jq: {msg}")),
+                };
+                let interp = crate::jqlang::Interp::default();
+                let mut out = Vec::with_capacity(cur.len());
+                for (i, l) in cur.iter().enumerate() {
+                    // A line that is not JSON is jq's STRING, the same reading
+                    // SPEC §8 gives an expression stage over a text line.
+                    let input = crate::jqlang::parse_json(l)
+                        .unwrap_or_else(|_| crate::jqlang::JqVal::str(l.as_str()));
+                    // `input`/`inputs` draw from the REST of the stream, which is
+                    // what they mean to jq reading a multi-document input.
+                    interp.set_inputs(
+                        cur[i + 1..]
+                            .iter()
+                            .map(|r| {
+                                crate::jqlang::parse_json(r)
+                                    .unwrap_or_else(|_| crate::jqlang::JqVal::str(r.as_str()))
+                            })
+                            .collect(),
+                    );
+                    interp.set_line(i + 1);
+                    let r = prog.run_with(&interp, &input, &mut |v| {
+                        out.push(crate::jqlang::render_raw(&v));
+                        Ok(())
+                    });
+                    if let Err(e) = r {
+                        match e {
+                            crate::jqlang::JqErr::Halt(_, msg) => {
+                                if let Some(m) = msg {
+                                    return QueryResult::Error(format!(
+                                        "jq: {}",
+                                        crate::jqlang::render_raw(&m)
+                                    ));
+                                }
+                                break;
+                            }
+                            other => {
+                                return QueryResult::Error(format!("jq: {}", other.to_message()))
+                            }
+                        }
+                    }
+                }
+                cur = out;
+            }
             QueryOp::JqSelect(e) => {
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
@@ -639,8 +702,12 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::JqRawString => {
                 for l in cur.iter_mut() {
-                    if let Some(Value::String(s)) = jq_value(l) {
-                        *l = s;
+                    // Re-render through the jq value model, which is exactly what
+                    // `jq -rc` prints: a top-level string goes out RAW, and every
+                    // other value comes back COMPACT. A line that is not JSON at
+                    // all has no jq rendering and passes through as written.
+                    if let Ok(v) = crate::jqlang::parse_json(l) {
+                        *l = crate::jqlang::render_raw(&v);
                     }
                 }
             }
@@ -2493,4 +2560,26 @@ mod tests {
         assert_eq!(split_delim(" a , b ", ','), vec!["a", "b"]);
         assert_eq!(split_delim("\" a \",b", ','), vec![" a ", "b"]);
     }
+}
+
+thread_local! {
+    /// Compiled jq programs, keyed by source. A `QueryOp::JqProgram` is
+    /// re-evaluated on every stream tick (the TUI re-runs the pipeline as lines
+    /// arrive), so without this the same program would be lexed and parsed once
+    /// per frame. Thread-local because a compiled program holds `Rc`s.
+    static JQ_PROGRAMS: std::cell::RefCell<
+        std::collections::HashMap<String, std::rc::Rc<crate::jqlang::Program>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Compile (or fetch from this thread's cache) the jq program `src`.
+pub fn jq_program(src: &str) -> Result<std::rc::Rc<crate::jqlang::Program>, String> {
+    JQ_PROGRAMS.with(|c| {
+        if let Some(p) = c.borrow().get(src) {
+            return Ok(p.clone());
+        }
+        let p = std::rc::Rc::new(crate::jqlang::Program::compile(src)?);
+        c.borrow_mut().insert(src.to_string(), p.clone());
+        Ok(p)
+    })
 }
