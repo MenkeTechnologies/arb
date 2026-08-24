@@ -24,12 +24,25 @@ use crate::ast::Command;
 ///
 /// 2: the lexer now reads a jq literal at command position as one verbatim atom,
 /// so the same source parses to a different `Command` split than schema 1 wrote.
-const SCHEMA: u64 = 2;
+/// (The build stamp in [`build_stamp`] is the AUTOMATIC guard — a rebuild
+/// invalidates the shard on its own. This constant remains as the record of the
+/// format changes that made it necessary.)
+///
+/// 3: that atom widened to the whole jq surface — `reduce`/`if`/`try`, the
+/// `name(` call spelling, `[`/`{`/`(`/`$`/`"` openers and `@format` — and the
+/// scan now balances braces and keeps a `;` inside `(`/`[`/`{`. Every one of
+/// those changes the `Command` split for source schema 2 already cached.
+const SCHEMA: u64 = 3;
 
-/// The outer, rkyv-archived shard: a flat list of (key, bincode-blob) entries.
+/// The outer, rkyv-archived shard: a flat list of (key, bincode-blob) entries,
+/// stamped with the build that wrote them.
 #[derive(Archive, RkyvSer, RkyvDe, Default)]
 #[archive(check_bytes)]
 struct Shard {
+    /// [`build_stamp`] of the binary that wrote this shard. A shard written by a
+    /// DIFFERENT build is dropped whole rather than read — see that function for
+    /// why hand-bumped salts are not enough.
+    stamp: u64,
     entries: Vec<Entry>,
 }
 
@@ -52,6 +65,44 @@ pub fn key_for(src: &str) -> u64 {
     env!("CARGO_PKG_VERSION").hash(&mut h);
     src.hash(&mut h);
     h.finish()
+}
+
+/// A fingerprint of the RUNNING BINARY: its size and modification time.
+///
+/// The salts above are not sufficient on their own, and that is measured, not
+/// argued. `SCHEMA` is hand-bumped and `CARGO_PKG_VERSION` only moves at
+/// release, so a development build that changes how a source LEXES leaves both
+/// unchanged — and the shard then replays the previous build's AST for the same
+/// text. Reproduced on this tree: with a warm shard, `out { in.json; {k: .a} }`
+/// kept printing `{"k":1}` after the lexer rule that makes that parse work was
+/// deliberately removed and the binary rebuilt; the same binary against a cold
+/// shard correctly reported `command cannot start with a block`.
+///
+/// Both fields are needed. Size alone misses a same-size rebuild (the common
+/// case for a one-line change); mtime alone misses a restored copy. Hashing them
+/// costs one `stat` per process.
+fn build_stamp() -> u64 {
+    static STAMP: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *STAMP.get_or_init(|| {
+        let mut h = rustc_hash::FxHasher::default();
+        // No readable executable (a stripped-down container, a deleted binary)
+        // leaves the stamp at the hash of nothing — the cache then behaves as it
+        // did before, which is a stale-read risk only where `stat` is impossible.
+        if let Ok(md) = std::env::current_exe().and_then(std::fs::metadata) {
+            md.len().hash(&mut h);
+            if let Ok(nanos) = md
+                .modified()
+                .and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
+                })
+                .map(|d| d.as_nanos())
+            {
+                nanos.hash(&mut h);
+            }
+        }
+        h.finish()
+    })
 }
 
 /// `~/.arb/scripts.rkyv` (or `$ARB_CACHE`), creating the parent dir. `None` when
@@ -77,10 +128,19 @@ fn load_shard() -> Shard {
         return Shard::default();
     };
     // A corrupt/old-format shard validates-fails and resets cleanly.
-    rkyv::from_bytes::<Shard>(&bytes).unwrap_or_default()
+    let shard = rkyv::from_bytes::<Shard>(&bytes).unwrap_or_default();
+    // A shard written by a different BUILD is stale by construction: it holds
+    // ASTs produced by the previous lexer/parser. Drop it whole — that also
+    // prunes it, since every entry in it is unreachable from this build.
+    if shard.stamp == build_stamp() {
+        shard
+    } else {
+        Shard::default()
+    }
 }
 
-fn write_shard(shard: &Shard) -> Result<(), String> {
+fn write_shard(shard: &mut Shard) -> Result<(), String> {
+    shard.stamp = build_stamp();
     let path = shard_path().ok_or("no home dir for cache")?;
     let bytes = rkyv::to_bytes::<_, 4096>(shard).map_err(|e| format!("cache serialize: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| format!("cache write: {e}"))
@@ -135,7 +195,7 @@ pub fn store(src: &str, ast: &[Command]) -> Result<(), String> {
     let blob = encode(ast)?;
     let mut shard = load_shard();
     shard_put(&mut shard, key_for(src), blob);
-    write_shard(&shard)
+    write_shard(&mut shard)
 }
 
 /// Parse `src`, using the script cache: a hit skips lex+parse, a miss parses and
@@ -153,6 +213,11 @@ pub fn parse_cached(src: &str) -> Result<Vec<Command>, crate::err::SpecError> {
 mod tests {
     use super::*;
     use crate::ast::Arg;
+
+    /// `ARB_CACHE` is process-global, so the two tests that redirect the shard to
+    /// a scratch file must not run at the same time — one clearing the variable
+    /// sends the other's `load` at the real `~/.arb` shard.
+    static FS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn key_is_stable_and_schema_salted() {
@@ -213,8 +278,38 @@ mod tests {
         assert!(shard_get(&s, MAX_ENTRIES as u64 + 49).is_some());
     }
 
+    /// The regression this file's `stamp` exists for: a shard written by a
+    /// different BUILD must not be read. Reproduced by hand here — writing a
+    /// shard, then rewriting it with a stamp that is not this build's — because
+    /// the real trigger (rebuilding the binary mid-test) is not available to a
+    /// unit test.
+    #[test]
+    fn shard_from_another_build_is_not_read() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = std::env::temp_dir().join(format!("arb_cache_stamp_{}.rkyv", std::process::id()));
+        std::env::set_var("ARB_CACHE", &tmp);
+        let _ = std::fs::remove_file(&tmp);
+        let src = "text .t <- in";
+        store(src, &crate::parser::parse(src).unwrap()).unwrap();
+        assert!(load(src).is_some(), "same build reads its own shard");
+
+        // Re-stamp the shard as if another build had written it.
+        let mut shard = rkyv::from_bytes::<Shard>(&std::fs::read(&tmp).unwrap()).unwrap();
+        shard.stamp = build_stamp().wrapping_add(1);
+        let bytes = rkyv::to_bytes::<_, 4096>(&shard).unwrap();
+        std::fs::write(&tmp, &bytes).unwrap();
+
+        assert!(
+            load(src).is_none(),
+            "a shard from another build must be dropped, not replayed"
+        );
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("ARB_CACHE");
+    }
+
     #[test]
     fn parse_cached_matches_direct_parse_via_fs_round_trip() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Isolate the shard to a scratch file so the test never touches ~/.arb.
         let tmp = std::env::temp_dir().join(format!("arb_cache_test_{}.rkyv", std::process::id()));
         std::env::set_var("ARB_CACHE", &tmp);
