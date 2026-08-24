@@ -939,7 +939,7 @@ pub(crate) enum Pattern {
     Arr(Vec<Pattern>),
     /// Each entry is (key filter, optional sub-pattern). `{$a}` is sugar for
     /// `{a: $a}` and produces `(Lit("a"), None)` with the variable named `a`.
-    Obj(Vec<(Filter, Option<Pattern>, Option<Rc<str>>)>),
+    Obj(Vec<ObjPatEntry>),
 }
 
 #[derive(Debug, Clone)]
@@ -2498,6 +2498,15 @@ fn split_str(s: &str, sep: &str) -> Vec<JqVal> {
 /// Build an interpolated string. Each `\(…)` is a GENERATOR, so `"\(1,2)"`
 /// yields two strings; the pieces are walked left to right with the leftmost
 /// interpolation varying slowest, which is the order jq emits.
+/// Everything a string build carries unchanged from piece to piece.
+struct StrBuild<'a> {
+    it: &'a Interp,
+    pieces: &'a [StrPiece],
+    fmt: Option<&'a str>,
+    input: &'a JqVal,
+    env: &'a Env,
+}
+
 fn eval_string(
     it: &Interp,
     pieces: &[StrPiece],
@@ -2506,41 +2515,32 @@ fn eval_string(
     env: &Env,
     out: Sink,
 ) -> R<()> {
-    fn go(
-        it: &Interp,
-        pieces: &[StrPiece],
-        i: usize,
-        acc: &str,
-        fmt: Option<&str>,
-        input: &JqVal,
-        env: &Env,
-        out: Sink,
-    ) -> R<()> {
-        let Some(p) = pieces.get(i) else {
+    fn go(b: &StrBuild, i: usize, acc: &str, out: Sink) -> R<()> {
+        let Some(p) = b.pieces.get(i) else {
             return out(JqVal::str(acc));
         };
         match p {
             StrPiece::Lit(s) => {
                 let next = format!("{acc}{s}");
-                go(it, pieces, i + 1, &next, fmt, input, env, out)
+                go(b, i + 1, &next, out)
             }
             StrPiece::Interp(src) => {
                 // The interpolation's source is parsed here rather than at lex
                 // time so the lexer stays flat; the result is cached per program
                 // run by the `Filter` the caller already holds.
                 let f = parse(src).map_err(JqErr::msg)?;
-                eval(it, &f, input, env, &mut |v| {
-                    let piece = match fmt {
+                eval(b.it, &f, b.input, b.env, &mut |v| {
+                    let piece = match b.fmt {
                         Some(name) => apply_format(name, &v)?,
                         None => render_raw(&v),
                     };
                     let next = format!("{acc}{piece}");
-                    go(it, pieces, i + 1, &next, fmt, input, env, out)
+                    go(b, i + 1, &next, out)
                 })
             }
         }
     }
-    go(it, pieces, 0, "", fmt, input, env, out)
+    go(&StrBuild { it, pieces, fmt, input, env }, 0, "", out)
 }
 
 /// jq's `@name` format strings.
@@ -2736,9 +2736,13 @@ fn bind_arr(
     bind_pattern(it, p, &elem, &env, &mut |e| bind_arr(it, subs, i + 1, v, e, k))
 }
 
+/// One entry of an object destructuring pattern: the KEY filter, an optional
+/// sub-pattern for the value, and the variable a `{$a}` shorthand binds.
+type ObjPatEntry = (Filter, Option<Pattern>, Option<Rc<str>>);
+
 fn bind_obj(
     it: &Interp,
-    subs: &[(Filter, Option<Pattern>, Option<Rc<str>>)],
+    subs: &[ObjPatEntry],
     i: usize,
     v: &JqVal,
     env: Env,
@@ -2914,7 +2918,15 @@ fn eval_paths(
                 },
             }
         }
-        Filter::If(arms, els) => eval_if_paths(it, arms, els.as_deref(), 0, input, pre, val, env, out),
+        Filter::If(arms, els) => eval_if_paths(
+            it,
+            IfNode { arms, els: els.as_deref() },
+            input,
+            pre,
+            val,
+            env,
+            out,
+        ),
         Filter::Alt(a, b) => {
             let mut any = false;
             let r = eval_paths(it, a, input, pre, val, env, &mut |p, v| {
@@ -2954,7 +2966,9 @@ fn eval_paths(
                 eval_paths(it, body, input, pre, val, &benv, out)
             })
         }),
-        Filter::Call(name, args) => eval_call_paths(it, name, args, input, pre, val, env, out),
+        Filter::Call(name, args) => {
+            eval_call_paths(it, (name, args), input, pre, val, env, out)
+        }
         // `path(1)` and friends: jq reports the literal it could not turn into a
         // path rather than silently answering.
         other => Err(JqErr::msg(format!(
@@ -2977,19 +2991,24 @@ fn path_expr_label(it: &Interp, f: &Filter, val: &JqVal, env: &Env) -> String {
     first.map_or_else(|| "null".to_string(), |v| render(&v))
 }
 
+/// The remaining arms of an `if` plus its `else`, walked one arm at a time.
+#[derive(Clone, Copy)]
+struct IfNode<'a> {
+    arms: &'a [(Filter, Filter)],
+    els: Option<&'a Filter>,
+}
+
 fn eval_if_paths(
     it: &Interp,
-    arms: &[(Filter, Filter)],
-    els: Option<&Filter>,
-    i: usize,
+    node: IfNode,
     input: &JqVal,
     pre: &[JqVal],
     val: &JqVal,
     env: &Env,
     out: PathSink,
 ) -> R<()> {
-    let Some((cond, then)) = arms.get(i) else {
-        return match els {
+    let Some(((cond, then), rest)) = node.arms.split_first() else {
+        return match node.els {
             Some(e) => eval_paths(it, e, input, pre, val, env, out),
             None => out(pre.to_vec(), val.clone()),
         };
@@ -2998,7 +3017,7 @@ fn eval_if_paths(
         if c.truthy() {
             eval_paths(it, then, input, pre, val, env, out)
         } else {
-            eval_if_paths(it, arms, els, i + 1, input, pre, val, env, out)
+            eval_if_paths(it, IfNode { arms: rest, els: node.els }, input, pre, val, env, out)
         }
     })
 }
@@ -3006,14 +3025,14 @@ fn eval_if_paths(
 /// The builtins that are legal inside a path expression.
 fn eval_call_paths(
     it: &Interp,
-    name: &str,
-    args: &[Rc<Filter>],
+    call: (&str, &[Rc<Filter>]),
     input: &JqVal,
     pre: &[JqVal],
     val: &JqVal,
     env: &Env,
     out: PathSink,
 ) -> R<()> {
+    let (name, args) = call;
     match (name, args.len()) {
         ("empty", 0) => Ok(()),
         ("error", 0) => Err(JqErr::Err(val.clone())),
@@ -4110,6 +4129,15 @@ fn regex_split(input: &JqVal, re: &JqVal, flags: &JqVal) -> R<JqVal> {
     Ok(JqVal::arr(parts))
 }
 
+/// Everything a `sub`/`gsub` rebuild carries unchanged from match to match.
+struct SubBuild<'a> {
+    it: &'a Interp,
+    s: &'a str,
+    spans: &'a [(usize, usize, JqVal)],
+    repl: &'a Filter,
+    env: &'a Env,
+}
+
 /// jq's `sub`/`gsub`. The replacement is a FILTER evaluated with the capture
 /// object as `.`, and it is a generator — `"ab" | [sub("a"; "x","y")]` is
 /// `["xb","yb"]` — so the matches are walked recursively and every combination
@@ -4147,28 +4175,18 @@ fn regex_sub(
             break;
         }
     }
-    fn go(
-        it: &Interp,
-        s: &str,
-        spans: &[(usize, usize, JqVal)],
-        i: usize,
-        cursor: usize,
-        acc: &str,
-        repl: &Filter,
-        env: &Env,
-        out: Sink,
-    ) -> R<()> {
-        let Some((start, end, caps)) = spans.get(i) else {
-            return out(JqVal::str(format!("{acc}{}", &s[cursor..])));
+    fn go(b: &SubBuild, i: usize, cursor: usize, acc: &str, out: Sink) -> R<()> {
+        let Some((start, end, caps)) = b.spans.get(i) else {
+            return out(JqVal::str(format!("{acc}{}", &b.s[cursor..])));
         };
-        let head = format!("{acc}{}", &s[cursor..*start]);
-        eval(it, repl, caps, env, &mut |r| {
+        let head = format!("{acc}{}", &b.s[cursor..*start]);
+        eval(b.it, b.repl, caps, b.env, &mut |r| {
             let piece = want_str(&r, "used as a replacement")?;
             let next = format!("{head}{piece}");
-            go(it, s, spans, i + 1, *end, &next, repl, env, out)
+            go(b, i + 1, *end, &next, out)
         })
     }
-    go(it, &s, &spans, 0, 0, "", repl, env, out)
+    go(&SubBuild { it, s: &s, spans: &spans, repl, env }, 0, 0, "", out)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
