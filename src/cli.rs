@@ -866,7 +866,7 @@ fn run_filter(pat: &str, exact: bool, no_sort: bool, look: &crate::fzf::Look) ->
 /// fzf-compatible finder runs without a process. `argv` is the whole command
 /// line, `argv[0]` included, exactly as `main` would have received it.
 ///
-/// [`hosted::run`] is what makes the promise to return keep: an `exit` from
+/// [`crate::hosted::run`] is what makes the promise to return keep: an `exit` from
 /// anywhere in the command line layer unwinds to here instead of taking the
 /// shell down, a panic becomes a status, and the working directory the host
 /// had is restored.

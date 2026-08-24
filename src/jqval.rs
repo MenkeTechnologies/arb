@@ -371,7 +371,7 @@ impl P {
 /// Render a COMPUTED jq value as one output line, the way `jq -rc` prints it: a
 /// string raw, everything else compact JSON.
 ///
-/// Every number goes through [`crate::query::fmt_num`], including the ones
+/// Every number goes through `crate::query::fmt_num`, including the ones
 /// nested inside a constructed array or object. That is the same invariant the
 /// scalar path already keeps — `fmt_num` is the one place an arb number becomes
 /// text (SPEC §6) — and letting `serde_json` print a nested number instead runs

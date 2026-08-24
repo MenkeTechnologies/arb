@@ -6,8 +6,8 @@
 //! among many — the `arb` shell builtin in zshrs-native, where there is no fork
 //! and no exec — can afford none of that. This module is the difference.
 //!
-//! [`exit`] keeps `process::exit` when arb owns the process and unwinds when it
-//! does not; [`run`] catches the unwind and turns it back into the status the
+//! [`crate::hosted::exit`] keeps `process::exit` when arb owns the process and unwinds when it
+//! does not; [`crate::hosted::run`] catches the unwind and turns it back into the status the
 //! exit asked for. Unwinding costs nothing on the path that does not take it,
 //! and destructors still run — which is what puts the terminal back after a TUI
 //! session that left through an exit.
@@ -63,7 +63,7 @@ fn install_quiet_hook() {
 
 /// Run one hosted arb invocation and return the status it left with.
 ///
-/// A panic that is not a [`HostedExit`] reports through the host's hook and
+/// A panic that is not a `HostedExit` reports through the host's hook and
 /// yields 1 — arb's own status for a failed run.
 pub fn run<F>(f: F) -> i32
 where
