@@ -532,6 +532,14 @@ fn streamable_detection() {
     assert!(!is_line_streamable(&pipeline(
         "tail .x\nsource .x { in; tally }"
     )));
+    // `input`/`inputs` pull the FOLLOWING documents, so a program using them
+    // needs the whole buffer and must not be streamed.
+    for jq in ["[., inputs]", "input", "[inputs] | length"] {
+        assert!(
+            !is_line_streamable(&pipeline(&format!("tail .x\nsource .x {{ in; {jq} }}"))),
+            "`{jq}` reads the stream and cannot be line-streamed"
+        );
+    }
     // The jq front-end's own ops are per-line too, and each of them is a
     // SEPARATE variant from the native verb it shadows (`JqEach` vs `Each`,
     // `JqAdd` vs `Add`, …). Leaving one off this list does not fail anything
@@ -545,6 +553,13 @@ fn streamable_detection() {
         ". | add",
         ". | length",
         "map(. * 2)",
+        // A jq PROGRAM is per-line too, unless it reads the stream itself.
+        ".a, .b",
+        "{k: .a}",
+        "reduce .[] as $x (0; . + $x)",
+        "if .a then .a else .b end",
+        "to_entries | from_entries",
+        ".a |= . + 1",
     ] {
         assert!(
             is_line_streamable(&pipeline(&format!(

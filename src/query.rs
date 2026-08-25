@@ -1738,6 +1738,14 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
         if let QueryOp::JqMap(inner) = op {
             return is_line_streamable(inner);
         }
+        // A jq PROGRAM is per-line unless it reads the stream itself: `input`
+        // and `inputs` pull the following documents, so they need the whole
+        // buffer in hand. A program that does not touch them streams, which is
+        // what keeps `arb -e '… | .name'` emitting as lines arrive instead of
+        // buffering to EOF.
+        if let QueryOp::JqProgram(src) = op {
+            return jq_program(src).is_ok_and(|p| !p.reads_input_stream());
+        }
         matches!(
             op,
             QueryOp::Match(_)

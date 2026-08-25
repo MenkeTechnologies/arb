@@ -2044,6 +2044,27 @@ impl Program {
         Ok(Program { filter, base })
     }
 
+    /// Does this program read from the input STREAM (`input` / `inputs`)?
+    ///
+    /// A program that does not is per-line, and arb's pipeline can stream it —
+    /// emitting as lines arrive instead of buffering to EOF. One that does needs
+    /// the whole stream in hand by construction. Conservative in the safe
+    /// direction: a user `def input:` that shadows the builtin still reports
+    /// `true`, which costs streaming and never correctness.
+    pub fn reads_input_stream(&self) -> bool {
+        fn walk(f: &Filter) -> bool {
+            let mut hit = false;
+            for_each_child(f, &mut |c| hit |= walk(c));
+            if let Filter::Call(name, args) = f {
+                if args.is_empty() && matches!(&**name, "input" | "inputs") {
+                    return true;
+                }
+            }
+            hit
+        }
+        walk(&self.filter)
+    }
+
     /// Run the program over one input, collecting every output value.
     pub fn run(&self, interp: &Interp, input: &JqVal) -> R<Vec<JqVal>> {
         let mut out = Vec::new();
@@ -4938,4 +4959,88 @@ fn with_pattern_vars(
     }
     out.extend(names.into_iter().map(|n| n.to_string()));
     out
+}
+
+/// Visit every sub-filter of `f` exactly once. Used by the whole-program
+/// questions (`reads_input_stream`) that do not care about structure, only about
+/// whether some node appears.
+fn for_each_child(f: &Filter, visit: &mut dyn FnMut(&Filter)) {
+    match f {
+        Filter::Identity
+        | Filter::RecurseDefault
+        | Filter::Lit(_)
+        | Filter::Format(_)
+        | Filter::Var(_)
+        | Filter::Break(_)
+        | Filter::Str(..) => {}
+        Filter::Field(a, _) | Filter::Iterate(a) | Filter::Optional(a) | Filter::Neg(a) => {
+            visit(a);
+        }
+        Filter::Index(a, b)
+        | Filter::Pipe(a, b)
+        | Filter::Comma(a, b)
+        | Filter::Bin(_, a, b)
+        | Filter::And(a, b)
+        | Filter::Or(a, b)
+        | Filter::Alt(a, b)
+        | Filter::Assign(_, a, b) => {
+            visit(a);
+            visit(b);
+        }
+        Filter::Slice(a, lo, hi) => {
+            visit(a);
+            for x in [lo, hi].into_iter().flatten() {
+                visit(x);
+            }
+        }
+        Filter::If(arms, els) => {
+            for (c, t) in arms {
+                visit(c);
+                visit(t);
+            }
+            if let Some(e) = els {
+                visit(e);
+            }
+        }
+        Filter::Try(a, h) => {
+            visit(a);
+            if let Some(x) = h {
+                visit(x);
+            }
+        }
+        Filter::Reduce(src, _, init, upd) => {
+            visit(src);
+            visit(init);
+            visit(upd);
+        }
+        Filter::Foreach(src, _, init, upd, ext) => {
+            visit(src);
+            visit(init);
+            visit(upd);
+            if let Some(e) = ext {
+                visit(e);
+            }
+        }
+        Filter::Bind(src, _, body) => {
+            visit(src);
+            visit(body);
+        }
+        Filter::Label(_, body) => visit(body),
+        Filter::Call(_, args) => args.iter().for_each(|a| visit(a)),
+        Filter::Def(def, rest) => {
+            visit(&def.body);
+            visit(rest);
+        }
+        Filter::Object(entries) => {
+            for ObjEntry::KeyVal(k, v) in entries {
+                visit(k);
+                visit(v);
+            }
+        }
+        Filter::Array(inner) => {
+            if let Some(x) = inner {
+                visit(x);
+            }
+        }
+    }
 }
