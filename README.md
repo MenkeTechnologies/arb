@@ -548,7 +548,7 @@ everywhere else.
 ### Containment, per leg
 
 The containment probes are what turn the word *superset* into a number, one per
-reference. Current run — **798 probes, 798 pass, 0 diverged, no allowlist**:
+reference. Current run — **825 probes, 825 pass, 0 diverged, no allowlist**:
 
 | leg | reference | containment | status |
 |---|---|---|---|
@@ -628,42 +628,80 @@ What the probes check, all byte-diffed and none normalized:
 |---|---|
 | `yq_superset_probe` | every enumerated yq operator exists — **61 missing before, 0 now** |
 | `yq_probe` (111) | each operator's ANSWER equals `yq -o=json -I=0`'s on the same node |
-| `yq_rt_probe` (10) | `in.yaml; out.yaml` returns the SOURCE FILE byte for byte |
+| `yq_rt_probe` (14) | `in.yaml; out.yaml` returns the SOURCE FILE byte for byte |
+| `yq_norm_probe` (3) | a shape yq does not return either: arb normalizes exactly as yq does |
 | `yq_write_probe` (8) | a metadata assignment produces the document yq produces |
-| `yq_fmt_probe` (8) | `out.props` is byte-identical to `yq -o=props` |
+| `yq_fmt_probe` (12) | `out.props` is byte-identical to `yq -o=props` |
 
-The round trip is the strongest of the five, and it is asserted against the
-source file rather than against yq's output — which is stricter, not looser.
-`yq '.'` is not idempotent on two of the fixtures: it re-folds a `>` block onto
-one line and escapes a non-BMP character as a `"\U0001F680"` sequence, so
-requiring arb to match yq there would require arb to reproduce yq's own
+The round trip is the strongest of the six, and it is asserted against the source
+file rather than against yq's output — which is stricter, not looser. `yq '.'` is
+not idempotent on every shape: it re-folds a `>` block onto one line, escapes a
+non-BMP character as a `"\U0001F680"` sequence, collapses a multi-line flow
+collection, reorders `!!map &am` to `&am !!map`, and drops a trailing `...`.
+Requiring arb to match yq there would require arb to reproduce yq's own
 infidelities. "The file comes back" is the property the claim names, and it
-implies matching yq everywhere yq does return the file. The fixtures are one per
-feature the model has to carry — comments in every position, anchors with
-aliases and merge keys, all six scalar styles, flow versus block, tags, empty
-values and nulls, non-ASCII, number spellings, and a multi-document stream — so a
-failure names which one broke.
+implies matching yq everywhere yq does return the file.
+
+The three shapes yq will not return either are not dropped for that — a shape
+nobody checks is the only bad outcome. `yq_norm_probe` asserts them against the
+REFERENCE instead, byte for byte and nothing normalized, so arb has to normalize
+the same way yq does rather than merely being allowed to differ from the source.
+Asserting the weaker of two true properties beats asserting neither.
+
+The fixtures are one per feature the model has to carry — comments in every
+position (and on sequence items versus mappings), anchors with aliases and merge
+keys, deeply nested anchors, aliases inside merge keys, all six scalar styles,
+flow versus block, tags on scalars and on collections, empty values and nulls,
+non-ASCII, number spellings, explicit `---`/`...` markers, and a multi-document
+stream — so a failure names which one broke.
+
+The reference is asked with `--yaml-fix-merge-anchor-to-spec`. `<<` has two
+readings and yq ships both: its default lets a merged key override an explicit
+one, and the flag follows the YAML spec. yq's own warning calls the default
+"isn't to the yaml spec". arb implements the spec rule, so asking the reference in
+its other mode would report a divergence whose content is "arb is right" — which
+is not what a divergence should mean. The two modes differ only on merge keys.
 
 `out.FORMAT [INDENT]` is yq's `-o=`/`-I` in arb's spelling (`out.yaml`,
 `out.json`, `out.props`, `out.xml`, `out.csv`, `out.tsv`). The DEFAULT rendering
 is unchanged: one compact JSON line per document, which is what every existing
 pipeline expects.
 
-*What the yq leg does not claim.* Three spellings differ, because yq's grammar is
-not jq's, and each is stated rather than papered over. yq writes a metadata
-assignment as a postfix on a path (`.a anchor = "x"`); arb's `|` binds loosest,
-so the document-preserving spelling is `.a |= (anchor = "x")`. yq's `ireduce` is
-a postfix on `.[] as $item`; arb's takes the input's own elements with `$item`
-bound. yq's `ref` binds a mutable handle to a node, which a model without mutable
-handles spells `p |= f` — exactly what `with` is, so both are that. Two behaviours
-also differ by construction: `filename` answers `-` because arb reads standard
-input, and a node's `path`/`key`/`parent` are recorded at READ time, so a node
-relocated by `map`/`pick`/`+` reports where it was read from where yq's real
-parent pointers would follow it. Four YAML inputs are answered where yq ERRORS
-rather than matched — `.inf`, `-.inf`, `.nan` and an integer past `i64` — which
-is the same direction as the >2^53 deviation above: arb answers, the reference
-refuses.
+*What the yq leg does not claim.* ONE spelling is genuinely out, and it is not
+a grammar problem. yq's `ref` (`.a ref $x | $x = 5`) binds a MUTABLE HANDLE to a
+node, so a later assignment through `$x` edits the document. Nothing in the value
+model is mutable — values are `Rc`-shared and copied on write, which is what makes
+`reduce`/`foreach`/path updates affordable — so honouring the spelling would mean
+a second, mutable value model, and `with(p; f)` already provides the capability.
+The other two spellings the docs used to list here are ACCEPTED now: `.a anchor =
+"x"` and `.[] as $item ireduce (0; . + $item)` both occupy grammar positions jq
+leaves empty, so claiming them cost the jq leg nothing. arb takes yq's spelling
+and its own for both.
 
+One behaviour still differs by construction: a node's `path`/`key`/`parent` are
+recorded at READ time, so a node relocated by `map`/`pick`/`+` reports where it
+was read from, where yq's real parent pointers would follow it. Closing that means
+a reference cycle through `Rc` for the whole document, which is a worse trade than
+the accessor is worth. (`filename` used to be listed here too; it answers the real
+path now when the spec names one with `< FILE`, and `-` for a pipe, which is what
+yq answers for a piped document.)
+
+Four YAML inputs are answered where yq ERRORS rather than matched — `.inf`,
+`-.inf`, `.nan` and an integer past `i64` — which is the same direction as the
+>2^53 deviation above: arb answers, the reference refuses. Being more capable than
+the reference is not a containment failure, and none of the four is "fixed" to
+match.
+
+*What the node model costs.* Measured on a 20k-record, 2.3MB document against
+the same data as JSON, both on the same debug binary: JSON parses in 0.131s and
+the same document as YAML in 1.907s, while adding a filter over the result moves
+neither (0.183s and 1.904s). So running a query over boxed values costs the same
+as over bare ones — `bare()` is free in practice — and the metadata is a tax on
+the READ, once, not on every operation. Three suspects were measured inside that
+read: formatting a throwaway rendering per scalar was a fifth of it and is gone,
+and the per-node path vector and the empty-`Rc` count each moved the total by less
+than the run-to-run noise. What remains is saphyr's scanner plus one `Rc<YNode>`
+per YAML node.
 *What the numbers do not claim.* Containment is measured over the surface each
 probe ENUMERATES — for xpath that is the 13 axes, 27 core functions and node
 tests of the 1999 Recommendation, not XPath 2.0+. Two known boundaries, both
