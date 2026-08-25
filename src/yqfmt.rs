@@ -51,7 +51,14 @@ fn props_leaf(v: &JqVal) -> String {
     if v.meta().is_some_and(|m| m.blank) {
         return String::new();
     }
-    let text = match v.meta().filter(|m| !m.raw.is_empty()) {
+    // A kept SOURCE text is the right thing for a PLAIN scalar (`0x10` is
+    // `0x10` here, not `16`) and the wrong thing for a block scalar, where it is
+    // the YAML body rather than the value: a `>` folded block's value is the
+    // FOLDED text, and `yq -o=props` writes that.
+    let raw = v
+        .meta()
+        .filter(|m| !m.raw.is_empty() && !m.style.is_block_scalar());
+    let text = match raw {
         Some(m) => m.raw.to_string(),
         None => match v.bare() {
             JqVal::Null => "null".to_string(),
