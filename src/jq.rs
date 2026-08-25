@@ -162,11 +162,20 @@ fn translate_stage(s: &str, ops: &mut Vec<QueryOp>) -> Result<(), String> {
         return translate_path(s, ops);
     }
     // Everything else is a jq VALUE expression — `. * 2`, `.a + .b`, `. > 1`,
-    // `1 + .a`. `jqval` parses it, and refuses every construct outside the
-    // documented subset (`reduce`, `paths`, `//`, `..`, `$ENV`, a bare `not`),
-    // which is how the hard-error half of SPEC §8 is honoured here.
-    ops.push(QueryOp::JqCalc(parse_expr(s)?));
-    Ok(())
+    // `1 + .a`. It is NOT handled here: an arithmetic stage is handed to the jq
+    // engine, whose numbers are read with Rust's correctly-rounded float parser.
+    //
+    // `jqval` runs over `serde_json::Value`, and `serde_json`'s float reader is
+    // off by an ULP at extreme exponents: `-6.306793e+299 | . + 0` came back as
+    // `-6.306792999999999e+299` against jq's `-6.306793e+299`. Over 4,000 random
+    // number literals that accounted for 386 of the 413 divergences on the
+    // computed path; routing the stage to `jqlang` removes all 386.
+    //
+    // The parse is still attempted, because a stage `jqval` cannot parse at all
+    // should keep reporting `jq: unsupported expression …` rather than falling
+    // through to a jq parse error for the same text.
+    parse_expr(s)?;
+    Err(format!("jq: `{s}` runs on the jq engine"))
 }
 
 /// If `s` is exactly `name( … )`, return the inside; else None.
@@ -324,7 +333,19 @@ mod tests {
     use crate::query::{eval, QueryResult};
 
     fn run(jq: &str, lines: &[&str]) -> Vec<String> {
-        let ops = translate(jq).unwrap();
+        // The same dispatch `crate::spec` performs: this translator first, and
+        // the jq ENGINE for anything it cannot express. Running only `translate`
+        // here would describe half of what a spec actually does — an arithmetic
+        // stage now routes to the engine, and these assertions are about the
+        // answer, not about which of the two produced it.
+        let ops = match translate(jq) {
+            Ok(ops) => ops,
+            Err(e) => {
+                crate::query::jq_program(jq)
+                    .unwrap_or_else(|je| panic!("neither engine took `{jq}`: {e} / {je}"));
+                vec![QueryOp::JqProgram(jq.to_string())]
+            }
+        };
         match eval(
             &ops,
             &lines.iter().map(|s| s.to_string()).collect::<Vec<_>>(),

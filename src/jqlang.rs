@@ -263,7 +263,7 @@ impl JsonParser<'_> {
             Some(b'n') => self.lit("null", JqVal::Null),
             Some(b't') => self.lit("true", JqVal::Bool(true)),
             Some(b'f') => self.lit("false", JqVal::Bool(false)),
-            Some(b'"') => Ok(JqVal::Str(self.string()?.into())),
+            Some(b'"') => Ok(JqVal::Str(self.string_rc()?)),
             Some(b'[') => self.array(),
             Some(b'{') => self.object(),
             Some(_) => self.number(),
@@ -313,6 +313,30 @@ impl JsonParser<'_> {
         // which the literal is load-bearing.
         Ok(num_from_literal(n, text))
     }
+    /// A string, built straight from the source slice when it holds no escape —
+    /// which is the overwhelmingly common case, and saves a `String` build plus a
+    /// copy into the `Rc` for every key and every string value in the stream.
+    fn string_rc(&mut self) -> Result<Rc<str>, String> {
+        debug_assert_eq!(self.b[self.i], b'"');
+        let start = self.i + 1;
+        let mut j = start;
+        while let Some(c) = self.b.get(j) {
+            match c {
+                b'"' => {
+                    let raw = std::str::from_utf8(&self.b[start..j]).map_err(|e| e.to_string())?;
+                    self.i = j + 1;
+                    return Ok(Rc::from(raw));
+                }
+                b'\\' => break,
+                _ => j += 1,
+            }
+        }
+        if self.b.get(j).is_none() {
+            return Err("unterminated string".into());
+        }
+        Ok(Rc::from(self.string()?.as_str()))
+    }
+
     fn string(&mut self) -> Result<String, String> {
         debug_assert_eq!(self.b[self.i], b'"');
         self.i += 1;
@@ -417,7 +441,7 @@ impl JsonParser<'_> {
             if self.b.get(self.i) != Some(&b'"') {
                 return Err(format!("expected a key string at byte {}", self.i));
             }
-            let k: Rc<str> = self.string()?.into();
+            let k: Rc<str> = self.string_rc()?;
             self.ws();
             if self.b.get(self.i) != Some(&b':') {
                 return Err(format!("expected `:` at byte {}", self.i));
@@ -538,11 +562,66 @@ fn canonical_num_literal(text: &str) -> Option<String> {
 /// Build a number value from its source text, keeping the literal only when jq
 /// would print something other than the double's own shortest form.
 fn num_from_literal(n: f64, text: &str) -> JqVal {
-    let canon = canonical_num_literal(text);
-    match canon {
+    if is_plain_shortest(text) {
+        return JqVal::Num(n, None);
+    }
+    match canonical_num_literal(text) {
         Some(c) if c != fmt_num(n) => JqVal::Num(n, Some(Rc::from(c.as_str()))),
         _ => JqVal::Num(n, None),
     }
+}
+
+/// Is `text` already both decNumber's canonical form AND the shortest decimal
+/// that round-trips to its double? Then no literal need be kept and neither
+/// formatter need run — which matters because this is on the JSON reader's
+/// innermost path, once per number in the stream.
+///
+/// The test is deliberately conservative: no exponent, no leading zero (except a
+/// lone `0` before the point), no leading zero INSIDE the fraction, no trailing
+/// zero in the fraction, at most 15 significant digits, and at most 15 digits
+/// before the point. Under 15 digits two distinct decimals cannot share a double
+/// (an IEEE double carries ~15.95 decimal digits), so no SHORTER decimal can
+/// round-trip to the same value and `text` is itself the shortest form; the two
+/// magnitude bounds keep it inside the band where both formatters render plainly
+/// rather than in exponent form. Without the fraction rule `0.000001` slipped
+/// through and printed as `1e-06`.
+///
+/// Anything this rejects falls through to the exact path, so a false negative
+/// costs time and never correctness.
+fn is_plain_shortest(text: &str) -> bool {
+    let b = text.as_bytes();
+    let mut i = usize::from(b.first() == Some(&b'-'));
+    let int_start = i;
+    while b.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+    }
+    let int_len = i - int_start;
+    if int_len == 0 || int_len > 15 || (int_len > 1 && b[int_start] == b'0') {
+        return false;
+    }
+    let mut sig = if int_len == 1 && b[int_start] == b'0' { 0 } else { int_len };
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let frac_start = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        let frac_len = i - frac_start;
+        if frac_len == 0 || b[i - 1] == b'0' {
+            return false;
+        }
+        // A `0.0…` value is below the plain/exponent boundary the two formatters
+        // draw differently, so only `0.<nonzero>` takes the fast path.
+        if sig == 0 {
+            if b[frac_start] == b'0' {
+                return false;
+            }
+            sig += frac_len;
+        } else {
+            sig += frac_len;
+        }
+    }
+    i == b.len() && sig > 0 && sig <= 15
 }
 
 /// jq's number rendering. Delegates to the formatter `crate::query` already
