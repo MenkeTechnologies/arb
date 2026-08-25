@@ -2,7 +2,7 @@
 #   cat events.json | arb -p json
 bars .keys
 tail .raw
-source .keys { in.json; keys; tally }
+source .keys { in.json; names; tally }
 source .raw  { in }
 
-test "key tally" { given "{\"a\":1,\"b\":2}" "{\"a\":3,\"c\":4}"; run { in.json; keys; tally }; want "a\t2" "b\t1" "c\t1" }
+test "key tally" { given "{\"a\":1,\"b\":2}" "{\"a\":3,\"c\":4}"; run { in.json; names; tally }; want "a\t2" "b\t1" "c\t1" }

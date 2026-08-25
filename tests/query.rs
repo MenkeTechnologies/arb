@@ -249,12 +249,42 @@ fn avg_over_json_field() {
     assert_eq!(eval(&ops, &data, 1.0), QueryResult::Scalar(200.0));
 }
 
+/// The NATIVE line-per-key verb. It is spelled `names`, not `keys`: `keys` is
+/// jq's canonical name for the one sorted array, and the native verb table is
+/// matched before the jq fall-through, so a native verb named `keys` shadowed
+/// jq's builtin — the last jq divergence `scripts/jq_parity.sh` reported.
 #[test]
-fn keys_flattens_object_keys() {
-    let ops = pipeline("tail .x\nsource .x { in.json; keys }");
+fn names_flattens_object_keys() {
+    let ops = pipeline("tail .x\nsource .x { in.json; names }");
     assert_eq!(
         eval(&ops, &lines(&[r#"{"a":1,"b":2}"#]), 1.0),
         QueryResult::Lines(lines(&["a", "b"]))
+    );
+    // The verb's other half: a line that is not an object passes through
+    // untouched, which is what makes it usable on a mixed stream. jq's `keys`
+    // raises on such a line instead, so the two are not interchangeable and
+    // both spellings have to exist.
+    let ops = pipeline("tail .x\nsource .x { in.json; names }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"a":1}"#, "plain text", "[1,2]"]), 1.0),
+        QueryResult::Lines(lines(&["a", "plain text", "[1,2]"]))
+    );
+}
+
+/// The spelling `keys` now reaches the jq engine, so it answers as jq does:
+/// one sorted array per input, and an array's keys are its indices.
+/// `jq -rc keys` is the reference for every line below.
+#[test]
+fn bare_keys_is_jqs_sorted_array() {
+    let ops = pipeline("tail .x\nsource .x { in.json; keys }");
+    assert_eq!(
+        eval(&ops, &lines(&[r#"{"b":1,"a":2}"#]), 1.0),
+        QueryResult::Lines(lines(&[r#"["a","b"]"#]))
+    );
+    let ops = pipeline("tail .x\nsource .x { in.json; keys }");
+    assert_eq!(
+        eval(&ops, &lines(&["[9,8]"]), 1.0),
+        QueryResult::Lines(lines(&["[0,1]"]))
     );
 }
 

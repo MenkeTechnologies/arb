@@ -50,7 +50,7 @@ const WIDGET_VERBS: &[&str] = &[
 ];
 const QUERY_OPS: &[&str] = &[
     "in", "sel", "match", "grep", "reject", "grepv", "field", "each", "count", "rate", "tally",
-    "sum", "min", "max", "avg", "keys", "vals", "calc", "where", "map", "drop", "take", "first",
+    "sum", "min", "max", "avg", "names", "vals", "calc", "where", "map", "drop", "take", "first",
     "last", "rev", "sort", "uniq", "upper", "lower", "trim",
 ];
 const STRUCTURAL: &[&str] = &["source", "import"];

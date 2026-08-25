@@ -505,18 +505,25 @@ fn regex_memo_keys_on_flags_not_just_the_pattern() {
 }
 
 /// SPEC §8's context rule: a bare alphanumeric word is arb's NATIVE verb, and
-/// only the jq CALL spelling reaches the jq engine. This is the rule that keeps
-/// `stdlib/json.arb`'s `keys; tally` working.
+/// only the jq CALL spelling reaches the jq engine  EXCEPT that no native verb
+/// may claim a spelling jq already defines, or the superset contract breaks on
+/// that word. `keys` was the one that did; the native line-per-key verb is
+/// spelled `names` now and `stdlib/json.arb` runs `names; tally`.
 #[test]
 fn a_bare_shared_spelling_stays_the_native_verb() {
-    // Native `keys`: one line per key. jq's `keys` is one sorted array.
+    // `keys` in EVERY spelling is jq's sorted array. `jq -rc keys` on this
+    // input prints `["a","b"]`; the bare word used to print `a` then `b`.
+    for spelling in ["keys", ". | keys", "[.] | .[0] | keys"] {
+        assert_eq!(
+            arb_run(spelling, &[r#"{"b":1,"a":2}"#]).unwrap(),
+            vec![r#"["a","b"]"#],
+            "`{spelling}` must answer as jq"
+        );
+    }
+    // The native verb keeps the line-per-key shape under its own name.
     assert_eq!(
-        arb_run("keys", &[r#"{"b":1,"a":2}"#]).unwrap(),
+        arb_run("names", &[r#"{"b":1,"a":2}"#]).unwrap(),
         vec!["a", "b"]
-    );
-    assert_eq!(
-        arb_run(". | keys", &[r#"{"b":1,"a":2}"#]).unwrap(),
-        vec![r#"["a","b"]"#]
     );
     // Native `sort_by FIELD` (space) vs jq `sort_by(f)` (call).
     let recs = &[r#"{"v":2}"#, r#"{"v":1}"#];

@@ -445,7 +445,7 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("min", "Query", "Minimum of numeric lines, or 0 if none (scalar).", "in; field 2; min"),
     ("max", "Query", "Maximum of numeric lines, or 0 if none (scalar).", "in; field 2; max"),
     ("avg", "Query", "Mean of numeric lines, or 0 if none (scalar).", "in; field 2; avg"),
-    ("keys", "Query", "Flatten a JSON object's keys into one line each; non-object lines pass through.", "in.json; keys; tally"),
+    ("names", "Query", "Flatten a JSON object's keys into one line each; non-object lines pass through. jq's `keys` (one sorted array) keeps its own spelling.", "in.json; names; tally"),
     ("vals", "Query", "Flatten a JSON object's values into one line each; non-object lines pass through.", "in.json; vals"),
     ("pick", "Query", "Project a JSON object to the named keys, keeping order; missing keys dropped.", "in.json; pick ts msg"),
     ("sort", "Query", "Sort the lines; -n sorts numerically, -r reverses.", "in; tally; sort -n -r"),

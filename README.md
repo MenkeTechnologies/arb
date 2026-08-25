@@ -537,10 +537,15 @@ the shortest decimal that round-trips, so it differs from the reference by being
 right; `tests/jqlang.rs` states that tolerance explicitly and byte-matches jq
 everywhere else.
 
-Two deviations are reported as divergences on every run rather than
+**The jq leg reports zero divergences.** The last one was a SPELLING collision:
+the native verb table is matched before the jq fall-through, so arb's native
+line-per-key verb — spelled `keys` — shadowed jq's builtin and the bare word
+printed a line per key where jq prints one sorted array. The native verb is
+spelled `names` now and `keys` in every spelling is jq's.
+
+One deviation is still reported as a divergence on every run rather than
 allowlisted: a YAML number keeps its value but not its literal, so `ratio: 1.50`
-prints as `1.5` where `yq` prints `1.50`; and the bare `keys` spelling is arb's
-native verb. Both are stated in full in
+prints as `1.5` where `yq` prints `1.50`. It is stated in full in
 [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind
@@ -563,11 +568,17 @@ leg into `skipped` and the divergence count reaches 0 by comparing nothing.
 Where a spelling means one thing to jq and another to arb, **context decides**: a
 bare alphanumeric word is arb's NATIVE verb and the `name(` CALL spelling is jq's,
 so `sort_by v` is arb's and `sort_by(.v)` is jq's. Piping into a builtin puts it
-in jq context too. So `. | keys` is jq's one sorted array and
-`keys` alone is the native line-per-key verb; likewise `. | flatten` vs `flatten`,
-and jq `to_entries` vs native `entries`. The bare `keys` collision is the one that
-stays unresolved — `stdlib/json.arb` pipes the line-per-key shape into `tally` —
-and is stated in full in [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
+in jq context too, so `. | flatten` is jq's and bare `flatten` is arb's, and jq
+`to_entries` sits beside native `entries`.
+
+Context has one boundary, and it is what the `keys` rename is about: a native
+verb spelled EXACTLY like a jq builtin does not just win the bare word, it
+SHADOWS jq's, and no context can route both. Every other pair above is safe
+because the spellings differ (`entries`/`to_entries`, `vals`/`values`). `keys`
+was the one that did not, so the native verb took a name of its own — `names`
+for line per key, `keys` for jq's sorted array. `stdlib/json.arb` pipes `names`
+into `tally` and its in-language test pins it. Stated in full in
+[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML
@@ -580,7 +591,8 @@ families:
 - **Extract / shape** — `field`, `fields N M…` (project/reorder whitespace
   columns — `fields 1 3` for columnar `ps`/`ls -l`/`df`), `pick K…` (jq
   projection), `cut`, `find TAG` + `attr NAME` + `text` (xpath/css: `//a/@href`),
-  `sel {CSS}`, `keys`, `vals`, `entries`, `flatten`, `each`, `extract /re/`,
+  `sel {CSS}`, `names` (jq's `keys` is jq's array), `vals`, `entries`,
+  `flatten`, `each`, `extract /re/`,
   `split D`, `substr A B`, `chars`.
 - **Record edit** (jq assignment) — `set K V`, `del K`, `rename OLD NEW`,
   `default K V`, `merge`.

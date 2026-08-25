@@ -2075,7 +2075,12 @@ fn pipeline_from_body(
                 "min" => ops.push(QueryOp::Min),
                 "max" => ops.push(QueryOp::Max),
                 "avg" => ops.push(QueryOp::Avg),
-                "keys" => ops.push(QueryOp::Keys),
+                // `names` is the NATIVE line-per-key verb. It is deliberately not
+                // spelled `keys`: `keys` is jq's canonical name for the sorted
+                // array, and the native table is matched before the jq
+                // fall-through, so claiming that spelling would shadow jq's
+                // builtin and break the superset contract (SPEC §8).
+                "names" => ops.push(QueryOp::Keys),
                 "vals" => ops.push(QueryOp::Vals),
                 "pick" => {
                     let keys: Vec<String> = c

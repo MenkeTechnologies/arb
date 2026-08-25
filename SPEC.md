@@ -178,9 +178,9 @@ What is NOT settled is the jq context. `%` also reaches the jq front-end — a
 leading `.` routes the whole body there — and lowers to the same fusevm op, so
 `out { in.json; .n % 3 }` on `{"n":5.5}` answers `2.5` where jq answers `2`. That
 front-end promises jq's answers, and arb already settles this exact kind of
-collision by CONTEXT rather than by picking one meaning globally: `. | keys` is
-jq's sorted array while bare `keys` is the native verb, and the same split covers
-`flatten` and `to_entries`/`entries`. Whether `%` should join them is open;
+collision by CONTEXT rather than by picking one meaning globally: `flatten` and
+`to_entries` answer as jq while the native `entries` keeps its line-per-key
+shape, under distinct spellings. Whether `%` should join them is open;
 `scripts/jq_parity.sh` probes it so the difference is reported either way.
 
 ## 7. Pipe & sources
@@ -285,7 +285,8 @@ lpad N          left-pad each line with spaces to minimum width N
 grepf FIELD /re/   keep lines whose FIELD (json key or 1-based ws column) matches /re/
 flip            reverse the characters of each line (Unicode scalar reversal)
 
-keys  vals        jq keys/values
+names  vals       native line-per-key / line-per-value (jq's `keys` and
+                  `values` keep their own spellings and their own shapes)
 map(FN)           jq map: `[.[] | FN]` — returns one ARRAY line, scoped per input
 count sum min max avg tally    aggregates
 sort sort_by(FN) group_by(FN) uniq
@@ -361,11 +362,11 @@ document node. **Anything outside the documented xpath subset is a hard error**
 positional/text predicates, no axes, no `*` wildcard step).
 
 Where a jq builtin shares a spelling with an arb NATIVE verb (`sort`, `min`,
-`max`, `floor`, `abs`, `keys`, `length`, `add`, `flatten`, `first`, `last`,
-`split`, `join`, `del`, `index`, `contains`, `range`, `match`, `repeat`, …) the
-BARE word is the native verb and the CALL spelling is jq's — `sort_by v` is
-arb's, `sort_by(.v)` is jq's, and `. | sort` reaches jq's. That is the context
-rule below, not a jq leak.
+`max`, `floor`, `abs`, `length`, `add`, `flatten`, `first`, `last`, `split`,
+`join`, `del`, `index`, `contains`, `range`, `match`, `repeat`, …) the BARE word
+is the native verb and the CALL spelling is jq's — `sort_by v` is arb's,
+`sort_by(.v)` is jq's, and `. | sort` reaches jq's. That is the context rule
+below, not a jq leak.
 
 **`#` inside `sel { … }` is an ID, not a comment.** `#` opens a comment to
 end-of-line wherever a command is expected, and `sel`'s brace used to be re-lexed
@@ -377,11 +378,19 @@ off and `sel { #main }`, `sel { #main p }` and the selector list
 `sel { #main p, #two }` all select what xmllint's equivalent XPath selects. Every
 other brace holds commands and keeps `#` as a comment.
 
-**Two measured deviations remain, neither of them silent.** A YAML number keeps
-its value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where
-`yq -o=json` prints `1.50`; the JSON path does preserve it. And the bare `keys`
-spelling is the native verb, described in full below. Both are probed and
-reported as divergences every run rather than allowlisted.
+**`keys` is jq's, and the native verb is `names`.** A native verb is matched
+BEFORE the jq fall-through, so a native verb named `keys` shadowed jq's builtin:
+bare `keys` printed a line per key where jq prints one sorted array. The context
+rule cannot save a spelling jq itself defines — `. | keys` reached jq's answer,
+but the bare word could not — so the native line-per-key verb is spelled `names`
+and `keys` in every spelling is jq's. `stdlib/json.arb` runs `names; tally` and
+its in-language test (`arb --test stdlib/json.arb`) pins the shape. **The jq leg
+of the superset now has ZERO divergences**, machine-checked every run.
+
+**One measured deviation remains, and it is not silent.** A YAML number keeps its
+value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where `yq -o=json`
+prints `1.50`; the JSON path does preserve it. It is probed and reported as a
+divergence every run rather than allowlisted.
 
 **One deviation runs the other way.** For an integer above 2^53, jq's own
 arithmetic loses up to an ULP: `jq` answers `true` to
@@ -447,8 +456,8 @@ spellings are kept distinct wherever they differ:
 |---|---|---|
 | `to_entries` (jq) | one `[{"key":…,"value":…},…]` line | matches jq |
 | `entries` (native) | one line per key | SPEC §8, unchanged |
-| `. \| keys` (jq) | one `["a","b"]` line | matches jq |
-| `keys` (native verb) | one line per key | **does not match jq**, which returns one array |
+| `keys` (jq, any spelling) | one `["a","b"]` line | matches jq |
+| `names` (native) | one line per key | SPEC §8, the renamed native verb |
 | `. \| add` (jq) | folds from `null`, so `[]` is `null` | matches jq |
 | `add` (native verb) | `[] -> ""`, string-joins a mixed array | SPEC §8, unchanged |
 | `. \| length` (jq) | refuses a boolean | matches jq |
@@ -456,30 +465,37 @@ spellings are kept distinct wherever they differ:
 
 The rule is CONTEXT, not spelling: a body command that begins with a jq literal
 (`.`, `select(`, `map(`, `has(`) is handed to the jq front-end whole, and inside
-it every builtin answers as jq does. A bare alphanumeric word is a native verb.
-So `. | keys` is jq's sorted array while `keys` on its own is arb's line-per-key
-verb — the same gating that already separates jq `to_entries` from native
-`entries`, applied to the one spelling that carries both meanings.
+it every builtin answers as jq does. A bare alphanumeric word is looked up in the
+native verb table first, and only a word with no native verb falls through to jq.
+That gating is what separates jq `to_entries` from native `entries`.
 
-`keys` is therefore resolved in jq context and **deliberately left as the native
-verb in the bare spelling**, which is where `scripts/jq_parity.sh` reports a
-divergence every run. Three things decide it, and they point the same way:
+**The context rule has one boundary, and `keys` was over it.** The native table is
+matched BEFORE the fall-through, so a native verb spelled exactly like a jq
+builtin does not merely win the bare word — it SHADOWS jq's builtin, and the
+superset contract breaks on that spelling. Every other collision in the table
+above is safe because the two spellings DIFFER (`entries` vs `to_entries`, `vals`
+vs `values`, `sort_by v` vs `sort_by(.v)`), and jq's own name stays reachable.
+`keys` was the single spelling where they did not differ: jq's canonical short
+name and arb's native verb were the same word, so no context could route both.
 
-* Making the bare word mean jq's array would break a shipped preset.
-  `stdlib/json.arb` runs `keys; tally` over the line-per-key shape and pins it
-  with its own in-language test (`arb --test stdlib/json.arb`).
-* `keys` is not a lone wart. The bare word is the native verb for EVERY shared
-  spelling — `sort`, `min`, `max`, `floor`, `abs`, `add`, `length`, `entries` all
-  behave this way, and the jq front-end refuses `sort`/`min`/`max`/`floor`/`abs`
-  by name rather than answering as jq. Special-casing `keys` alone would make it
-  the single exception to a rule that currently holds without exception.
-* Nothing is unreachable. `. | keys` already gives jq's sorted array, so the jq
-  meaning has a spelling; only the DEFAULT for the bare word is at issue.
+It is resolved by giving the native verb a name of its own. **`names`** is the
+line-per-key verb; **`keys` in every spelling is jq's** sorted array. Three
+things decide the direction, and they point the same way:
 
-So the divergence is a naming collision, not a missing capability, and the cost of
-"fixing" it is a broken preset plus an inconsistent context rule. A distinct
-native spelling would retire it, and none exists yet; until then the probe stays
-red rather than being reworded into a pass.
+* jq owns the name. `keys` is jq's canonical spelling and has no shorter form,
+  while arb's native verbs already prefer the SHORT spelling of a shared idea
+  (`vals` beside jq's `values`, `entries` beside jq's `to_entries`). arb had no
+  shorter spelling to retreat to, so it took a distinct one instead.
+* Nothing is lost. `names` is the same op it always was — line per key, and a
+  non-object line passes through untouched, which jq's `keys` refuses to do. Both
+  behaviours are now reachable, under names that do not collide.
+* The one shipped preset that depended on it moved with it. `stdlib/json.arb`
+  runs `names; tally` and its in-language test (`arb --test stdlib/json.arb`)
+  pins the line-per-key shape, so the rename is covered by a test that fails if
+  it regresses.
+
+With that, `scripts/jq_parity.sh` reports **zero jq divergences**: every probe in
+the jq leg byte-matches `jq -rc` on the same input.
 
 ### In-language unit tests (`arb --test`)
 
