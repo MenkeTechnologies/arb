@@ -60,11 +60,28 @@ use saphyr_parser::{Event, Parser, ScalarStyle, Span};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Parse a YAML stream into one `JqVal` per document, reading from standard
-/// input as far as the node metadata is concerned (`filename` answers `-`,
-/// which is `yq`'s own answer for a piped document).
+thread_local! {
+    /// What `filename` answers for the stream. `-` for a pipe, which is `yq`'s
+    /// own answer for a piped document, and the path when the spec named one
+    /// with `< FILE`.
+    ///
+    /// A thread-local rather than a parameter because the input's IDENTITY is a
+    /// property of the process, not of any one call: `query::eval` takes lines,
+    /// not a source, and threading a path through it (and through every caller
+    /// and test) to reach one accessor would cost more than it explains.
+    static INPUT_NAME: std::cell::RefCell<Rc<str>> = std::cell::RefCell::new(Rc::from("-"));
+}
+
+/// Record the file the stream is being read from, for `filename`.
+pub fn set_input_name(name: &str) {
+    INPUT_NAME.with(|n| *n.borrow_mut() = Rc::from(name));
+}
+
+/// Parse a YAML stream into one `JqVal` per document, attributed to whatever
+/// [`set_input_name`] last recorded.
 pub fn documents(src: &str) -> Vec<JqVal> {
-    documents_from(src, "-", 0)
+    let name = INPUT_NAME.with(|n| n.borrow().clone());
+    documents_from(src, &name, 0)
 }
 
 /// Parse a YAML stream that came from `file`, the `idx`th input.

@@ -1188,6 +1188,11 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             .as_deref()
             .map(|f| format!("cat -- {}", shell_quote(f)))
     });
+    // `filename` (yq's) answers the path when the spec named one, and `-` for a
+    // pipe — which is what yq answers for a piped document.
+    if let Some(f) = spec.source_file.as_deref() {
+        crate::yaml::set_input_name(f);
+    }
 
     // A `! CMD every Ns` poll source (§7) feeds the stream on a timer. `--run`
     // and spec `spawn`/`< file` all populate `producer` and are mutually
