@@ -96,6 +96,7 @@ pub fn documents_from(src: &str, file: &str, idx: u32) -> Vec<JqVal> {
         file: Rc::from(file),
         file_index: idx,
         last_line: 0,
+        pending_head: None,
         line_base: 0,
     }
     .run()
@@ -324,6 +325,10 @@ struct Composer<'a, 'input> {
     /// is claimed relative to this rather than to the collection's closing
     /// event, whose position is the line AFTER the block ends.
     last_line: usize,
+    /// A head comment the enclosing frame read but that belongs to the FIRST KEY
+    /// of the mapping about to be composed — a `- # note` on the marker line.
+    /// `mapping` takes it for its first key and clears it.
+    pending_head: Option<String>,
     /// Physical line of the stream's first CONTENT line, minus one. `yq` counts
     /// lines from there rather than from the top of the file, so a document
     /// behind a leading comment block reports its first entry as line 1.
@@ -533,7 +538,11 @@ impl Composer<'_, '_> {
                     // indented item. Nothing else can claim it: the marker line
                     // holds no node, and the item's own line is the one below.
                     let marker = self.marker_comment(start);
+                    // Handed to the item's first KEY, which is where `yq` files
+                    // it (`.nested[0].k | key | head_comment` answers it).
+                    self.pending_head = (!marker.is_empty()).then(|| marker.clone());
                     let item = self.node(&p, None, false);
+                    self.pending_head = None;
                     let foot = self.comments.take_foot(self.last_line, icol);
                     items.push(
                         if head.is_empty() && foot.is_empty() && marker.is_empty() {
@@ -546,9 +555,7 @@ impl Composer<'_, '_> {
                                 if !foot.is_empty() {
                                     m.foot = Rc::from(foot.as_str());
                                 }
-                                if !marker.is_empty() {
-                                    m.marker = Rc::from(marker.as_str());
-                                }
+                                m.marker = !marker.is_empty();
                             })
                         },
                     );
@@ -612,7 +619,10 @@ impl Composer<'_, '_> {
             let k = self.node(&[], None, true);
             // The head comment above an entry belongs to its KEY node, which is
             // what `.b | key | head_comment` reads.
-            let head = self.comments.take_head(kline);
+            let head = match self.pending_head.take() {
+                Some(h) => h,
+                None => self.comments.take_head(kline),
+            };
             let k = if head.is_empty() {
                 k
             } else {

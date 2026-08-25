@@ -149,15 +149,14 @@ pub struct NodeMeta {
     /// Its value is null, and so is a node written `null` or `~`; only this says
     /// which of the three spellings the file used.
     pub blank: bool,
-    /// A comment written after a sequence item's `-` marker, before the item's
-    /// own content (`- # note` on the line above an indented mapping).
+    /// This node is a sequence item whose first key's HEAD comment was written
+    /// on the `-` marker line (`- # note`, with the mapping indented below).
     ///
-    /// WRITER-ONLY, and deliberately so: `yq` puts the comment back on round trip
-    /// but reports nothing for it through `head_comment` or `line_comment`, so
-    /// exposing it through either accessor would answer where the reference
-    /// answers empty. This slot round-trips it and stays invisible, which is
-    /// exactly the reference's observable behaviour.
-    pub marker: Rc<str>,
+    /// The comment itself lives where `yq` puts it — on the first key, so
+    /// `.nested[0].k | key | head_comment` answers it and `to_props` picks it up.
+    /// Only its PLACEMENT is recorded here, because that is the one thing the
+    /// comment's own node cannot say.
+    pub marker: bool,
     /// The document opened with an explicit `---`. `yq` keeps it; a document
     /// that began implicitly must not grow one.
     pub explicit_doc: bool,
@@ -190,7 +189,7 @@ impl NodeMeta {
             && self.raw.is_empty()
             && self.written.is_none()
             && !self.blank
-            && self.marker.is_empty()
+            && !self.marker
             && !self.explicit_doc
             && self.line_no == 0
             && self.col_no == 0
@@ -430,6 +429,32 @@ fn push_block_map(out: &mut String, map: &[(Rc<str>, JqVal)], ind: usize, o: Emi
     }
 }
 
+/// The head comment on a mapping's FIRST key, which is where a `- # note` on the
+/// marker line is filed.
+fn first_key_head(item: &JqVal) -> Rc<str> {
+    let JqVal::Obj(m) = item.bare() else {
+        return Rc::from("");
+    };
+    m.first()
+        .and_then(|(_, v)| v.meta())
+        .and_then(|mm| mm.key.as_deref())
+        .and_then(JqVal::meta)
+        .map_or(Rc::from(""), |km| km.head.clone())
+}
+
+/// Drop the leading `#` comment lines from a rendered block, which the marker
+/// line has already carried.
+fn strip_leading_comment(body: &str) -> &str {
+    let mut rest = body;
+    while rest.trim_start_matches(' ').starts_with('#') {
+        match rest.find('\n') {
+            Some(at) => rest = &rest[at + 1..],
+            None => return "",
+        }
+    }
+    rest
+}
+
 fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
     for item in items {
         if let Some(m) = item.meta() {
@@ -437,20 +462,23 @@ fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
         }
         pad(out, ind);
         out.push('-');
-        // A comment on the MARKER line ends it, so the item's content starts on
-        // the line below at the item's own indent rather than sharing the `- `.
-        let marker = item.meta().map(|m| m.marker.clone()).filter(|s| !s.is_empty());
-        if let Some(note) = &marker {
+        // The item's first key carries a head comment that was WRITTEN on the
+        // marker line. Placing it back there ends the line, so the mapping starts
+        // below at its own indent instead of sharing the `- `.
+        let marker = item.meta().is_some_and(|m| m.marker);
+        if marker {
+            let note = first_key_head(item);
             out.push_str(" # ");
-            out.push_str(note);
+            out.push_str(&note);
             out.push('\n');
         }
         match item.bare() {
             JqVal::Obj(map) if !map.is_empty() && !is_flow(item) && !is_alias(item) => {
                 let mut body = String::new();
                 push_block_map(&mut body, entries(item, map), ind + o.indent, o);
-                if marker.is_some() {
-                    out.push_str(&body);
+                if marker {
+                    // The head was already written on the marker line above.
+                    out.push_str(strip_leading_comment(&body));
                 } else {
                     out.push(' ');
                     out.push_str(&decorations(item));
