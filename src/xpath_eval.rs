@@ -21,11 +21,46 @@
 //!   positional predicate over them would silently disagree with the reference.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use ego_tree::NodeId;
 use scraper::{ElementRef, Html};
 
 use crate::xpath_syntax::{Axis, Expr, NodeTest, PathStart, Principal, RelOp, Step};
+
+/// A hasher for the two `NodeId`-keyed tables below.
+///
+/// A `NodeId` is one `NonZeroUsize`, and the default `HashMap` hashes it with
+/// SipHash-1-3. That showed up as the single largest cost in a `sample` profile
+/// of `count(//tr)` over a 20MB document: `Doc::key` 520 samples, SipHash 488,
+/// `hash_one::<NodeId>` 303 — together more than half the run, for what is a
+/// lookup of an integer in a dense range.
+///
+/// This is the FxHash mix (one multiply and a rotate, as used by rustc), which
+/// is not collision-resistant and does not need to be: the keys are tree node
+/// ids from this process's own arena, never attacker-controlled.
+#[derive(Default)]
+struct NodeHasher(u64);
+
+impl Hasher for NodeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u8(*b);
+        }
+    }
+    fn write_u8(&mut self, n: u8) {
+        self.write_usize(n as usize);
+    }
+    fn write_usize(&mut self, n: usize) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.0 = (self.0.rotate_left(5) ^ n as u64).wrapping_mul(SEED);
+    }
+}
+
+type NodeMap<V> = HashMap<NodeId, V, BuildHasherDefault<NodeHasher>>;
 
 /// A node in the XPath data model.
 ///
@@ -56,7 +91,7 @@ pub enum Kind {
 pub struct Doc {
     html: Html,
     /// Document order, pre-order over the VISIBLE tree.
-    order: HashMap<NodeId, usize>,
+    order: NodeMap<usize>,
     /// Nodes outside the XPath data model: the doctype, and an empty `<head>`
     /// html5ever synthesized that the reference parser would not have created.
     hidden: HashSet<NodeId>,
@@ -71,7 +106,7 @@ pub struct Doc {
     /// subtree is CONTIGUOUS in document order, so this turns both scanning
     /// axes into a slice: everything at or after `end` is `following`, and an
     /// ancestor of `n` is exactly a node before `n` whose `end` is past it.
-    end: HashMap<NodeId, usize>,
+    end: NodeMap<usize>,
 }
 
 impl Doc {
@@ -100,7 +135,7 @@ impl Doc {
                 hidden.insert(n.id());
             }
         }
-        let mut order = HashMap::new();
+        let mut order = NodeMap::default();
         let mut stack = vec![html.tree.root().id()];
         // Pre-order DFS, children pushed in reverse so they pop in order.
         let mut next = 0usize;
@@ -124,7 +159,7 @@ impl Doc {
             order,
             hidden,
             ordered: Vec::new(),
-            end: HashMap::new(),
+            end: NodeMap::default(),
         };
         doc.ordered = doc.build_ordered();
         doc.end = doc.build_ends();
@@ -139,7 +174,7 @@ impl Doc {
             .filter(|id| self.visible(**id))
             .map(|id| XNode::Tree(*id))
             .collect();
-        v.sort_by_key(|m| self.key(*m));
+        v.sort_by_cached_key(|m| self.key(*m));
         v
     }
 
@@ -147,8 +182,9 @@ impl Doc {
     /// the contiguous run that follows it, so the end is the first later index
     /// whose node is NOT a descendant — computed here by walking the ordered
     /// list once per node's own subtree rather than scanning the document.
-    fn build_ends(&self) -> HashMap<NodeId, usize> {
-        let mut end = HashMap::with_capacity(self.ordered.len());
+    fn build_ends(&self) -> NodeMap<usize> {
+        let mut end =
+            NodeMap::with_capacity_and_hasher(self.ordered.len(), BuildHasherDefault::default());
         // Walk backwards: a node's end is its own index + 1, extended by the
         // end of its last visible child, which is already known.
         for (i, n) in self.ordered.iter().enumerate().rev() {
@@ -879,7 +915,10 @@ fn filter(doc: &Doc, nodes: Vec<XNode>, pred: &Expr, _reverse: bool) -> Result<V
 }
 
 fn sort_unique(doc: &Doc, v: &mut Vec<XNode>) {
-    v.sort_by_key(|n| doc.key(*n));
+    // `sort_by_CACHED_key`: the key is a map lookup, and the plain `sort_by_key`
+    // recomputes it on every COMPARISON — O(n log n) lookups to order n nodes.
+    // This computes it once per element.
+    v.sort_by_cached_key(|n| doc.key(*n));
     v.dedup();
 }
 
