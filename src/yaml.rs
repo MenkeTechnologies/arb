@@ -816,11 +816,31 @@ fn raw_if_needed(text: &str, style: ScalarStyle, v: &JqVal) -> Rc<str> {
         return Rc::from(text);
     }
     if style != ScalarStyle::Plain || text.is_empty() {
-        return Rc::from("");
+        return crate::ynode::empty_str();
+    }
+    // The fast path, and it is the one nearly every scalar takes: a value whose
+    // rendering is its own text needs nothing kept. Answering that without
+    // BUILDING the rendering matters — this runs once per scalar, and formatting
+    // a string for every scalar in a file to throw it away again was a fifth of
+    // the compose time on a 20k-record document.
+    match v {
+        // A number that kept its literal renders as that literal.
+        JqVal::Num(_, Some(lit)) => {
+            return if &**lit == text {
+                crate::ynode::empty_str()
+            } else {
+                Rc::from(text)
+            }
+        }
+        // A string renders as itself unless it needs quoting.
+        JqVal::Str(s) if &**s == text && !crate::ynode::needs_quoting(text) => {
+            return crate::ynode::empty_str()
+        }
+        _ => {}
     }
     let written = crate::ynode::quote_scalar_value(v);
     if written == text {
-        Rc::from("")
+        crate::ynode::empty_str()
     } else {
         Rc::from(text)
     }

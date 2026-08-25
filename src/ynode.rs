@@ -101,7 +101,7 @@ impl Style {
 /// Cheap to clone: every owned field is an `Rc`, and a node that carries no
 /// metadata at all is [`NodeMeta::is_bare`] and gets dropped on the way out so
 /// an untouched document does not pay for boxes it does not need.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NodeMeta {
     /// The comment block ABOVE the node, `#` and one leading space stripped,
     /// lines joined with `\n`. Empty when there is none.
@@ -164,6 +164,49 @@ pub struct NodeMeta {
     /// Readers see the merged mapping; the writer emits this, so a round trip
     /// does not expand a merge key into the keys it stood for.
     pub written: Option<Entries>,
+}
+
+thread_local! {
+    /// One shared empty `Rc<str>`, because `Rc<str>::default()` ALLOCATES.
+    ///
+    /// `NodeMeta` has seven of those fields and a document has one `NodeMeta` per
+    /// node, so the derived `Default` was making seven heap allocations for every
+    /// node in the file — 1.2M of them on a 20k-record document, all of the same
+    /// empty string. Handing out clones of one `Rc` makes each a refcount bump.
+    static EMPTY: Rc<str> = Rc::from("");
+}
+
+/// The shared empty string every unset `NodeMeta` field points at.
+pub fn empty_str() -> Rc<str> {
+    EMPTY.with(Rc::clone)
+}
+
+impl Default for NodeMeta {
+    fn default() -> Self {
+        let e = empty_str();
+        NodeMeta {
+            head: e.clone(),
+            line: e.clone(),
+            foot: e.clone(),
+            anchor: e.clone(),
+            alias: e.clone(),
+            tag: e.clone(),
+            style: Style::Plain,
+            line_no: 0,
+            col_no: 0,
+            path: Rc::new(Vec::new()),
+            key: None,
+            is_key: false,
+            doc: 0,
+            file: e.clone(),
+            file_index: 0,
+            raw: e,
+            blank: false,
+            marker: false,
+            explicit_doc: false,
+            written: None,
+        }
+    }
 }
 
 impl NodeMeta {
@@ -720,6 +763,13 @@ pub fn quote_scalar(s: &str, style: Style) -> String {
             s.to_string()
         }
     }
+}
+
+/// Would writing this text plain change what it reads back as, or break the
+/// syntax around it? The two quoting tests as one question, for the reader's
+/// fast path.
+pub fn needs_quoting(s: &str) -> bool {
+    s.is_empty() || reparses_as_non_string(s) || needs_single_quote(s)
 }
 
 /// Would this text, written plain, come back as something other than a string?
