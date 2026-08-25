@@ -65,6 +65,12 @@
 #   HEAD       (THIS corpus, after)          559 pass /  5 diverged / 1 skipped
 #   HEAD~      (THE JQ ENGINE corpus, before) 503 pass / 61 diverged / 1 skipped
 #   HEAD       (THE JQ ENGINE corpus, after)  672 pass /  4 diverged / 0 skipped
+#   5998c8e3ae (round 3, before)              672 pass /  4 diverged / 0 skipped
+#   4152602d51 (`sel { #main }` fixed)        673 pass /  3 diverged / 0 skipped
+#   e85497e008 (`keys` given back to jq)      674 pass /  2 diverged / 0 skipped
+#   9075ed5f57 (the YAML literal fixed)       676 pass /  0 diverged / 0 skipped
+#   HEAD       (THIS corpus, with the three
+#               containment probes below)     676 pass / 10 diverged / 0 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -94,12 +100,8 @@
 #                    CHECKS that this jq really lacks the name, so it can never
 #                    quietly pin arb against a live reference.
 #
-# The four remaining divergences are all recorded, none allowlisted:
-#   * `keys` — round 1's spelling collision, unchanged and deliberate.
-#   * `sel { #main }` — a leading `#` opens a comment in arb's lexer.
-#   * the yq `1.50` literal — `serde_yaml`'s data model hands over an `f64` with
-#     the scalar's source text already discarded, so a YAML trailing zero cannot
-#     be preserved the way a JSON one is. It shows on `.` and on `.ratio`.
+# The four divergences this round left behind are ALL CLOSED now; see the
+# round-3 note at the end of this header for what each one turned out to be.
 #
 # ── round 2 ─────────────────────────────────────────────────────────────────
 # Same move as round 1, applied to what round 1 still could not see. The corpus
@@ -122,12 +124,10 @@
 # silent answer, and after an already-rendered stage it would unquote a second
 # time and eat quotes that are DATA. Both are pinned as probes.
 #
-# The remaining 5 are recorded, not hidden. `keys` is round 1's spelling
-# collision, unchanged. `sel { #main }` is NEW: a LEADING `#` opens a COMMENT in
-# arb's lexer, so the braced spelling SPEC §8 prints cannot express an id selector
-# at all — round 1's `sel { div.card h2 }` bug in its last corner, needing either
-# a lexer change that would break real comments or a raw source span on
-# `Arg::Block`. The 3 whitespace probes are the measured COST of the passthrough
+# The remaining 5 were recorded, not hidden, and are closed as of round 3 —
+# `sel { #main }` needed the comment rule scoped to braces that hold COMMANDS,
+# not a raw source span, and `keys` needed the native verb renamed off jq's
+# spelling. The 3 whitespace probes are the measured COST of the passthrough
 # that makes the string case above worth fixing rather than papering over:
 # compacting a container would re-sort `serde_json`'s BTreeMap keys and reprint
 # jq's preserved `1.50` as `1.5`, two deeper divergences traded for one.
@@ -197,6 +197,49 @@
 # routes through the jq literal front-end and now answers as jq — but the bare
 # spelling cannot without breaking a shipped preset, so the probe stays red rather
 # than being reworded into a pass. SPEC §8 documents it.
+#
+# ── round 3: the other three legs ───────────────────────────────────────────
+# The four divergences round 2 left are closed, so the jq leg is at ZERO. Each
+# turned out to be smaller than its note claimed:
+#   * `sel { #main }` — scope the comment rule to braces that hold COMMANDS.
+#   * `keys` — the native verb table is matched BEFORE the jq fall-through, so a
+#     native verb spelled like a jq builtin SHADOWS it. Renamed to `names`.
+#   * the YAML `1.50` literal, on `.` and `.ratio` — serde has nowhere to put a
+#     number's source text, so the YAML reader composes from the parser's EVENT
+#     stream now and keeps the literal the way the JSON reader always did.
+#
+# That left a harder question. `superset_probe` measures CONTAINMENT — every name
+# the reference defines must exist in arb — and it existed for the jq leg only.
+# The README claims a "jq/xpath/css/yq superset", so three legs had none, and the
+# behavioural corpora could not stand in for one: every xp/css/yq probe here was
+# written from a construct already known to work, and a corpus of things that
+# pass measures nothing about what is missing.
+#
+# `xpath_superset_probe` and `yq_superset_probe` below fill that in, and the
+# answer is that TWO OF THE FOUR LEGS ARE NOT SUPERSETS, by a wide margin:
+#
+#   xpath  46 of the 48 enumerated XPath 1.0 constructs are missing — all 13
+#          axes in explicit syntax, all 27 core functions, `*`, `@*`, `..`,
+#          `node()`/`text()`/`comment()`, positional predicates, `!=`. What arb
+#          has is `//`, `/`, `@`, `[@a]`, `[@a='v']` and `[contains(@a,'v')]`:
+#          an XPath-shaped syntax over a CSS engine, not an XPath engine.
+#   yq     61 yq operators are missing, including every one that reads YAML NODE
+#          METADATA — `anchor`, `alias`, `tag`, `style`, `kind`, `line`,
+#          `column`, the three comment accessors, `key`, `parent`,
+#          `documentIndex`, `splitDoc` — plus the whole encode/decode and
+#          file/env families. Everything that DOES pass is a name arb already had
+#          from jq. Metadata is the reason yq exists over jq, and arb's value
+#          model is jq's, which has no slot for a comment or an anchor name.
+#
+# Eight `xp_probe`s were added with them, for the constructs the enumeration
+# turned up, and two of those are worse than a refusal: `or` and a chained
+# predicate answer with exit 0 and an EMPTY selection where XPath selects nodes,
+# and a ROOTED path (`/li/text()`) answers with a non-empty node set where XPath
+# selects nothing. SPEC §8 says anything outside the subset is "a hard error …
+# never silently reinterpreted"; for those it is not, and a wrong answer that
+# looks like an answer is the failure this harness exists to catch.
+#
+# None of the ten is allowlisted. They are the measurement.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -214,7 +257,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=676
+MIN_PROBES=686
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -414,6 +457,124 @@ superset_probe() {
     fi
 }
 
+# ── containment for the OTHER three legs ────────────────────────────────────
+#
+# `superset_probe` above is the only check that tests the word SUPERSET as a
+# whole rather than one construct at a time, and until now it existed for the jq
+# leg ONLY. The README claims a "jq/xpath/css/yq superset", so three of the four
+# legs had no containment check at all — and the behavioural corpora below could
+# not stand in for one, because each was written from constructs already known to
+# work. A corpus of things that pass is not a containment measurement.
+#
+# The three probes below fix that, in `superset_probe`'s exact shape: enumerate
+# the REFERENCE's surface, machine-check that the reference really defines each
+# name (so arb is never charged for a name the reference does not have either),
+# and report the set arb is MISSING.
+#
+# What they measure is NAMES, which is what containment means and what the jq
+# probe measures. A name arb has with DIFFERENT semantics counts as present here
+# and is caught by the behavioural probes instead — `explode` is both engines'
+# spelling for two unrelated operations, and only a `yq_probe` can see that.
+
+# Every yq name this script knows to ask about. Filtered through yq itself below,
+# so a name yq does not define is dropped rather than charged to arb. Drawn from
+# yq's operator index (mikefarah.gitbook.io/yq/operators) plus its `@encoder`s.
+# Written as whole EXPRESSIONS, not bare names, and with no embedded spaces:
+# the list is word-split, and asking about `select` rather than `select(.)` would
+# charge arb for an ARITY spelling it does not accept rather than for a name it
+# does not have. A wrong number in this direction is as useless as one in the
+# other.
+YQ_NAMES='anchor alias explode(.) tag style kind line column
+head_comment line_comment foot_comment headComment lineComment footComment
+key is_key parent path documentIndex di splitDoc split_doc comments
+to_json from_json to_yaml from_yaml to_xml from_xml to_props from_props
+to_csv from_csv to_tsv from_tsv
+env(HOME) strenv(HOME) envsubst load("f") load_str("f") load_props("f")
+load_xml("f") filename fileIndex
+format_datetime("x") from_unix to_unix tz("UTC") with_dtf("x";.) now
+pick(["a"]) omit(["a"]) with(.;.) sort_keys(.) sortKeys(.) shuffle pivot
+ireduce(0;.) eval(".") ref
+downcase upcase to_string to_number
+select(.) map(.) map_values(.) has("a") length keys to_entries from_entries
+with_entries(.) sort sort_by(.) reverse unique unique_by(.) group_by(.)
+min max flatten contains(.) any all not split("a") join(",") sub("a";"b")
+test("a") capture("(a)") tonumber trim error("x") type'
+
+# XPath 1.0's own surface, from the REC (w3.org/TR/1999/REC-xpath-19991116):
+# all 13 axes in §2.2, all 27 core functions in §4, and the node tests in §2.3.
+# Each is written as a whole expression so xmllint can be asked whether IT
+# accepts the expression before arb is charged for refusing it.
+XP_AXES='child::p descendant::p parent::* ancestor::div following-sibling::p
+preceding-sibling::p following::p preceding::p attribute::id namespace::*
+self::p descendant-or-self::p ancestor-or-self::div'
+XP_FUNCS='count(//p) id("main") local-name(//p) namespace-uri(//p) name(//p)
+string(//p) concat("a","b") starts-with("ab","a") contains("ab","b")
+substring-before("a-b","-") substring-after("a-b","-") substring("hello",2,3)
+string-length("abcd") normalize-space("a") translate("abc","abc","xyz")
+boolean(//p) not(false()) true() false() lang("en")
+number("42") sum(//p) floor(1.7) ceiling(1.2) round(1.5)
+//p[last()] //p[position()=2]'
+XP_TESTS='//node() //text() //comment() //processing-instruction() //* //@id //p/.. //p[@id!="x"]'
+
+# yq_superset_probe — every yq NAME must exist in arb.
+#
+# Existence oracles, both machine-checked rather than assumed:
+#   yq  defines NAME unless `yq -n NAME` says `invalid input text` (its lexer
+#       rejecting an unknown token). An ARITY complaint means the name exists.
+#   arb defines NAME unless it answers `unknown verb` or `is not supported`.
+#       A TYPE error means the name exists and refused this input, which is a
+#       different thing and is not counted as missing.
+yq_superset_probe() {
+    local missing='' n out
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    for n in $YQ_NAMES; do
+        case "$(yq -n "$n" 2>&1)" in *'invalid input text'*) continue ;; esac
+        out=$(printf 'null\n' | "$ARB" -e "out { in.yaml; $n }" 2>&1)
+        case "$out" in
+            *'unknown verb'* | *'is not supported'* | *'is not a valid format'*)
+                missing="$missing $n" ;;
+        esac
+    done
+    report_containment yqs "yq operator" "$missing"
+}
+
+# xpath_superset_probe — every XPath 1.0 axis, core function and node test must
+# exist in arb. `xmllint --xpath` is asked first, so an expression libxml2 itself
+# rejects is dropped rather than charged.
+xpath_superset_probe() {
+    local missing='' e out
+    [ -x /usr/bin/xmllint ] || { skip=$((skip + 1)); return; }
+    while IFS= read -r e; do
+        [ -n "$e" ] || continue
+        /usr/bin/xmllint --html --xpath "$e" "$XPF" >/dev/null 2>&1
+        # 0 = a node set, 10 = a valid expression selecting nothing. Anything
+        # else is libxml2 refusing the expression, so arb is not asked.
+        case $? in 0 | 10) ;; *) continue ;; esac
+        out=$("$ARB" -e "out { in.html; $e }" <"$XPF" 2>&1)
+        case "$out" in *'xpath:'* | *'unknown verb'*) missing="$missing ${e%% *}" ;; esac
+    done <<XPEOF
+$(printf '%s\n' $XP_AXES $XP_FUNCS $XP_TESTS)
+XPEOF
+    report_containment xps "xpath 1.0 construct" "$missing"
+}
+
+# report_containment KIND LABEL MISSING — the shared scoring half of the two
+# probes above and of `superset_probe`'s report, so all three read the same way.
+report_containment() {
+    local kind="$1" label="$2" missing="$3"
+    if [ -z "$missing" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   %-4s every %s exists in arb\n' "$kind" "$label"
+    else
+        local n
+        n=$(printf '%s' "$missing" | wc -w | tr -d ' ')
+        fail=$((fail + 1))
+        fails+=("$kind  $n ${label}s MISSING from arb:$missing")
+        [ "$QUIET" = 1 ] || printf 'DIFF %-4s %d %ss missing from arb:%s\n' \
+            "$kind" "$n" "$label" "$missing"
+    fi
+}
+
 # yq_probe FILE FILTER — the yq leg, against mikefarah/yq over the same YAML.
 #
 # `yq -o=json -I=0` is the invocation that compares the QUERY rather than the
@@ -424,9 +585,15 @@ superset_probe() {
 # (`.name` is `widget`, not `"widget"`). It cannot mask a selection difference —
 # it only removes the quotes around a value both engines already agree on.
 #
-# yq's expression language is SMALLER than jq's (no `keys_unsorted`, no `paths`,
-# no `add`, no `sort_by`), so the corpus covers what yq can actually spell. The
-# jq-only surface over YAML is covered by the jq probes over the same shapes.
+# This corpus covers the jq-shaped filters yq can also spell. That is NOT the
+# whole of yq, and the comment here used to claim otherwise — that "yq's
+# expression language is SMALLER than jq's (no `keys_unsorted`, no `paths`, no
+# `add`, no `sort_by`)". Two of those four are simply wrong (`yq -n '[3,1,2] |
+# sort_by(.)'` runs, and so does `keys`), and the inference was backwards: yq
+# being smaller on the jq OVERLAP says nothing about its own surface, which
+# carries ~60 operators jq has no equivalent for — anchors, tags, styles,
+# comments, document index, the encode/decode family, the file/env family.
+# `yq_superset_probe` below is what measures those; these probes do not.
 yq_probe() {
     local file="$1" filter="$2" a b
     command -v yq >/dev/null || { skip=$((skip + 1)); return; }
@@ -1372,6 +1539,22 @@ xp_probe "$XPF" "//div[contains(@class,'card')]/h2/text()"
 # Union — SPEC §8's prose says "no union", but the engine implements it and it
 # agrees with xmllint, so the probe pins the behaviour and the prose was corrected.
 xp_probe "$XPF" '//h2|//li'
+
+# ── xpath: the constructs the containment probe found missing ───────────────
+# These are XPath 1.0 that SPEC §8 says must be "a hard error … never silently
+# reinterpreted". Two of them are not: `or` and a chained predicate answer with
+# exit 0 and an EMPTY selection where XPath selects nodes, and a ROOTED path
+# answers with a non-empty node set where XPath selects nothing. A wrong answer
+# that looks like an answer is the failure this harness exists to catch, so they
+# are byte-diffed against xmllint rather than being asked only to exit non-zero.
+xp_probe "$XPF" "//a[@href='/x']/text()"
+xp_probe "$XPF" "//a[@href='/z' and @rel='nf']/text()"
+xp_probe "$XPF" "//div[@class='card' or @class='other']/h2/text()"
+xp_probe "$XPF" "//div[@class='other'][@class='other']/h2/text()"
+xp_probe "$XPF" '/div/h2/text()'
+xp_probe "$XPF" '/li/text()'
+xp_probe "$XPF" '//a[not(@rel)]/text()'
+xp_probe "$XPF" '//li[last()]/text()'
 # Predicate + descendant + accessor in one path, both quote styles on
 # `contains()`, a three-branch union, and a rooted path with a `//` in the
 # middle. Each combines constructs the corpus only ever probed in isolation.
@@ -1537,25 +1720,21 @@ idw 'sel { div#main p }'  '//div[@id="main"]//p/text()'
 idw 'sel #main'           '//div[@id="main"]//p/text()'
 idw 'sel #two'            '//p[@id="two"]/text()'
 idw '//div[@id="main"]//p/text()' '//div[@id="main"]//p/text()'
-# The form that does NOT: a LEADING `#` inside the braced spelling. `#` opens a
-# COMMENT in arb's lexer, so `sel { #main }` lexes to an empty block, `block_text`
-# reconstructs "", and the verb reports "expected a CSS selector" (exit 1).
+# The form that did NOT, until round 3: a LEADING `#` inside the braced spelling.
+# `#` opens a COMMENT in arb's lexer, so `sel { #main }` lexed to an empty block,
+# `block_text` reconstructed "", and the verb reported "expected a CSS selector"
+# (exit 1) for the spelling SPEC §8 and the README both print.
 #
-# This is round 1's `sel { div.card h2 }` bug in its last unfixed corner. Round 1
-# taught `sel` to rebuild a braced argument's text from the parsed commands, which
-# fixed every selector whose first token survives lexing — but a leading `#` is
-# eaten BEFORE parsing, so there is nothing left to rebuild. `#id` is the single
-# most common selector in CSS, and `sel { CSS }` is the spelling SPEC §8 and the
-# README both print, so the documented form cannot express it.
-#
-# Fixing it properly means either making `#` non-comment inside a block (which
-# would break real comments in every `source { … }` body) or carrying the raw
-# source span on `Arg::Block` (an AST change reaching the lexer, the parser and
-# every block consumer). Neither is a change to make silently, so the probe stays
-# RED and SPEC §8 records the limitation — the same treatment `keys` gets. It is
-# reported every run rather than allowlisted away.
+# The note here used to argue the fix needed either "making `#` non-comment
+# inside a block (which would break real comments in every `source { … }` body)"
+# or a raw source span on `Arg::Block`. Both were false dichotomies: the comment
+# rule is scoped to the brace, not to blocks as a class. `sel` is the ONE brace
+# in the language whose contents are a CSS selector rather than commands, so only
+# that one is re-lexed with the rule off. Every other brace keeps `#` as a
+# comment, which `hash_still_comments_in_command_blocks` pins.
 idw 'sel { #main }'       '//div[@id="main"]//p/text()'
 rm -f "$IDF"
+xpath_superset_probe
 rm -f "$XPF"
 
 # ── yq leg ──────────────────────────────────────────────────────────────────
@@ -1626,6 +1805,7 @@ yq_probe "$YQ_FIXTURE" '.count + 1'
 yq_probe "$YQ_FIXTURE" '.items | to_entries | length'
 yq_probe "$YQ_FIXTURE" '.nested.deep'
 yq_probe "$YQ_FIXTURE" '.items[] | {"id": .id}'
+yq_superset_probe
 rm -f "$YQ_FIXTURE"
 
 if ! command -v yq >/dev/null; then
