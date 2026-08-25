@@ -61,6 +61,17 @@ pub enum JqVal {
     /// vector with a linear scan beats a hash map on both lookup and clone while
     /// preserving the order jq exposes through `keys_unsorted`/`to_entries`.
     Obj(Rc<Vec<(Rc<str>, JqVal)>>),
+    /// A YAML NODE: one of the six values above plus the metadata YAML records
+    /// about it — comments, anchor, alias, tag, style, position. See
+    /// [`crate::ynode`] for why the metadata rides alongside the value instead
+    /// of replacing it.
+    ///
+    /// **Only [`crate::yaml`] constructs this.** `parse_json` cannot, so a JSON
+    /// program never sees the variant and every jq answer is reached through
+    /// exactly the arms it was reached through before. Every operation that
+    /// cares about the VALUE calls [`JqVal::bare`] first; the yq metadata
+    /// builtins are the only ones that look at the box.
+    Node(Rc<crate::ynode::YNode>),
 }
 
 impl JqVal {
@@ -77,26 +88,74 @@ impl JqVal {
         JqVal::Obj(Rc::new(v))
     }
 
+    /// The value with any YAML node box removed.
+    ///
+    /// Every operation whose answer is about the VALUE goes through this, so a
+    /// commented YAML scalar compares, sorts, renders and arithmetics exactly as
+    /// the same scalar read from JSON would. The box is one level deep by
+    /// construction ([`JqVal::wrap`] collapses a re-wrap), so this never
+    /// recurses more than once.
+    pub fn bare(&self) -> &JqVal {
+        match self {
+            JqVal::Node(n) => &n.val,
+            other => other,
+        }
+    }
+
+    /// The YAML metadata on this node, or `None` for a plain value.
+    pub fn meta(&self) -> Option<&crate::ynode::NodeMeta> {
+        match self {
+            JqVal::Node(n) => Some(&n.meta),
+            _ => None,
+        }
+    }
+
+    /// Box `v` with `meta`, or hand `v` back untouched when the metadata is
+    /// [`crate::ynode::NodeMeta::is_bare`] — a document with no comments,
+    /// anchors, tags or quoting pays no allocation and produces values that are
+    /// bit-identical to the JSON reader's.
+    pub fn wrap(v: JqVal, meta: crate::ynode::NodeMeta) -> JqVal {
+        if meta.is_bare() {
+            return v;
+        }
+        // Never nest: re-wrapping replaces the metadata rather than layering it,
+        // which is what `.x | (. tag = "!!str") | anchor = "a"` needs.
+        let val = match v {
+            JqVal::Node(n) => n.val.clone(),
+            other => other,
+        };
+        JqVal::Node(Rc::new(crate::ynode::YNode { meta, val }))
+    }
+
+    /// Replace this node's metadata, keeping the value. Used by every `… = …`
+    /// metadata assignment (`anchor`, `tag`, `style`, the three comments).
+    pub fn with_meta(&self, f: impl FnOnce(&mut crate::ynode::NodeMeta)) -> JqVal {
+        let mut meta = self.meta().cloned().unwrap_or_default();
+        f(&mut meta);
+        JqVal::wrap(self.bare().clone(), meta)
+    }
+
     /// jq's `type`.
     pub fn type_name(&self) -> &'static str {
-        match self {
+        match self.bare() {
             JqVal::Null => "null",
             JqVal::Bool(_) => "boolean",
             JqVal::Num(..) => "number",
             JqVal::Str(_) => "string",
             JqVal::Arr(_) => "array",
             JqVal::Obj(_) => "object",
+            JqVal::Node(_) => unreachable!("bare() never returns a Node"),
         }
     }
 
     /// jq truthiness: only `false` and `null` are falsy. `0`, `""`, `[]` and
     /// `{}` are all TRUE, which is the rule `select` rides on.
     pub fn truthy(&self) -> bool {
-        !matches!(self, JqVal::Null | JqVal::Bool(false))
+        !matches!(self.bare(), JqVal::Null | JqVal::Bool(false))
     }
 
     fn as_f64(&self) -> Option<f64> {
-        match self {
+        match self.bare() {
             JqVal::Num(n, _) => Some(*n),
             _ => None,
         }
@@ -105,7 +164,7 @@ impl JqVal {
     /// The rank of this value's type in jq's total order:
     /// `null < false < true < numbers < strings < arrays < objects`.
     fn order_rank(&self) -> u8 {
-        match self {
+        match self.bare() {
             JqVal::Null => 0,
             JqVal::Bool(false) => 1,
             JqVal::Bool(true) => 2,
@@ -113,11 +172,19 @@ impl JqVal {
             JqVal::Str(_) => 4,
             JqVal::Arr(_) => 5,
             JqVal::Obj(_) => 6,
+            JqVal::Node(_) => unreachable!("bare() never returns a Node"),
         }
     }
 
+    /// Look a key up in an object, unboxing the container first. The public
+    /// twin of `obj_get`, for the yq encoders that walk a value they did not
+    /// build.
+    pub fn obj_lookup(&self, k: &str) -> Option<&JqVal> {
+        self.obj_get(k)
+    }
+
     fn obj_get(&self, k: &str) -> Option<&JqVal> {
-        match self {
+        match self.bare() {
             JqVal::Obj(m) => m.iter().find(|(key, _)| &**key == k).map(|(_, v)| v),
             _ => None,
         }
@@ -134,6 +201,9 @@ pub fn cmp_vals(a: &JqVal, b: &JqVal) -> Ordering {
     if ra != rb {
         return ra.cmp(&rb);
     }
+    // Order is a property of the VALUE. A YAML node's comment or anchor must not
+    // reorder a sort, so both sides are unboxed before the comparison.
+    let (a, b) = (a.bare(), b.bare());
     match (a, b) {
         (JqVal::Num(x, _), JqVal::Num(y, _)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
         (JqVal::Str(x), JqVal::Str(y)) => x.cmp(y),
@@ -649,14 +719,17 @@ pub fn render(v: &JqVal) -> String {
 /// Render a value the way `jq -r` prints it: a top-level STRING goes out raw,
 /// everything else is compact JSON.
 pub fn render_raw(v: &JqVal) -> String {
-    match v {
+    match v.bare() {
         JqVal::Str(s) => s.to_string(),
         other => render(other),
     }
 }
 
+/// JSON has no place for YAML node metadata, so the box is dropped here: a
+/// commented, anchored, single-quoted YAML scalar renders as exactly the JSON
+/// its value alone would. `crate::ynode::emit` is the writer that keeps it.
 fn write_val(out: &mut String, v: &JqVal) {
-    match v {
+    match v.bare() {
         JqVal::Null => out.push_str("null"),
         JqVal::Bool(true) => out.push_str("true"),
         JqVal::Bool(false) => out.push_str("false"),
@@ -687,6 +760,7 @@ fn write_val(out: &mut String, v: &JqVal) {
             }
             out.push('}');
         }
+        JqVal::Node(_) => unreachable!("bare() never returns a Node"),
     }
 }
 
@@ -1998,6 +2072,10 @@ pub struct Interp {
     /// cost as running the query twice.
     inputs: RefCell<std::collections::VecDeque<String>>,
     env_obj: RefCell<Option<JqVal>>,
+    /// The document currently being evaluated, which is what `parent` walks. Set
+    /// per input by the pipeline; `None` when nothing set it, and `parent` then
+    /// answers `null` rather than guessing.
+    doc: RefCell<Option<JqVal>>,
     /// What `input_line_number` reports: the 1-based index of the line being
     /// evaluated, which is what jq reports while reading a multi-line stream.
     line: std::cell::Cell<f64>,
@@ -2009,6 +2087,7 @@ impl Default for Interp {
             labels: std::cell::Cell::new(0),
             inputs: RefCell::new(std::collections::VecDeque::new()),
             env_obj: RefCell::new(None),
+            doc: RefCell::new(None),
             line: std::cell::Cell::new(0.0),
         }
     }
@@ -2029,6 +2108,13 @@ impl Interp {
     /// Set what `input_line_number` reports for the value about to be run.
     pub fn set_line(&self, n: usize) {
         self.line.set(n as f64);
+    }
+    /// Record the document about to be evaluated, so `parent` can walk it.
+    pub fn set_doc(&self, v: &JqVal) {
+        *self.doc.borrow_mut() = Some(v.clone());
+    }
+    fn current_doc(&self) -> Option<JqVal> {
+        self.doc.borrow().clone()
     }
     fn env_object(&self) -> JqVal {
         if let Some(v) = self.env_obj.borrow().as_ref() {
@@ -2149,7 +2235,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
                 })
             })
         }),
-        Filter::Iterate(base) => eval(it, base, input, env, &mut |v| match &v {
+        Filter::Iterate(base) => eval(it, base, input, env, &mut |v| match v.bare() {
             JqVal::Arr(a) => {
                 for e in a.iter() {
                     out(e.clone())?;
@@ -2185,7 +2271,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             eval(it, a, input, env, out)?;
             eval(it, b, input, env, out)
         }
-        Filter::Neg(inner) => eval(it, inner, input, env, &mut |v| match v {
+        Filter::Neg(inner) => eval(it, inner, input, env, &mut |v| match v.bare() {
             JqVal::Num(n, _) => out(JqVal::num(-n)),
             other => Err(JqErr::msg(format!(
                 "{}{} cannot be negated",
@@ -2353,7 +2439,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
 /// `[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]` reports as
 /// `[1,2,3,4,5,6,7,8,9,10,11,...]`, and a 26-character dump is not truncated.
 fn paren_of(v: &JqVal) -> String {
-    let s = render(v);
+    let s = render(v.bare());
     let n = s.chars().count();
     if n < 30 {
         return format!(" ({s})");
@@ -2401,8 +2487,10 @@ fn eval_if(
 
 /// jq's `..`: the value itself, then every descendant, depth first.
 fn recurse_all(v: &JqVal, out: Sink) -> R<()> {
+    // The NODE is what comes out — `.. | anchor` has to see the box — while the
+    // traversal walks the value inside it.
     out(v.clone())?;
-    match v {
+    match v.bare() {
         JqVal::Arr(a) => {
             for e in a.iter() {
                 recurse_all(e, out)?;
@@ -2427,6 +2515,9 @@ fn recurse_all(v: &JqVal, out: Sink) -> R<()> {
 /// missing key or an out-of-range index is `null`, a negative array index counts
 /// from the end, and every other type pairing is an error.
 fn index_value(v: &JqVal, idx: &JqVal) -> R<JqVal> {
+    // The CHILD keeps its box (that is how `.a | line_comment` reaches the
+    // comment on `a`'s value); the container and the index are read unboxed.
+    let (v, idx) = (v.bare(), idx.bare());
     match (v, idx) {
         (JqVal::Null, JqVal::Str(_) | JqVal::Num(..) | JqVal::Null) => Ok(JqVal::Null),
         (JqVal::Obj(_), JqVal::Str(k)) => Ok(v.obj_get(k).cloned().unwrap_or(JqVal::Null)),
@@ -2468,7 +2559,7 @@ fn index_err(v: &JqVal, idx: &JqVal) -> JqErr {
     JqErr::msg(format!(
         "Cannot index {} with {}",
         v.type_name(),
-        match idx {
+        match idx.bare() {
             JqVal::Str(s) => format!("string ({})", render(&JqVal::Str(s.clone()))),
             other => format!("{}{}", other.type_name(), paren_of(other)),
         }
@@ -2477,7 +2568,7 @@ fn index_err(v: &JqVal, idx: &JqVal) -> JqErr {
 
 /// Every start offset at which `sub` occurs inside array `hay`.
 fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
-    let JqVal::Arr(a) = hay else {
+    let JqVal::Arr(a) = hay.bare() else {
         return Vec::new();
     };
     if sub.is_empty() || sub.len() > a.len() {
@@ -2499,7 +2590,7 @@ fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
 fn slice_value(v: &JqVal, lo: &JqVal, hi: &JqVal) -> R<JqVal> {
     let bounds = |len: usize| -> (usize, usize) {
         let conv = |b: &JqVal, dflt: f64| -> f64 {
-            match b {
+            match b.bare() {
                 JqVal::Num(n, _) => {
                     let n = if *n < 0.0 { n + len as f64 } else { *n };
                     n.clamp(0.0, len as f64)
@@ -2511,7 +2602,7 @@ fn slice_value(v: &JqVal, lo: &JqVal, hi: &JqVal) -> R<JqVal> {
         let e = conv(hi, len as f64) as usize;
         (s, e.max(s))
     };
-    match v {
+    match v.bare() {
         JqVal::Null => Ok(JqVal::Null),
         JqVal::Arr(a) => {
             let (s, e) = bounds(a.len());
@@ -2533,6 +2624,10 @@ fn slice_value(v: &JqVal, lo: &JqVal, hi: &JqVal) -> R<JqVal> {
 }
 
 fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
+    // Arithmetic and comparison are about VALUES. `1 # a` + `2 # b` is 3, and
+    // the result carries no comment because it is a new value, not either node —
+    // which is also what yq answers.
+    let (a, b) = (a.bare(), b.bare());
     match op {
         BinOp::Eq => return Ok(JqVal::Bool(eq_vals(a, b))),
         BinOp::Ne => return Ok(JqVal::Bool(!eq_vals(a, b))),
@@ -2640,7 +2735,7 @@ fn trunc_i64(v: f64) -> i64 {
 
 /// `*` on two objects: recursive merge, with the RIGHT side winning at leaves.
 fn deep_merge(a: &JqVal, b: &JqVal) -> JqVal {
-    match (a, b) {
+    match (a.bare(), b.bare()) {
         (JqVal::Obj(x), JqVal::Obj(y)) => {
             let mut v = x.as_ref().clone();
             for (k, bv) in y.iter() {
@@ -2732,6 +2827,7 @@ fn eval_string(
 
 /// jq's `@name` format strings.
 fn apply_format(name: &str, v: &JqVal) -> R<String> {
+    let v = v.bare();
     match name {
         "text" => Ok(render_raw(v)),
         "json" => Ok(render(v)),
@@ -2883,7 +2979,7 @@ fn build_object(
         return out(JqVal::obj(acc));
     };
     eval(it, kf, input, env, &mut |k| {
-        let JqVal::Str(key) = k else {
+        let JqVal::Str(key) = k.bare().clone() else {
             return Err(JqErr::msg(format!(
                 "Cannot use {}{} as object key",
                 k.type_name(),
@@ -3080,7 +3176,7 @@ fn eval_paths(
                 })
             })
         }),
-        Filter::Iterate(base) => eval_paths(it, base, input, pre, val, env, &mut |p, v| match &v {
+        Filter::Iterate(base) => eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
             JqVal::Arr(a) => {
                 for (i, e) in a.iter().enumerate() {
                     let mut np = p.clone();
@@ -3377,7 +3473,7 @@ pub fn get_seg_path(v: &JqVal, segs: &[crate::jqval::Seg]) -> Result<JqVal, Stri
 fn get_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
     let mut cur = v.clone();
     for s in segs {
-        if matches!(cur, JqVal::Null) {
+        if matches!(cur.bare(), JqVal::Null) {
             return Ok(JqVal::Null);
         }
         cur = index_value(&cur, s)?;
@@ -3392,7 +3488,15 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
     let Some((seg, rest)) = segs.split_first() else {
         return Ok(newv);
     };
-    match seg {
+    // A YAML container being written INTO keeps its own metadata: `.a.b = 5`
+    // over a commented document must not strip the document's comments. The
+    // rebuilt container is re-boxed with the metadata the old one carried.
+    let rebox = |built: JqVal| match v.meta() {
+        Some(m) => JqVal::wrap(built, m.clone()),
+        None => built,
+    };
+    let v = v.bare();
+    match seg.bare() {
         JqVal::Str(k) => {
             let mut m = match v {
                 JqVal::Obj(m) => m.as_ref().clone(),
@@ -3413,7 +3517,7 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                 Some(slot) => slot.1 = sub,
                 None => m.push((k.clone(), sub)),
             }
-            Ok(JqVal::obj(m))
+            Ok(rebox(JqVal::obj(m)))
         }
         JqVal::Num(n, _) => {
             let mut a = match v {
@@ -3438,7 +3542,7 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                 a.push(JqVal::Null);
             }
             a[i] = set_path(&a[i].clone(), rest, newv)?;
-            Ok(JqVal::arr(a))
+            Ok(rebox(JqVal::arr(a)))
         }
         JqVal::Obj(_) => {
             // A `{"start":…,"end":…}` segment replaces an array SLICE.
@@ -3457,7 +3561,7 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                 }
             };
             let len = a.len();
-            let conv = |b: &JqVal, dflt: f64| match b {
+            let conv = |b: &JqVal, dflt: f64| match b.bare() {
                 JqVal::Num(n, _) => {
                     let n = if *n < 0.0 { n + len as f64 } else { *n };
                     n.clamp(0.0, len as f64) as usize
@@ -3476,7 +3580,7 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
             let mut out = a[..s].to_vec();
             out.extend(repl.iter().cloned());
             out.extend(a[e..].iter().cloned());
-            Ok(JqVal::arr(out))
+            Ok(rebox(JqVal::arr(out)))
         }
         other => Err(JqErr::msg(format!(
             "Invalid path component {}",
@@ -3490,12 +3594,19 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
     let Some((seg, rest)) = segs.split_first() else {
         return Ok(JqVal::Null);
     };
+    // As in `set_path`: the container that survives a deletion keeps its own
+    // comments and anchor.
+    let rebox = |built: JqVal| match v.meta() {
+        Some(m) => JqVal::wrap(built, m.clone()),
+        None => built,
+    };
+    let v = v.bare();
     if rest.is_empty() {
-        return match (v, seg) {
+        return match (v, seg.bare()) {
             (JqVal::Null, _) => Ok(JqVal::Null),
-            (JqVal::Obj(m), JqVal::Str(k)) => Ok(JqVal::obj(
+            (JqVal::Obj(m), JqVal::Str(k)) => Ok(rebox(JqVal::obj(
                 m.iter().filter(|(ek, _)| ek != k).cloned().collect(),
-            )),
+            ))),
             (JqVal::Arr(a), JqVal::Num(n, _)) => {
                 let mut i = n.trunc();
                 if i < 0.0 {
@@ -3505,17 +3616,17 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
                     return Ok(v.clone());
                 }
                 let i = i as usize;
-                Ok(JqVal::arr(
+                Ok(rebox(JqVal::arr(
                     a.iter()
                         .enumerate()
                         .filter(|(j, _)| *j != i)
                         .map(|(_, e)| e.clone())
                         .collect(),
-                ))
+                )))
             }
             (JqVal::Arr(a), JqVal::Obj(_)) => {
                 let len = a.len();
-                let conv = |b: Option<&JqVal>, dflt: usize| match b {
+                let conv = |b: Option<&JqVal>, dflt: usize| match b.map(JqVal::bare) {
                     Some(JqVal::Num(n, _)) => {
                         let n = if *n < 0.0 { n + len as f64 } else { *n };
                         n.clamp(0.0, len as f64) as usize
@@ -3526,7 +3637,7 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
                 let e = conv(seg.obj_get("end"), len).max(s);
                 let mut out = a[..s].to_vec();
                 out.extend(a[e..].iter().cloned());
-                Ok(JqVal::arr(out))
+                Ok(rebox(JqVal::arr(out)))
             }
             (other, _) => Err(JqErr::msg(format!(
                 "Cannot delete field at index of {}",
@@ -3535,10 +3646,10 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
         };
     }
     let child = index_value(v, seg)?;
-    if matches!(child, JqVal::Null) {
+    if matches!(child.bare(), JqVal::Null) {
         return Ok(v.clone());
     }
-    set_path(v, &segs[..1], del_path(&child, rest)?)
+    Ok(rebox(set_path(v, &segs[..1], del_path(&child, rest)?)?))
 }
 
 /// `delpaths`. Paths are removed LONGEST/LAST first so that deleting `.[0]` does
@@ -3694,7 +3805,11 @@ fn one(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<JqVal> {
     let mut got = None;
     eval(it, f, input, env, &mut |v| {
         if got.is_none() {
-            got = Some(v);
+            // Unboxed: an ARGUMENT to a jq builtin is a value, and every builtin
+            // reached through here is a value operation. The yq operators that
+            // need the node itself are dispatched before `builtin` unboxes its
+            // input, so none of them come through this path.
+            got = Some(v.bare().clone());
         }
         Ok(())
     })?;
@@ -3702,7 +3817,7 @@ fn one(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<JqVal> {
 }
 
 fn want_str(v: &JqVal, who: &str) -> R<Rc<str>> {
-    match v {
+    match v.bare() {
         JqVal::Str(s) => Ok(s.clone()),
         other => Err(JqErr::msg(format!(
             "{}{} cannot be {who}",
@@ -3753,6 +3868,15 @@ fn builtin(
     env: &Env,
     out: Sink,
 ) -> R<()> {
+    // The yq surface is the ONLY thing that may look at the node box, so it is
+    // dispatched first, with `input` still wrapped. Everything below is a jq
+    // builtin whose answer is about the VALUE, so it runs against the unboxed
+    // one — that is what keeps a commented YAML scalar behaving in `sort`,
+    // `tostring` and `+` exactly as the same scalar read from JSON does.
+    if is_yq_builtin(name, args.len()) {
+        return yq_builtin(it, name, args, input, env, out);
+    }
+    let input = input.bare();
     match (name, args.len()) {
         ("empty", 0) => Ok(()),
         ("error", 0) => Err(JqErr::Err(input.clone())),
@@ -3773,6 +3897,7 @@ fn builtin(
             JqVal::Str(s) => JqVal::num(s.chars().count() as f64),
             JqVal::Arr(a) => JqVal::num(a.len() as f64),
             JqVal::Obj(m) => JqVal::num(m.len() as f64),
+            JqVal::Node(_) => unreachable!("bare() never returns a Node"),
         }),
         ("utf8bytelength", 0) => out(JqVal::num(want_str(input, "counted in bytes")?.len() as f64)),
 
@@ -4422,6 +4547,7 @@ fn flatten_into(a: &[JqVal], depth: i64, out: &mut Vec<JqVal>) {
 /// jq's `contains`: recursive containment. Strings contain substrings, arrays
 /// contain element-wise-contained elements, objects contain per-key.
 fn contains(a: &JqVal, b: &JqVal) -> R<bool> {
+    let (a, b) = (a.bare(), b.bare());
     Ok(match (a, b) {
         (JqVal::Obj(_), JqVal::Obj(bm)) => {
             for (k, bv) in bm.iter() {
@@ -5149,6 +5275,552 @@ impl Env {
 
 /// Names the resolver must accept that `builtins` does not list, because jq does
 /// not list them either: its own internal helpers.
+// ─────────────────────────────────────────────────────────────────────────────
+// The yq surface
+//
+// arb's docs claim a jq/xpath/css/yq superset. `superset_probe` measures the jq
+// leg by containment — every `name/arity` jq defines must exist here — and
+// `yq_superset_probe` does the same for yq's own operator index. This section is
+// what closes that leg: the ~60 operators yq has that jq has no equivalent for.
+//
+// Three groups, and only the first needs the node box:
+//
+//   * NODE METADATA — `anchor`, `alias`, `tag`, `style`, the three comments,
+//     `key`, `is_key`, `path`, `parent`, `line`, `column`, `kind`,
+//     `document_index`, `filename`, `fileIndex`. These read (and, through
+//     `anchor = "x"`, write) `crate::ynode::NodeMeta`, which is exactly the
+//     metadata a jq value has no slot for.
+//   * ENCODERS — `to_json`/`from_json` and the yaml/xml/props/csv/tsv family,
+//     plus `env`/`strenv`/`envsubst` and the `load` family. Pure text; see
+//     `crate::yqfmt`.
+//   * RESHAPING — `pick`/`omit`/`with`/`sort_keys`/`pivot`/`shuffle`/`ireduce`/
+//     `eval`/`ref`/`splitDoc` and the `downcase`/`upcase`/`to_string`/
+//     `to_number` spellings.
+//
+// Where a spelling had to change, it is because yq's grammar is not jq's and
+// the difference is stated rather than papered over — see `ireduce` and `ref`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every yq `name/arity` this engine defines. The single source of truth: both
+/// [`is_yq_builtin`] and the `builtins` listing read it, so a name can never be
+/// dispatchable but unlisted (or listed but undispatchable).
+const YQ_BUILTINS: &[(&str, usize)] = &[
+    // node metadata, read
+    ("anchor", 0),
+    ("alias", 0),
+    ("tag", 0),
+    ("style", 0),
+    ("kind", 0),
+    ("line", 0),
+    ("column", 0),
+    ("head_comment", 0),
+    ("headComment", 0),
+    ("line_comment", 0),
+    ("lineComment", 0),
+    ("foot_comment", 0),
+    ("footComment", 0),
+    ("comments", 0),
+    ("key", 0),
+    ("is_key", 0),
+    ("parent", 0),
+    ("path", 0),
+    ("document_index", 0),
+    ("documentIndex", 0),
+    ("di", 0),
+    ("filename", 0),
+    ("fileIndex", 0),
+    ("splitDoc", 0),
+    ("split_doc", 0),
+    ("explode", 1),
+    // encoders
+    ("to_json", 0),
+    ("to_json", 1),
+    ("from_json", 0),
+    ("to_yaml", 0),
+    ("to_yaml", 1),
+    ("from_yaml", 0),
+    ("to_xml", 0),
+    ("to_xml", 1),
+    ("from_xml", 0),
+    ("to_props", 0),
+    ("from_props", 0),
+    ("to_csv", 0),
+    ("from_csv", 0),
+    ("to_tsv", 0),
+    ("from_tsv", 0),
+    // environment and files
+    ("env", 1),
+    ("strenv", 1),
+    ("envsubst", 0),
+    ("load", 1),
+    ("load_str", 1),
+    ("load_props", 1),
+    ("load_xml", 1),
+    // dates
+    ("format_datetime", 1),
+    ("from_unix", 0),
+    ("to_unix", 0),
+    ("tz", 1),
+    ("with_dtf", 2),
+    // reshaping
+    ("omit", 1),
+    ("with", 2),
+    ("ref", 2),
+    ("sort_keys", 1),
+    ("sortKeys", 1),
+    ("shuffle", 0),
+    ("pivot", 0),
+    ("ireduce", 2),
+    ("eval", 1),
+    ("downcase", 0),
+    ("upcase", 0),
+    ("to_string", 0),
+    ("to_number", 0),
+];
+
+/// Is `name/arity` one of the yq operators dispatched by [`yq_builtin`]?
+///
+/// Checked BEFORE `builtin` unboxes its input, because the metadata group is the
+/// only code in the engine allowed to see a `JqVal::Node`.
+fn is_yq_builtin(name: &str, arity: usize) -> bool {
+    YQ_BUILTINS.iter().any(|&(n, a)| n == name && a == arity)
+}
+
+/// The names for the `builtins` listing, in jq's `name/arity` spelling.
+fn yq_builtin_names() -> Vec<String> {
+    YQ_BUILTINS
+        .iter()
+        .map(|(n, a)| format!("{n}/{a}"))
+        .collect()
+}
+
+/// The metadata accessors that may stand on the LEFT of `=`.
+///
+/// yq spells the assignment as a postfix on a path (`.a anchor = "x"`); arb's
+/// grammar is jq's, so the same edit is written `.a |= (anchor = "x")` or
+/// `(.a | anchor) = "x"`. Both reach here through [`eval_assign`].
+fn is_meta_setter(name: &str) -> bool {
+    matches!(
+        name,
+        "anchor"
+            | "tag"
+            | "style"
+            | "head_comment"
+            | "headComment"
+            | "line_comment"
+            | "lineComment"
+            | "foot_comment"
+            | "footComment"
+            | "comments"
+    )
+}
+
+/// Apply a metadata assignment to one node.
+fn set_meta(node: &JqVal, name: &str, val: &JqVal) -> JqVal {
+    let text: Rc<str> = match val.bare() {
+        JqVal::Str(s) => s.clone(),
+        JqVal::Null => Rc::from(""),
+        other => Rc::from(render_raw(other).as_str()),
+    };
+    node.with_meta(|m| match name {
+        "anchor" => m.anchor = text.clone(),
+        "tag" => m.tag = text.clone(),
+        "style" => m.style = crate::ynode::Style::parse(&text),
+        "head_comment" | "headComment" => m.head = text.clone(),
+        "line_comment" | "lineComment" => m.line = text.clone(),
+        "foot_comment" | "footComment" => m.foot = text.clone(),
+        // `... comments = ""` is yq's spelling for "strip every comment here".
+        "comments" => {
+            m.head = text.clone();
+            m.line = text.clone();
+            m.foot = text.clone();
+        }
+        _ => {}
+    })
+}
+
+/// Read a file, reporting yq's own message shape on failure.
+fn read_file(path: &str) -> R<String> {
+    std::fs::read_to_string(path)
+        .map_err(|e| JqErr::msg(format!("failed to load {path}: {e}")))
+}
+
+fn yq_builtin(
+    it: &Interp,
+    name: &str,
+    args: &[Rc<Filter>],
+    input: &JqVal,
+    env: &Env,
+    out: Sink,
+) -> R<()> {
+    let meta = input.meta().cloned().unwrap_or_default();
+    let str_arg = |i: usize| -> R<Rc<str>> {
+        let v = one(it, &args[i], input, env)?;
+        Ok(match v.bare() {
+            JqVal::Str(s) => s.clone(),
+            other => Rc::from(render_raw(other).as_str()),
+        })
+    };
+    match (name, args.len()) {
+        // ── node metadata ───────────────────────────────────────────────────
+        ("anchor", 0) => out(JqVal::Str(meta.anchor)),
+        ("alias", 0) => out(JqVal::Str(meta.alias)),
+        ("tag", 0) => out(JqVal::str(if meta.tag.is_empty() {
+            crate::ynode::implicit_tag(input)
+        } else {
+            return out(JqVal::Str(meta.tag));
+        })),
+        ("style", 0) => out(JqVal::str(meta.style.name())),
+        ("kind", 0) => out(JqVal::str(crate::ynode::kind_of(input))),
+        ("line", 0) => out(JqVal::num(meta.line_no.max(1) as f64)),
+        ("column", 0) => out(JqVal::num(meta.col_no.max(1) as f64)),
+        ("head_comment", 0) | ("headComment", 0) => out(JqVal::Str(meta.head)),
+        ("line_comment", 0) | ("lineComment", 0) => out(JqVal::Str(meta.line)),
+        ("foot_comment", 0) | ("footComment", 0) => out(JqVal::Str(meta.foot)),
+        // Read back, `comments` is every comment on the node, in the order they
+        // appear on the page.
+        ("comments", 0) => {
+            let all: Vec<&str> = [&*meta.head, &*meta.line, &*meta.foot]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect();
+            out(JqVal::str(all.join("\n")))
+        }
+        ("key", 0) => out(match &meta.key {
+            Some(k) => (**k).clone(),
+            // A node with no key (a document root, a sequence item) has none;
+            // yq answers null there too.
+            None => JqVal::Null,
+        }),
+        ("is_key", 0) => out(JqVal::Bool(meta.is_key)),
+        ("path", 0) => out(JqVal::arr(meta.path.as_ref().clone())),
+        ("parent", 0) => {
+            // The document the node was READ from, walked to the path one step
+            // short of the node. See `crate::ynode` for what this does not
+            // promise once a value has been moved.
+            let segs = meta.path.as_ref();
+            match (it.current_doc(), segs.split_last()) {
+                (Some(doc), Some((_, up))) => out(get_path(&doc, up)?),
+                _ => out(JqVal::Null),
+            }
+        }
+        ("document_index", 0) | ("documentIndex", 0) | ("di", 0) => {
+            out(JqVal::num(meta.doc as f64))
+        }
+        ("filename", 0) => out(JqVal::str(if meta.file.is_empty() {
+            Rc::from("-")
+        } else {
+            meta.file.clone()
+        })),
+        ("fileIndex", 0) => out(JqVal::num(meta.file_index as f64)),
+        // arb's stream is already one document per output value, and `out.yaml`
+        // separates them with `---`. `splitDoc` therefore has nothing left to
+        // do — it is the identity here, not a stub: the split it asks for has
+        // already happened by the time a value reaches it.
+        ("splitDoc", 0) | ("split_doc", 0) => out(input.clone()),
+        // `explode(f)`: drop the anchor/alias metadata under `f`, so an aliased
+        // node is written out in full instead of as `*name`.
+        ("explode", 1) => {
+            let mut cur = input.clone();
+            let mut paths = Vec::new();
+            eval_paths(it, &args[0], input, &[], input, env, &mut |p, _| {
+                paths.push(p);
+                Ok(())
+            })?;
+            for p in paths {
+                let at = get_path(&cur, &p)?;
+                let flat = explode_node(&at);
+                cur = if p.is_empty() {
+                    flat
+                } else {
+                    set_path(&cur, &p, flat)?
+                };
+            }
+            out(cur)
+        }
+
+        // ── encoders ────────────────────────────────────────────────────────
+        ("to_json", 0) => out(JqVal::str(json_indented(input, 2))),
+        ("to_json", 1) => {
+            let n = one(it, &args[0], input, env)?.as_f64().unwrap_or(2.0);
+            out(JqVal::str(json_indented(input, n.max(0.0) as usize)))
+        }
+        ("from_json", 0) => {
+            let s = want_str(input, "parsed as JSON")?;
+            out(parse_json(&s).map_err(JqErr::msg)?)
+        }
+        ("to_yaml", 0) => out(JqVal::str(crate::ynode::emit_doc(
+            input,
+            crate::ynode::Emit::default(),
+        ))),
+        ("to_yaml", 1) => {
+            let n = one(it, &args[0], input, env)?.as_f64().unwrap_or(2.0);
+            out(JqVal::str(crate::ynode::emit_doc(
+                input,
+                crate::ynode::Emit {
+                    indent: n.max(0.0) as usize,
+                },
+            )))
+        }
+        ("from_yaml", 0) => {
+            let s = want_str(input, "parsed as YAML")?;
+            out(crate::yaml::documents(&s).into_iter().next().unwrap_or(JqVal::Null))
+        }
+        ("to_xml", 0) => out(JqVal::str(crate::yqfmt::to_xml(input, 2))),
+        ("to_xml", 1) => {
+            let n = one(it, &args[0], input, env)?.as_f64().unwrap_or(2.0);
+            out(JqVal::str(crate::yqfmt::to_xml(input, n.max(0.0) as usize)))
+        }
+        ("from_xml", 0) => out(crate::yqfmt::from_xml(&want_str(input, "parsed as XML")?)),
+        ("to_props", 0) => out(JqVal::str(crate::yqfmt::to_props(input))),
+        ("from_props", 0) => out(crate::yqfmt::from_props(&want_str(
+            input,
+            "parsed as properties",
+        )?)),
+        ("to_csv", 0) => out(JqVal::str(crate::yqfmt::to_delim(input, ','))),
+        ("to_tsv", 0) => out(JqVal::str(crate::yqfmt::to_delim(input, '\t'))),
+        ("from_csv", 0) => out(crate::yqfmt::from_delim(
+            &want_str(input, "parsed as CSV")?,
+            ',',
+        )),
+        ("from_tsv", 0) => out(crate::yqfmt::from_delim(
+            &want_str(input, "parsed as TSV")?,
+            '\t',
+        )),
+
+        // ── environment and files ───────────────────────────────────────────
+        // `env(NAME)` resolves the value the way YAML would (`env(PORT)` is a
+        // number); `strenv(NAME)` always answers a string. That difference is
+        // the whole reason yq has both.
+        ("env", 1) => {
+            let n = str_arg(0)?;
+            out(match std::env::var(&*n) {
+                Ok(v) => crate::yaml::documents(&v).into_iter().next().unwrap_or(JqVal::Null),
+                Err(_) => JqVal::Null,
+            })
+        }
+        ("strenv", 1) => {
+            let n = str_arg(0)?;
+            out(JqVal::str(std::env::var(&*n).unwrap_or_default()))
+        }
+        ("envsubst", 0) => out(JqVal::str(crate::yqfmt::envsubst(&want_str(
+            input,
+            "expanded",
+        )?))),
+        ("load", 1) => {
+            let path = str_arg(0)?;
+            let text = read_file(&path)?;
+            out(crate::yaml::documents_from(&text, &path, 0)
+                .into_iter()
+                .next()
+                .unwrap_or(JqVal::Null))
+        }
+        ("load_str", 1) => out(JqVal::str(read_file(&str_arg(0)?)?)),
+        ("load_props", 1) => out(crate::yqfmt::from_props(&read_file(&str_arg(0)?)?)),
+        ("load_xml", 1) => out(crate::yqfmt::from_xml(&read_file(&str_arg(0)?)?)),
+
+        // ── dates ───────────────────────────────────────────────────────────
+        ("format_datetime", 1) => {
+            let layout = str_arg(0)?;
+            let secs = to_unix_secs(input)?;
+            out(JqVal::str(crate::yqfmt::format_go(secs, &layout, true)))
+        }
+        ("from_unix", 0) => {
+            let secs = input.as_f64().unwrap_or(0.0);
+            out(JqVal::str(crate::yqfmt::format_go(
+                secs,
+                "2006-01-02T15:04:05Z07:00",
+                false,
+            )))
+        }
+        ("to_unix", 0) => out(JqVal::num(to_unix_secs(input)?)),
+        ("tz", 1) => {
+            // Only UTC is a zone this build can resolve without a tzdata
+            // dependency; any other name is answered in UTC and says so.
+            let zone = str_arg(0)?;
+            let secs = to_unix_secs(input)?;
+            let utc = matches!(&*zone, "UTC" | "utc" | "Z" | "GMT" | "");
+            out(JqVal::str(crate::yqfmt::format_go(
+                secs,
+                "2006-01-02T15:04:05Z07:00",
+                utc,
+            )))
+        }
+        // `with_dtf(layout; f)` runs `f` with `layout` as the date format. arb
+        // has no dynamically scoped format, so the layout is applied to `f`'s
+        // result the way yq's own `with_dtf` applies it to what `f` produces.
+        ("with_dtf", 2) => {
+            let layout = str_arg(0)?;
+            eval(it, &args[1], input, env, &mut |v| match v.bare() {
+                JqVal::Num(n, _) => out(JqVal::str(crate::yqfmt::format_go(*n, &layout, true))),
+                other => out(other.clone()),
+            })
+        }
+
+        // ── reshaping ───────────────────────────────────────────────────────
+        ("omit", 1) => {
+            let keys = one(it, &args[0], input, env)?;
+            let JqVal::Arr(drop) = keys.bare() else {
+                return Err(JqErr::msg("omit expects an array of keys"));
+            };
+            let JqVal::Obj(m) = input.bare() else {
+                return out(input.clone());
+            };
+            let kept: Vec<(Rc<str>, JqVal)> = m
+                .iter()
+                .filter(|(k, _)| !drop.iter().any(|d| matches!(d.bare(), JqVal::Str(s) if s == k)))
+                .cloned()
+                .collect();
+            out(match input.meta() {
+                Some(mm) => JqVal::wrap(JqVal::obj(kept), mm.clone()),
+                None => JqVal::obj(kept),
+            })
+        }
+        // `with(p; f)` and `ref(p; f)` are both "update at a path", which is what
+        // yq's two spellings do — `ref` binds a mutable handle and `with` scopes
+        // one, and in a model without mutable handles both are `p |= f`.
+        ("with", 2) | ("ref", 2) => {
+            let update = Filter::Assign(
+                AssignOp::Update,
+                Box::new((*args[0]).clone()),
+                Box::new((*args[1]).clone()),
+            );
+            eval(it, &update, input, env, out)
+        }
+        ("sort_keys", 1) | ("sortKeys", 1) => {
+            // yq's argument selects WHERE to sort: `sort_keys(.)` is this level,
+            // `sort_keys(..)` is every level.
+            let deep = matches!(&*args[0], Filter::RecurseDefault);
+            out(crate::yqfmt::sort_keys(input, deep))
+        }
+        ("shuffle", 0) => out(crate::yqfmt::shuffle(input)),
+        ("pivot", 0) => out(crate::yqfmt::pivot(input)),
+        // yq writes this as `.[] as $item ireduce (0; . + $item)`. arb's grammar
+        // is jq's, so the stream is the input's own elements and `$item` is bound
+        // for the body — `[1,2,3] | ireduce(0; . + $item)` is 6, the same answer
+        // yq gives for the same reduction.
+        ("ireduce", 2) => {
+            let mut acc = one(it, &args[0], input, env)?;
+            let JqVal::Arr(items) = input.bare() else {
+                return out(acc);
+            };
+            for e in items.iter() {
+                let benv = env.bind(Rc::from("item"), e.clone());
+                acc = one(it, &args[1], &acc, &benv)?;
+            }
+            out(acc)
+        }
+        ("eval", 1) => {
+            let src = str_arg(0)?;
+            let f = parse(&src).map_err(JqErr::msg)?;
+            eval(it, &f, input, env, out)
+        }
+        ("downcase", 0) => out(JqVal::str(
+            want_str(input, "downcased")?.to_lowercase().as_str(),
+        )),
+        ("upcase", 0) => out(JqVal::str(
+            want_str(input, "upcased")?.to_uppercase().as_str(),
+        )),
+        ("to_string", 0) => out(JqVal::str(render_raw(input))),
+        ("to_number", 0) => match input.bare() {
+            JqVal::Num(..) => out(input.bare().clone()),
+            JqVal::Str(s) => match s.trim().parse::<f64>() {
+                Ok(n) => out(num_from_literal(n, s.trim())),
+                Err(_) => Err(JqErr::msg(format!("cannot convert '{s}' to a number"))),
+            },
+            other => Err(JqErr::msg(format!(
+                "cannot convert {} to a number",
+                other.type_name()
+            ))),
+        },
+        _ => Err(JqErr::msg(format!("{name} is not a yq operator"))),
+    }
+}
+
+/// Drop anchor/alias metadata through a whole subtree, which is what `explode`
+/// means: the document that comes out has no `&name`/`*name` left in it.
+fn explode_node(v: &JqVal) -> JqVal {
+    let stripped = match v.bare() {
+        JqVal::Arr(a) => JqVal::arr(a.iter().map(explode_node).collect()),
+        JqVal::Obj(m) => JqVal::obj(
+            m.iter()
+                .map(|(k, val)| (k.clone(), explode_node(val)))
+                .collect(),
+        ),
+        other => other.clone(),
+    };
+    match v.meta() {
+        Some(m) => {
+            let mut m = m.clone();
+            m.anchor = Rc::from("");
+            m.alias = Rc::from("");
+            JqVal::wrap(stripped, m)
+        }
+        None => stripped,
+    }
+}
+
+/// The Unix second count a value denotes: a number is already one, a string is
+/// read as RFC-3339.
+fn to_unix_secs(v: &JqVal) -> R<f64> {
+    match v.bare() {
+        JqVal::Num(n, _) => Ok(*n),
+        JqVal::Str(s) => crate::yqfmt::parse_rfc3339(s)
+            .ok_or_else(|| JqErr::msg(format!("cannot parse '{s}' as a date"))),
+        other => Err(JqErr::msg(format!(
+            "cannot read {} as a date",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `to_json(n)`: jq's own compact rendering when `n` is 0, and an indented one
+/// otherwise. Reuses `render` for the compact case so the two can never drift.
+fn json_indented(v: &JqVal, indent: usize) -> String {
+    if indent == 0 {
+        return render(v);
+    }
+    let mut out = String::new();
+    write_indented(&mut out, v, 0, indent);
+    out.push('\n');
+    out
+}
+
+fn write_indented(out: &mut String, v: &JqVal, depth: usize, step: usize) {
+    let pad = |out: &mut String, d: usize| out.push_str(&" ".repeat(d * step));
+    match v.bare() {
+        JqVal::Arr(a) if !a.is_empty() => {
+            out.push_str("[\n");
+            for (i, e) in a.iter().enumerate() {
+                pad(out, depth + 1);
+                write_indented(out, e, depth + 1, step);
+                if i + 1 < a.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            pad(out, depth);
+            out.push(']');
+        }
+        JqVal::Obj(m) if !m.is_empty() => {
+            out.push_str("{\n");
+            for (i, (k, val)) in m.iter().enumerate() {
+                pad(out, depth + 1);
+                out.push_str(&render(&JqVal::Str(k.clone())));
+                out.push_str(": ");
+                write_indented(out, val, depth + 1, step);
+                if i + 1 < m.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            pad(out, depth);
+            out.push('}');
+        }
+        other => out.push_str(&render(other)),
+    }
+}
+
 const NATIVE_ONLY: &[&str] = &[
     "_match_impl/3",
     "_split_re/2",
