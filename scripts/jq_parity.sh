@@ -22,8 +22,14 @@
 #              so the comparison is about node SELECTION, not xmllint's node
 #              serialization. That normalization is applied to the reference only,
 #              is printed in the report, and never hides a selection difference.
-#   yq       — NOT INSTALLED on this machine. The yq leg of the superset claim is
-#              reported as SKIPPED, never as passing.
+#   yq       — mikefarah/yq v4, invoked as `yq -o=json -I=0`. That is the
+#              invocation that compares the QUERY rather than the serializer:
+#              arb's YAML source emits one compact JSON line per document. A
+#              reference result that is a bare JSON STRING is unwrapped, because
+#              arb renders a top-level string RAW the way `jq -r` does; the
+#              normalization is applied to the reference only, is printed in the
+#              report, and cannot mask a selection difference. When yq is absent
+#              its probes SKIP and the run says so, never passing silently.
 #
 # The contract has TWO halves and this harness probes both. SPEC §8 lists the
 # supported jq/xpath subset, and then says anything OUTSIDE it "is a hard error
@@ -57,6 +63,43 @@
 #   81c0d07485 (the previous corpus, after)  343 pass /  1 diverged / 1 skipped
 #   81c0d07485 (THIS corpus, before)         544 pass / 20 diverged / 1 skipped
 #   HEAD       (THIS corpus, after)          559 pass /  5 diverged / 1 skipped
+#   HEAD~      (THE JQ ENGINE corpus, before) 503 pass / 61 diverged / 1 skipped
+#   HEAD       (THE JQ ENGINE corpus, after)  672 pass /  4 diverged / 0 skipped
+#
+# ── the jq-engine wave ──────────────────────────────────────────────────────
+# The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
+# Each of them asserted that arb REFUSES a jq construct — true only because a
+# `Vec<QueryOp>` is a stage list and jq is a language of generators, so `.a, .b`
+# and `reduce` could not be expressed at all. arb now runs a real jq engine, so
+# every one of those 99 moved to a STRICTER kind on the same input: `jq_probe`
+# (stdout must equal the reference byte for byte) for the 56 that answer,
+# `type_probe` (both engines must refuse, and jq's refusal is CHECKED) for the 40
+# that raise, and `ext_probe`/`superset_probe` for the two with no oracle.
+#
+# "arb exits non-zero" is satisfied by any error at all, including the wrong one.
+# "arb's stdout equals jq's" is not. Every converted line asserts more than the
+# line it replaced.
+#
+# Two probe kinds are new:
+#
+#   superset_probe — the containment the word SUPERSET actually names: every
+#                    `name/arity` in jq's own `builtins` must exist in arb's. It
+#                    is the only probe here that tests the claim as a whole
+#                    rather than one construct at a time, and it found 44 missing
+#                    builtins on its first run (`JOIN`, `bsearch`, `skip`,
+#                    `toboolean`, `trimstr`, `format`, and the libm surface from
+#                    `acosh` to `yn`), all of which are now implemented.
+#   ext_probe      — an arb builtin jq 1.8 does NOT have (`leaf_paths`, dropped
+#                    upstream after 1.7). A superset may define more; the probe
+#                    CHECKS that this jq really lacks the name, so it can never
+#                    quietly pin arb against a live reference.
+#
+# The four remaining divergences are all recorded, none allowlisted:
+#   * `keys` — round 1's spelling collision, unchanged and deliberate.
+#   * `sel { #main }` — a leading `#` opens a comment in arb's lexer.
+#   * the yq `1.50` literal — `serde_yaml`'s data model hands over an `f64` with
+#     the scalar's source text already discarded, so a YAML trailing zero cannot
+#     be preserved the way a JSON one is. It shows on `.` and on `.ratio`.
 #
 # ── round 2 ─────────────────────────────────────────────────────────────────
 # Same move as round 1, applied to what round 1 still could not see. The corpus
@@ -171,7 +214,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=564
+MIN_PROBES=676
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -210,11 +253,20 @@ jq_probe() {
     fi
 }
 
-# err_probe FILTER — the OTHER half of the contract. SPEC §8 says a construct
-# outside the documented subset "is a hard error … never silently reinterpreted",
-# so arb must exit NON-ZERO. There is no reference tool here: real jq ANSWERS
-# these, and arb deliberately does not. What is being checked is that it refuses
-# rather than guesses, which is why a silent pass is reported as a divergence.
+# err_probe FILTER — a construct arb does not implement, which must therefore
+# exit NON-ZERO rather than guess.
+#
+# This kind has NO CALL SITES any more, and that is the point of the wave that
+# removed them: every construct it used to guard is now implemented, so each of
+# its 99 probes moved to a STRICTER kind — `jq_probe` (byte-match the reference)
+# for the 56 that answer, `type_probe` (both engines must refuse, and jq's
+# refusal is checked) for the 40 that raise on this input, plus `ext_probe` and
+# `superset_probe` for the two that have no oracle. Asserting "arb refuses this"
+# would now assert something FALSE, and a probe that encodes a retired contract
+# measures nothing.
+#
+# It is kept, not deleted: the next construct arb declines to implement needs it,
+# and its shape is the record of how the earlier gaps were held.
 err_probe() {
     local filter="$1" out rc
     out=$(printf '%s\n' '{"a":1,"b":2,"foo":null}' | "$ARB" -e "out { in.json; $filter }" 2>&1)
@@ -298,6 +350,100 @@ text_probe() {
         fails+=("text $filter <= $input — SPEC §8 says \`$want\`"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')")
         [ "$QUIET" = 1 ] || printf 'DIFF text %-26s %s\n       SPEC: %s\n       arb : %s\n' \
             "$filter" "$input" "$(printf %s "$want" | tr '\n' '|')" "$(printf %s "$a" | tr '\n' '|')"
+    fi
+}
+
+# ext_probe INPUT FILTER EXPECTED — an arb builtin jq 1.8 does NOT have.
+#
+# A superset is allowed to define MORE than its reference, and arb keeps two
+# builtins jq had through 1.7 and dropped (`leaf_paths`, `toarray`). There is no
+# oracle for those, so — exactly as `text_probe` does for the non-JSON line —
+# EXPECTED is transcribed from jq's own historical definition and the probe
+# CHECKS that this jq really does not define the name. That keeps it honest in
+# both directions: it may only claim to be oracle-free where the oracle really is
+# absent, and it can never quietly pin arb against a live reference.
+ext_probe() {
+    local input="$1" filter="$2" want="$3" a jrc
+    printf '%s\n' "$input" | "$JQ" -rc "$filter" >/dev/null 2>&1; jrc=$?
+    if [ "$jrc" -eq 0 ]; then
+        fail=$((fail + 1))
+        fails+=("ext  $filter — MISCLASSIFIED: this jq DEFINES it, so it is not an extension")
+        [ "$QUIET" = 1 ] || printf 'DIFF ext  %-26s (jq defines it — probe is wrong)\n' "$filter"
+        return
+    fi
+    a=$(printf '%s\n' "$input" | "$ARB" -e "out { in.json; $filter }" 2>&1)
+    if [ "$a" = "$want" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   ext  %-26s => %s\n' "$filter" "$(printf %s "$a" | tr '\n' '|')"
+    else
+        fail=$((fail + 1))
+        fails+=("ext  $filter — jq 1.7's definition gives \`$want\`"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF ext  %-26s\n       want: %s\n       arb : %s\n' \
+            "$filter" "$(printf %s "$want" | tr '\n' '|')" "$(printf %s "$a" | tr '\n' '|')"
+    fi
+}
+
+# superset_probe — the containment check the word SUPERSET actually names.
+#
+# `builtins` is the one construct whose ANSWER cannot match jq's: the two engines
+# define different sets, so a byte-diff would report a divergence that says
+# nothing. What the claim requires is not equality but CONTAINMENT — every
+# `name/arity` jq defines must exist in arb. That is a strictly stronger check
+# than the byte-diff would have been for every other name in the list, and it is
+# the only probe here that tests the superset claim as a whole rather than one
+# construct at a time.
+superset_probe() {
+    local missing
+    # arb is a LINE stream, so it needs a line to run the program over; feeding
+    # it `null` is the closest thing to jq's `-n`.
+    # Both sides go through `LC_ALL=C sort` AND `comm` itself runs under that
+    # locale: `comm` compares with the locale's collation, and under a UTF-8
+    # locale `_` and `/` sort differently from byte order — enough to report
+    # `ascii_downcase/0` as missing from a list that contains it.
+    missing=$(LC_ALL=C comm -23 \
+        <("$JQ" -rn 'builtins | .[]' 2>/dev/null | LC_ALL=C sort) \
+        <(printf 'null\n' | "$ARB" -e 'out { in.json; builtins | .[] }' 2>/dev/null | LC_ALL=C sort))
+    if [ -z "$missing" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   sup  every jq builtin exists in arb\n'
+    else
+        fail=$((fail + 1))
+        fails+=("sup  jq builtins MISSING from arb: $(printf %s "$missing" | tr '\n' ' ')")
+        [ "$QUIET" = 1 ] || printf 'DIFF sup  jq builtins missing from arb: %s\n' \
+            "$(printf %s "$missing" | tr '\n' ' ')"
+    fi
+}
+
+# yq_probe FILE FILTER — the yq leg, against mikefarah/yq over the same YAML.
+#
+# `yq -o=json -I=0` is the invocation that compares the QUERY rather than the
+# serializer: arb's YAML source emits one compact JSON line per document, and
+# that is what this asks yq for too. One normalization is applied, to the
+# REFERENCE only and printed here: a result that is a JSON STRING is unwrapped,
+# because arb's stream renders a top-level string RAW the way `jq -r` does
+# (`.name` is `widget`, not `"widget"`). It cannot mask a selection difference —
+# it only removes the quotes around a value both engines already agree on.
+#
+# yq's expression language is SMALLER than jq's (no `keys_unsorted`, no `paths`,
+# no `add`, no `sort_by`), so the corpus covers what yq can actually spell. The
+# jq-only surface over YAML is covered by the jq probes over the same shapes.
+yq_probe() {
+    local file="$1" filter="$2" a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.yaml; $filter }" <"$file" 2>&1)
+    b=$(yq -o=json -I=0 "$filter" "$file" 2>/dev/null)
+    # Unwrap a reference that is a bare JSON string.
+    case "$b" in
+        '"'*'"') b=$(printf '%s' "$b" | "$JQ" -r . 2>/dev/null || printf '%s' "$b") ;;
+    esac
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   yq   %-30s %s\n' "$filter" "$(printf %s "$a" | tr '\n' '|')"
+    else
+        fail=$((fail + 1))
+        fails+=("yq   $filter"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')"$'\n'"       yq : $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF yq   %-30s\n       arb: %s\n       yq : %s\n' \
+            "$filter" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
     fi
 }
 
@@ -853,51 +999,56 @@ jq_probe 'null'                          'has("a")'
 jq_probe '[1,null]'                      '.[] | values'
 jq_probe 'false'                         'values'
 
-# ── jq: the hard-error half of the contract (SPEC §8) ───────────────────────
-# Real jq answers every one of these. arb's documented subset does not include
-# them, and SPEC §8 promises a hard error rather than a silent reinterpretation —
-# so the only acceptable behaviour is a non-zero exit. These are the constructs a
-# reader of the README would most plausibly reach for, which is exactly why an
-# accidental silent answer here would be the most damaging kind of gap.
-err_probe '.foo // 0'                      # alternative operator
-err_probe '.foo?'                          # error suppression
-err_probe '..'                             # recursive descent
-err_probe '.a as $x | $x'                  # variable binding
-err_probe 'reduce .[] as $x (0; . + $x)'   # reduce
-err_probe 'foreach .[] as $x (0; .+$x; .)' # foreach
-err_probe 'try .a catch 0'                 # try/catch
-err_probe 'paths'
-err_probe 'leaf_paths'
-err_probe 'getpath(["a"])'
-err_probe 'setpath(["a"];9)'
-err_probe 'delpaths([["a"]])'
-err_probe 'from_entries'
-err_probe 'with_entries(.value += 1)'
-err_probe 'group_by(.a)'
-err_probe 'unique_by(.a)'
-err_probe 'min_by(.a)'
-err_probe 'max_by(.a)'
-err_probe 'any'
-err_probe 'all'
-err_probe 'range(3)'
-err_probe 'splits(",")'
-err_probe 'sub("a";"b")'
-err_probe 'gsub("(?<x>a)";"\(.x)")'
-err_probe 'ascii_downcase'
-err_probe 'env.HOME'
-err_probe '$ENV.HOME'
-err_probe 'input'
-err_probe 'inputs'
-err_probe '@base64'
-err_probe '@csv'
-err_probe '@tsv'
-err_probe '@json'
-err_probe 'first(.[])'
-err_probe 'limit(2;.[])'
-err_probe '.[] | not'
-err_probe 'tostring'
-err_probe 'tonumber'
-err_probe '. as [$a] ?// {$a} | $a'         # optional destructuring
+# ── jq: the constructs that used to be refused ──────────────────────────────
+# Every probe below was an `err_probe` — an assertion that arb REFUSES the
+# construct, because a `Vec<QueryOp>` could not express it and SPEC §8 promised a
+# hard error rather than a silent reinterpretation. arb now implements all of
+# them on its own jq engine, so each one is checked against the REFERENCE instead
+# of against a refusal: `jq_probe` byte-diffs the answer, and `type_probe` (which
+# verifies that jq refuses too) covers the ones that raise on this input.
+#
+# The direction matters. "arb exits non-zero" is satisfied by any error at all,
+# including the wrong one; "arb's stdout equals jq's, byte for byte" is not. Every
+# line here is a tighter assertion than the one it replaced, on the same input.
+jq_probe    '{"a":1,"b":2,"foo":null}'   '.foo // 0'                      # alternative operator
+jq_probe    '{"a":1,"b":2,"foo":null}'   '.foo?'                          # error suppression
+jq_probe    '{"a":1,"b":2,"foo":null}'   '..'                             # recursive descent
+jq_probe    '{"a":1,"b":2,"foo":null}'   '.a as $x | $x'                  # variable binding
+jq_probe    '{"a":1,"b":2,"foo":null}'   'reduce .[] as $x (0; . + $x)'   # reduce
+jq_probe    '{"a":1,"b":2,"foo":null}'   'foreach .[] as $x (0; .+$x; .)' # foreach
+jq_probe    '{"a":1,"b":2,"foo":null}'   'try .a catch 0'                 # try/catch
+jq_probe    '{"a":1,"b":2,"foo":null}'   'paths'
+ext_probe    '{"a":1,"b":[2]}'  'leaf_paths' $'["a"]\n["b",0]'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'getpath(["a"])'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'setpath(["a"];9)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'delpaths([["a"]])'
+type_probe  '{"a":1,"b":2,"foo":null}'   'from_entries'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'with_entries(.value += 1)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'group_by(.a)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'unique_by(.a)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'min_by(.a)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'max_by(.a)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'any'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'all'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'range(3)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'splits(",")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'sub("a";"b")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'gsub("(?<x>a)";"\(.x)")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'ascii_downcase'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'env.HOME'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '$ENV.HOME'
+type_probe  '{"a":1,"b":2,"foo":null}'   'input'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'inputs'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '@base64'
+type_probe  '{"a":1,"b":2,"foo":null}'   '@csv'
+type_probe  '{"a":1,"b":2,"foo":null}'   '@tsv'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '@json'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'first(.[])'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'limit(2;.[])'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '.[] | not'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'tostring'
+type_probe  '{"a":1,"b":2,"foo":null}'   'tonumber'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '. as [$a] ?// {$a} | $a'         # optional destructuring
 # Arithmetic against a whole OBJECT. jq refuses every one of these by name
 # ("object and number cannot be divided"), and arb answers `null` with exit 0 —
 # a silent reinterpretation of a construct that has no meaning, which SPEC §8
@@ -906,11 +1057,11 @@ err_probe '. as [$a] ?// {$a} | $a'         # optional destructuring
 # output says the query did not do what it said. It is not `%`-specific — every
 # arithmetic operator does it, so all five are probed rather than the one that
 # happened to be under the microscope.
-err_probe '. + 3'
-err_probe '. - 3'
-err_probe '. * 3'
-err_probe '. / 3'
-err_probe '. % 3'
+type_probe  '{"a":1,"b":2,"foo":null}'   '. + 3'
+type_probe  '{"a":1,"b":2,"foo":null}'   '. - 3'
+type_probe  '{"a":1,"b":2,"foo":null}'   '. * 3'
+type_probe  '{"a":1,"b":2,"foo":null}'   '. / 3'
+type_probe  '{"a":1,"b":2,"foo":null}'   '. % 3'
 # jq's CONSTRUCTORS and control flow. SPEC §8's out-of-subset list names builtins
 # and operators but no SYNTAX form, so object construction, array construction,
 # the comma operator, `if/then/else` and plain PARENTHESES were all unlisted and
@@ -920,69 +1071,161 @@ err_probe '. % 3'
 # else. (`(.a + 3) * 2` refuses with `unknown verb \`(.a\``, because the body
 # dispatcher routes only `.`/`select(`/`map(`/`has(` to the jq front-end — a hard
 # error either way, which is what the contract requires.)
-err_probe '{a: .a}'
-err_probe '{"k": .a}'
-err_probe '[.a, .b]'
-err_probe '[.a]'
-err_probe '.a, .b'
-err_probe 'if .a then 1 else 2 end'
-err_probe '(.a + 3) * 2'
-err_probe 'empty'
-err_probe 'error'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '{a: .a}'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '{"k": .a}'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '[.a, .b]'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '[.a]'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '.a, .b'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'if .a then 1 else 2 end'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '(.a + 3) * 2'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'empty'
+type_probe  '{"a":1,"b":2,"foo":null}'   'error'
 # Type/encoding builtins.
-err_probe 'type'
-err_probe 'tojson'
-err_probe 'fromjson'
-err_probe 'tostream'
-err_probe 'input_line_number'
-err_probe '$__loc__'
-err_probe 'builtins'
-err_probe 'halt'
-err_probe 'debug'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'type'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'tojson'
+type_probe  '{"a":1,"b":2,"foo":null}'   'fromjson'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'tostream'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'input_line_number'
+jq_probe    '{"a":1,"b":2,"foo":null}'   '$__loc__'
+superset_probe
+jq_probe    '{"a":1,"b":2,"foo":null}'   'halt'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'debug'
 # String builtins beyond the regex family already listed.
-err_probe 'ltrimstr("x")'
-err_probe 'rtrimstr("x")'
-err_probe 'startswith("x")'
-err_probe 'endswith("x")'
-err_probe 'ascii_upcase'
-err_probe 'explode'
-err_probe 'implode'
-err_probe 'join(",")'
-err_probe 'test("x")'
-err_probe 'capture("x")'
-err_probe 'match("x")'
-err_probe 'scan("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'ltrimstr("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'rtrimstr("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'startswith("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'endswith("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'ascii_upcase'
+type_probe  '{"a":1,"b":2,"foo":null}'   'explode'
+type_probe  '{"a":1,"b":2,"foo":null}'   'implode'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'join(",")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'test("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'capture("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'match("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'scan("x")'
 # Array/object builtins that are NOT arb native verbs — the ones that are
 # (`sort`, `min`, `max`, `floor`, `abs`) stay out of this list on purpose: SPEC §8
 # makes a bare alphanumeric word the NATIVE verb, so accepting them is the
 # documented context rule, not a jq leak.
-err_probe 'reverse'
-err_probe 'unique'
-err_probe 'contains("x")'
-err_probe 'inside([1])'
-err_probe 'indices(1)'
-err_probe 'flatten(1)'
-err_probe 'del(.a)'
-err_probe 'path(.a)'
-err_probe 'walk(.)'
-err_probe 'combinations'
-err_probe 'transpose'
-err_probe 'to_entries[]'
+type_probe  '{"a":1,"b":2,"foo":null}'   'reverse'
+type_probe  '{"a":1,"b":2,"foo":null}'   'unique'
+type_probe  '{"a":1,"b":2,"foo":null}'   'contains("x")'
+type_probe  '{"a":1,"b":2,"foo":null}'   'inside([1])'
+type_probe  '{"a":1,"b":2,"foo":null}'   'indices(1)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'flatten(1)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'del(.a)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'path(.a)'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'walk(.)'
+type_probe  '{"a":1,"b":2,"foo":null}'   'combinations'
+type_probe  '{"a":1,"b":2,"foo":null}'   'transpose'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'to_entries[]'
 # The type-filter family.
-err_probe 'recurse'
-err_probe 'objects'
-err_probe 'arrays'
-err_probe 'booleans'
-err_probe 'nulls'
-err_probe 'scalars'
-err_probe 'iterables'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'recurse'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'objects'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'arrays'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'booleans'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'nulls'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'scalars'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'iterables'
 # Math builtins.
-err_probe 'sqrt'
-err_probe 'infinite'
-err_probe 'nan'
-err_probe 'isnan'
-err_probe 'todate'
-err_probe 'now'
+type_probe  '{"a":1,"b":2,"foo":null}'   'sqrt'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'infinite'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'nan'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'isnan'
+type_probe  '{"a":1,"b":2,"foo":null}'   'todate'
+jq_probe    '{"a":1,"b":2,"foo":null}'   'now | type'
+
+# ── jq: the surface the engine added, probed on its own terms ───────────────
+# The block above is the OLD out-of-subset list, re-pointed at the reference. It
+# was written to enumerate refusals, so it probes each construct once, in its
+# simplest form, against one object. These probe the same constructs where they
+# actually get used: generators feeding generators, paths under assignment,
+# destructuring with alternatives, and the libm surface `builtins` names.
+D='{"a":1,"b":"x","c":[1,2,3],"d":{"e":5},"n":null,"t":true}'
+R='[{"id":1,"n":"a","v":10},{"id":2,"n":"b","v":5},{"id":3,"n":"a","v":7}]'
+
+jq_probe "$D" '[(1,2) + (10,20)]'
+jq_probe "$D" '[{x:(1,2), y:(3,4)}]'
+jq_probe "$D" '[.c[] as $x | .d.e as $y | $x + $y]'
+jq_probe "$D" '. as $r | .c | map(. + $r.a)'
+jq_probe "$D" '[.c[] | . as $x | {($x|tostring): $x}]'
+jq_probe "$D" 'reduce (.c[]) as $x ({}; .[$x|tostring] = $x)'
+jq_probe "$D" '[foreach (.c[]) as $x ([]; . + [$x]; .)]'
+jq_probe "$D" '[label $out | (.c[] | if . == 2 then break $out else . end)]'
+jq_probe "$D" 'def f: . * 2; .c | map(f)'
+jq_probe "$D" 'def g(x): x + x; .a | g(.)'
+jq_probe "$D" 'def h($n): $n * 3; .a | h(.)'
+jq_probe "$D" 'def fact: if . <= 1 then 1 else . * (. - 1 | fact) end; 5 | fact'
+jq_probe "$D" '. as {c: [$first]} | $first'
+jq_probe "$D" '. as {$a, c: $cc} | [$a, $cc]'
+type_probe "$D" '[.c[] | . as [$x] | $x]'
+jq_probe "$D" 'del(.c[0], .d.e)'
+jq_probe "$D" '(.a, .d.e) |= . + 100'
+jq_probe "$D" '.c[1:2] |= map(. * 10)'
+jq_probe "$D" '.c |= map(. * 2)'
+jq_probe "$D" 'pick(.a, .d)'
+jq_probe "$D" '[paths(type == "number")]'
+jq_probe "$D" '[tostream] | fromstream(.[])'
+jq_probe "$D" '[.. | numbers]'
+jq_probe "$D" 'walk(if type == "number" then . + 1 else . end)'
+jq_probe "$D" 'getpath(["d","e"]), getpath(["z"])'
+jq_probe "$D" '[limit(2; range(10))]'
+jq_probe "$D" '[first(range(10)), last(range(10)), nth(3; range(10))]'
+jq_probe "$D" '[range(0;10;3)], [range(10;0;-3)]'
+jq_probe "$D" 'isempty(.c[]), isempty(empty)'
+jq_probe "$D" '[.c[] | while(. < 10; . * 2)]'
+jq_probe "$D" '[.c[] | until(. > 5; . + 1)]'
+jq_probe "$D" '[limit(3; repeat(1))]'
+jq_probe "$D" '"n=\(.a) s=\(.b)"'
+jq_probe "$D" '["\(.c[])"]'
+jq_probe "$D" '@base64 "v=\(.a)"'
+jq_probe "$D" '.b | @uri, @html, @sh, @json, @text'
+jq_probe "$D" '.c | @csv, @tsv'
+jq_probe "$D" '.b | test("X"; "i"), test("X")'
+jq_probe "$D" '.b | [match("."; "g") | .offset]'
+jq_probe "$D" '.b | sub("(?<c>.)"; "[\(.c)]")'
+jq_probe "$D" '.b | gsub("(?<c>.)"; "[\(.c)]")'
+jq_probe "$D" '.b | [scan(".")], [splits("")]'
+jq_probe "$D" '.b | capture("(?<w>.+)")'
+jq_probe "$D" '.b | ltrimstr("x"), rtrimstr("x"), trimstr("x")'
+jq_probe "$R" 'group_by(.n) | map({n: .[0].n, total: (map(.v) | add)})'
+jq_probe "$R" 'INDEX(.id) | keys_unsorted'
+jq_probe "$R" 'map(.n) | IN("a")'
+jq_probe "$R" 'sort_by(.n, .v) | map(.id)'
+jq_probe "$R" '[.[] | with_entries(select(.key != "id"))]'
+jq_probe "$R" 'INDEX(.id|tostring) as $i | [{"id":1}] | JOIN($i; .id|tostring)'
+jq_probe "$R" '[skip(1; .[]) | .id]'
+jq_probe "$R" 'map(.v) | sort | bsearch(7)'
+jq_probe "$D" '[., inputs] | length'
+jq_probe "$D" 'input_line_number'
+jq_probe "$D" '$__loc__'
+
+# The libm surface `builtins` names. Every one of these was reported MISSING by
+# `superset_probe` before it was implemented, which is what that probe is for.
+jq_probe '0.5' 'lgamma, gamma, tgamma, erf, erfc'
+jq_probe '0.5' 'j0, j1, y0, y1'
+jq_probe '0.5' 'frexp, modf, lgamma_r'
+jq_probe '0.5' 'asinh, atanh, expm1, log1p, isfinite'
+jq_probe '2'   'acosh, significand, logb, trunc, nearbyint'
+jq_probe '2.5' 'rint, round, floor, ceil'
+jq_probe '3.5' 'rint, round'
+jq_probe 'null' 'drem(5;3), remainder(5;3), fdim(5;3), fmod(5;3)'
+jq_probe 'null' 'hypot(3;4), copysign(2;-3), nextafter(1;2), nexttoward(1;2)'
+jq_probe 'null' 'ldexp(2;3), scalb(3;2), scalbln(3;2), fma(2;3;4)'
+jq_probe 'null' 'jn(1;2), yn(1;2), pow(2;10), atan2(1;1)'
+jq_probe '"true"' 'toboolean'
+jq_probe 'false' 'toboolean'
+jq_probe '[1,2]' 'format("csv"), format("json"), format("text")'
+jq_probe '[1,2,3]' 'bsearch(2), bsearch(2.5), bsearch(0), bsearch(9)'
+jq_probe '[]' 'bsearch(1)'
+
+# `type_probe` covers the refusals these new builtins owe.
+type_probe '{"a":1}' 'toboolean'
+type_probe '"x"'     'toboolean'
+type_probe '0.5'     'bsearch(1)'
+type_probe '0.5'     'format("csv")'
+type_probe '{"a":1}' 'trimstr("x")'
+type_probe '"x"'     'modulemeta'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
@@ -1315,12 +1558,81 @@ idw 'sel { #main }'       '//div[@id="main"]//p/text()'
 rm -f "$IDF"
 rm -f "$XPF"
 
-# ── yq leg: no reference tool on this machine ───────────────────────────────
+# ── yq leg ──────────────────────────────────────────────────────────────────
+# The README claims a `yq` superset, and until now that leg was scored by
+# NOTHING — the harness only printed a note saying so. These run arb's YAML
+# source against mikefarah/yq over the same document.
+YQ_FIXTURE=$(mktemp -t arb_yq_XXXXXX)
+cat >"$YQ_FIXTURE" <<'YAMLEOF'
+name: widget
+count: 3
+ratio: 1.50
+enabled: true
+missing: null
+tags:
+  - alpha
+  - bravo
+nested:
+  k: v
+  n: 7
+  deep:
+    z: [1, 2]
+items:
+  - id: 1
+    label: one
+    v: 10
+  - id: 2
+    label: two
+    v: 5
+YAMLEOF
+
+yq_probe "$YQ_FIXTURE" '.'
+yq_probe "$YQ_FIXTURE" '.name'
+yq_probe "$YQ_FIXTURE" '.count'
+yq_probe "$YQ_FIXTURE" '.ratio'
+yq_probe "$YQ_FIXTURE" '.enabled'
+yq_probe "$YQ_FIXTURE" '.missing'
+yq_probe "$YQ_FIXTURE" '.absent'
+yq_probe "$YQ_FIXTURE" '.tags'
+yq_probe "$YQ_FIXTURE" '.tags[0]'
+yq_probe "$YQ_FIXTURE" '.tags[-1]'
+yq_probe "$YQ_FIXTURE" '.tags[]'
+yq_probe "$YQ_FIXTURE" '.nested'
+yq_probe "$YQ_FIXTURE" '.nested.k'
+yq_probe "$YQ_FIXTURE" '.nested.deep.z'
+yq_probe "$YQ_FIXTURE" '.nested.deep.z[1]'
+yq_probe "$YQ_FIXTURE" '.items'
+yq_probe "$YQ_FIXTURE" '.items[0]'
+yq_probe "$YQ_FIXTURE" '.items[].id'
+yq_probe "$YQ_FIXTURE" '.items[].label'
+yq_probe "$YQ_FIXTURE" '[.items[].v]'
+yq_probe "$YQ_FIXTURE" '.items[] | select(.v > 6)'
+yq_probe "$YQ_FIXTURE" '.items[] | select(.v > 6) | .label'
+yq_probe "$YQ_FIXTURE" '.items | length'
+yq_probe "$YQ_FIXTURE" '.tags | length'
+yq_probe "$YQ_FIXTURE" '.items | map(.v)'
+yq_probe "$YQ_FIXTURE" '.items | map(.id) | length'
+# `keys` is the ONE verb where the two references contradict each other: jq's
+# `keys` SORTS ("keys_unsorted" is the unsorted one), yq's preserves document
+# order. No single behaviour can match both, so it is not probed against yq —
+# arb follows jq (SPEC §8), which the jq leg already checks. Probing it here
+# would report a divergence that says nothing about arb.
+yq_probe "$YQ_FIXTURE" '.nested | to_entries | length'
+yq_probe "$YQ_FIXTURE" '.items[0] | length'
+yq_probe "$YQ_FIXTURE" '.items[] | .v'
+yq_probe "$YQ_FIXTURE" '.items[1:2]'
+yq_probe "$YQ_FIXTURE" '.tags[0:1]'
+yq_probe "$YQ_FIXTURE" '.count + 1'
+yq_probe "$YQ_FIXTURE" '.items | to_entries | length'
+yq_probe "$YQ_FIXTURE" '.nested.deep'
+yq_probe "$YQ_FIXTURE" '.items[] | {"id": .id}'
+rm -f "$YQ_FIXTURE"
+
 if ! command -v yq >/dev/null; then
     skip=$((skip + 1))
     yq_note="yq NOT INSTALLED — the yq leg of the superset claim is UNVERIFIED"
 else
-    yq_note="yq present but this harness has no yq probes yet"
+    yq_note="yq $(yq --version 2>&1 | awk '{print $NF}') — the yq leg is probed above"
 fi
 
 echo
