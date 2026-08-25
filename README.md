@@ -19,8 +19,10 @@
 
 **arb** — visualize and modify Unix pipelines. Pipe a stream in and arb spawns a
 dynamic TUI or a served web page, built from a declarative,
-Tcl/Tk-flavored spec. It is a `jq`/`xpath`/`css`/`yq` superset, an interactive
-megafilter/map over the live passthrough, and an original language on the
+Tcl/Tk-flavored spec. It is a `jq` superset that also reads XPath, CSS and YAML
+(the containment for each leg is measured below, and two of them are NOT
+supersets), an interactive megafilter/map over the live passthrough, and an
+original language on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM + three-tier
 Cranelift JIT — the same engine behind `zshrs`, `stryke`, `rubylang`, and `elisp`.
 
@@ -56,8 +58,10 @@ displays it. Highlights:
 - **Dual target** — the same spec renders to a ratatui TUI or a served web page
   + WebSocket (`arb --serve`), the browser dashboard built from the shared
   [`zgui-core`](https://github.com/MenkeTechnologies/zgui-core) component toolkit.
-- **One query engine** — a `jq`/`xpath`/`css`/`yq` superset over JSON, XML, HTML,
-  YAML, TOML, and CSV.
+- **One query engine** — one vocabulary over JSON, XML, HTML, YAML, TOML and
+  CSV, speaking jq (a machine-checked superset), XPath, CSS and yq. What the
+  word *superset* covers on each leg is measured, not asserted — see
+  [Containment, per leg](#containment-per-leg).
 - **Megafilter/map** — interactive controls render *and* feed `out`, so a
   control's path used as a value is its current state — arb filters and maps the
   downstream output live.
@@ -470,7 +474,7 @@ and asserted, so the examples are proven to compute what their comment claims.
 | --- | --- |
 | **Pipe-native** | Terminal-invoked, pipe-driven. No daemon; the web target spawns a local UI host on demand (like `textual serve`), not a server you run. |
 | **Tcl/Tk-flavored, not Tcl** | Commands take args and verbatim `{ }` blocks; widget paths are dot-hierarchical (`.a.b.c`). No `$`, `[cmd]`, or `expr{}` substitution. |
-| **One query engine** | A single vocabulary (a `jq`/`xpath`/`css`/`yq` superset) works uniformly over JSON, XML, HTML, YAML, TOML, and CSV. |
+| **One query engine** | A single vocabulary works uniformly over JSON, XML, HTML, YAML, TOML, and CSV: a machine-checked `jq` superset that also reads XPath, CSS and yq filters. Containment per leg is measured — see [Containment, per leg](#containment-per-leg). |
 | **Megafilter/map** | Interactive controls render *and* feed `out`, so a control's path used as a value is its current state — arb filters and maps the downstream output live. |
 | **Runs on fusevm** | The computational core — expressions and the `calc` pipeline op — lowers to a `fusevm::Chunk` and executes on the fusevm VM (three-tier Cranelift JIT). Declarative widget/layout construction needs no VM; more of the language moves onto fusevm as the expression layer grows. |
 
@@ -483,7 +487,7 @@ Expect reactions, actors, modules, and the package manager — is in
 ## [0x04] QUERY ENGINE
 
 A single query vocabulary works uniformly over every format — a `jq`/`xpath`/
-`css`/`yq` superset. You can write the arb-native verbs, or paste the **jq** /
+`css`/`yq` vocabulary. You can write the arb-native verbs, or paste the **jq** /
 **xpath** literal directly (it compiles to the same ops):
 
 ```
@@ -524,10 +528,13 @@ reference tool over one corpus and byte-diffs stdout. Six probe kinds:
 `yq_probe` must match `yq -o=json -I=0`, `type_probe` requires BOTH engines to
 refuse and verifies that jq really does, `text_probe` covers the non-JSON line
 where jq refuses the input outright and there is no oracle at all, and
-`ext_probe` covers a builtin arb keeps that jq 1.8 dropped. A seventh,
-`superset_probe`, is the containment the word *superset* actually names: every
-`name/arity` in jq's own `builtins` must exist in arb's. It found 44 missing on
-its first run and reports none today. There is no allowlist.
+`ext_probe` covers a builtin arb keeps that jq 1.8 dropped. Three more are the
+containment the word *superset* actually names, one per reference:
+`superset_probe` requires every `name/arity` in jq's own `builtins` to exist in
+arb's, `xpath_superset_probe` every XPath 1.0 axis, core function and node test,
+and `yq_superset_probe` every yq operator. Each asks the REFERENCE first, so arb
+is never charged for a name the reference does not define either. There is no
+allowlist.
 
 One deviation runs the other way and is deliberate: for an integer above 2^53,
 jq's own arithmetic loses up to an ULP (`jq` answers `true` to
@@ -537,8 +544,55 @@ the shortest decimal that round-trips, so it differs from the reference by being
 right; `tests/jqlang.rs` states that tolerance explicitly and byte-matches jq
 everywhere else.
 
-**The harness reports zero divergences, on every leg it runs.** The last two
-were:
+### Containment, per leg
+
+The three containment probes are what turns the word *superset* into a number,
+and the numbers are not the same on every leg. Current run — 686 probes,
+676 pass, 10 diverged, no allowlist:
+
+| leg | reference | containment | status |
+|---|---|---|---|
+| **jq** | `jq` 1.8.2 `builtins` | every name present | **superset**, machine-checked, zero divergences |
+| **css** | Selectors 3/4 via `scraper` | combinators, attribute selectors and structural pseudo-classes all select what the equivalent XPath selects | close, but see below |
+| **xpath** | XPath 1.0 (W3C REC) via `xmllint` | **46 of 48 enumerated constructs missing** | **not a superset** |
+| **yq** | mikefarah/yq v4.53.6 | **61 operators missing** | **not a superset** |
+
+**The jq leg is a superset and the other two named ones are not.** That is the
+measurement, not a rounding of it.
+
+*XPath.* What arb implements is `//`, `/`, `@`, `[@a]`, `[@a='v']` and
+`[contains(@a,'v')]` — an XPath-shaped syntax compiled to a CSS selector
+(`src/xpath.rs`), not an XPath engine. Missing: all 13 axes in explicit
+`axis::test` syntax, all 27 core functions, `*`, `@*`, `..`, `node()`/`text()`
+as a step, `comment()`, positional predicates, `!=` and the comparison and
+arithmetic operators. Four cases are worse than missing, and SPEC §8's promise
+that anything outside the subset is "a hard error … never silently
+reinterpreted" does not hold for them: `[@a='x' or @a='y']` and a chained
+predicate exit 0 with an EMPTY selection where XPath selects nodes, and a rooted
+path (`/li/text()`) exits 0 with a non-empty node set where XPath selects
+nothing. All four are probed and reported every run.
+
+*yq.* Everything that passes is a name arb already had from jq. Missing is
+every operator that reads YAML **node metadata** — `anchor`, `alias`, `tag`,
+`style`, `kind`, `line`, `column`, `head_comment`/`line_comment`/`foot_comment`,
+`key`, `parent`, `documentIndex`, `splitDoc` — plus the encode/decode family
+(`to_yaml`, `from_xml`, `to_props`, …) and the file/env family (`load`,
+`strenv`, `filename`). That class is out of reach by construction rather than
+unimplemented: arb's value model is jq's, and a jq value has no slot for a
+comment, an anchor name, a tag or a quoting style. Round-trip metadata is the
+reason yq exists over jq; arb reads YAML into the jq model and the metadata is
+gone at the parser. Closing it means a node-preserving value model, not 61 more
+builtins.
+
+*CSS.* The strongest of the three, because `sel` hands the selector to
+`scraper`. Two known gaps, neither yet probed: `Selector::parse` failure maps to
+"no matches", so a malformed selector is indistinguishable from one that selects
+nothing — the same silent-answer failure SPEC §8 rules out for XPath — and an
+attribute value in DOUBLE quotes (`a[href="/x"]`) is unquoted before the
+selector is built, so it silently selects nothing whenever the value is not a
+bare CSS identifier.
+
+**Every divergence the jq leg had is closed.** The last two were:
 
 A SPELLING collision. The native verb table is matched before the jq
 fall-through, so arb's native line-per-key verb — spelled `keys` — shadowed jq's
@@ -552,7 +606,7 @@ beside it printed `1.50` for the same text. serde's data model has nowhere to
 put a number's source text, so the YAML reader composes from the parser's EVENT
 stream now (`src/yaml.rs`) and builds numbers through the same helper the JSON
 reader uses. Both are stated in full in
-[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
+[`SPEC.md`](SPEC.md#8-query--one-engine-over-jqxpathcssyq-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind
 `where`, `map` and `calc` — has its own harness, `scripts/expr_paths.sh`. It
@@ -584,7 +638,7 @@ because the spellings differ (`entries`/`to_entries`, `vals`/`values`). `keys`
 was the one that did not, so the native verb took a name of its own — `names`
 for line per key, `keys` for jq's sorted array. `stdlib/json.arb` pipes `names`
 into `tally` and its in-language test pins it. Stated in full in
-[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
+[`SPEC.md`](SPEC.md#8-query--one-engine-over-jqxpathcssyq-uniform-over-all-formats).
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML
@@ -756,8 +810,10 @@ the terminal or the browser) is complete:
   (`spawn`/`pool`/`supervise`) are driven by `tell`/`ask` bind/expect actions.
 - **Inline Rust FFI** — `rust { pub extern "C" fn … }` blocks compile to a cached
   cdylib (via `fusevm`) and are callable by name from the expression layer.
-- **Query superset** — the full `jq`/`xpath`/`css`/`yq` verb set in
-  [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV.
+- **Query engine** — the `jq`/`xpath`/`css`/`yq` verb set in
+  [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV. A measured
+  superset of jq; see [Containment, per leg](#containment-per-leg) for the
+  other three.
 - **Megafilter/map** — `out { … }` shapes the downstream passthrough, driven by
   `input`/`filter`/`facet`/`slider`/`check` controls via `apply` and control-path
   predicates: numeric `where lat < .th`, string `where match(.q)`, set

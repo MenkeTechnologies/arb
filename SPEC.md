@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset**, an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Akka-style actors ship: `actor NAME(state) { on MSG { … } }` + a `via NAME * N` pipeline op that fans the stream across a supervised worker pool in parallel — see §15.)
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **machine-checked jq superset** that also reads **XPath/CSS/yq** filters (containment per leg is measured in §8 — the xpath and yq legs are NOT supersets), an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Akka-style actors ship: `actor NAME(state) { on MSG { … } }` + a `via NAME * N` pipeline op that fans the stream across a supervised worker pool in parallel — see §15.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -213,7 +213,7 @@ Expect-style automation, e.g. `expect { /password:/ send "hunter2\n" }`. The
 `sel` selection widget (§9) exposes a widget's highlighted row as `.<path>.sel`
 for a `send`/`where`/`tell` to consume.
 
-## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
+## 8. Query — one engine over jq/xpath/css/yq (uniform over all formats)
 
 ```
 field NAME        key (jq .name); field a b c = a.b.c; field N = Nth ws column
@@ -338,6 +338,55 @@ input, and a construct applied to the WRONG TYPE must be refused by both engines
 — with jq's refusal checked, so a refusal arb invented alone is never scored as
 parity.
 
+### Containment is measured per leg, and only jq's is a superset
+
+The same probe now runs for the other two named references, and the answer is
+not the same on every leg. Current run: 686 probes, 676 pass, 10 diverged, no
+allowlist.
+
+| leg | reference | containment | status |
+|---|---|---|---|
+| jq | `jq` 1.8.2 `builtins` | every name present | **superset**, zero divergences |
+| css | Selectors 3/4 via `scraper` | selects what the equivalent XPath selects | close; two gaps below |
+| xpath | XPath 1.0 (W3C REC) via `xmllint` | **46 of 48 constructs missing** | **not a superset** |
+| yq | mikefarah/yq v4.53.6 | **61 operators missing** | **not a superset** |
+
+**XPath.** What this section documents above — `//`, `/`, `@`, `[@a]`,
+`[@a='v']`, `[contains(@a,'v')]` — is an XPath-shaped syntax compiled to a CSS
+selector (`src/xpath.rs`), not an XPath engine. Absent: all 13 axes in explicit
+`axis::test` syntax, all 27 core functions, `*`, `@*`, `..`, `node()`/`text()`
+as a STEP, `comment()`, positional predicates, `!=`, and the comparison and
+arithmetic operators.
+
+Four cases are worse than absent, and **the claim two paragraphs down — that
+anything outside the subset is a hard error, "never silently reinterpreted" —
+does not hold for them**: `[@a='x' or @a='y']` and a chained predicate
+`[@a='x'][@b='y']` both exit 0 with an EMPTY selection where XPath selects
+nodes, and a ROOTED path (`/li/text()`, `/div/h2/text()`) exits 0 with a
+non-empty node set where XPath selects nothing, because a leading `/step` is
+compiled as a descendant match. A wrong answer that looks like an answer is the
+one failure this whole section exists to rule out. All four are probed and
+reported every run rather than allowlisted.
+
+**yq.** Every yq name that passes is one arb already had from jq. Absent is
+every operator that reads YAML NODE METADATA — `anchor`, `alias`, `tag`,
+`style`, `kind`, `line`, `column`, the three comment accessors, `key`, `parent`,
+`documentIndex`, `splitDoc` — plus the encode/decode family and the file/env
+family. That class is out of reach BY CONSTRUCTION, not merely unimplemented:
+arb's value model is jq's (§8's value semantics above), and a jq value has no
+slot for a comment, an anchor name, a tag or a quoting style. YAML is read into
+that model and the metadata is gone at the parser. Round-tripping it is the
+reason yq exists over jq, so closing this leg means a node-preserving value
+model, not 61 more builtins.
+
+**CSS.** The strongest leg, because `sel` hands its selector to `scraper`.
+Two gaps, neither yet probed: a `Selector::parse` failure maps to "no matches",
+so a MALFORMED selector is indistinguishable from one that legitimately selects
+nothing — the same silent-answer failure ruled out above — and an attribute
+value in DOUBLE quotes (`a[href="/x"]`) is unquoted before the selector is
+built, so it selects nothing whenever the value is not a bare CSS identifier
+(a URL, a digit, anything with a space).
+
 Two engines sit behind that. A jq literal that maps onto arb's line-stream ops
 (a path, an iterate, a `select`, a `map`) is translated to them, which is what
 keeps arb's own promises about a non-JSON line. Everything else compiles to a
@@ -400,8 +449,10 @@ An INTEGER is the other rule and is not an oversight: it renders as its VALUE,
 never its text, because that is what `yq -o=json` prints (`007` -> `7`,
 `0xFF` -> `255`, `1_000` -> `1000`). Both rules are probed.
 
-**With that, `scripts/jq_parity.sh` reports ZERO divergences across every leg it
-runs** — 676 probes, no allowlist.
+**With that, the jq leg reports ZERO divergences.** The whole run is 686 probes,
+676 pass, 10 diverged, no allowlist — every one of the 10 is on the xpath leg or
+is a containment probe for it or for yq, and all of them are described under
+"Containment is measured per leg" above.
 
 **One deviation runs the other way.** For an integer above 2^53, jq's own
 arithmetic loses up to an ULP: `jq` answers `true` to
