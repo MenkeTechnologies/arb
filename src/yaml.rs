@@ -91,6 +91,7 @@ pub fn documents_from(src: &str, file: &str, idx: u32) -> Vec<JqVal> {
         doc: 0,
         file: Rc::from(file),
         file_index: idx,
+        last_line: 0,
         line_base: 0,
     }
     .run()
@@ -153,10 +154,6 @@ impl CommentMap {
             at += raw.len() + 1;
         }
         CommentMap { lines }
-    }
-
-    fn get(&self, line: usize) -> Option<&LineInfo> {
-        self.lines.get(line)
     }
 
     /// The head-comment block that sits DIRECTLY above `line`: the maximal run
@@ -273,6 +270,10 @@ struct Composer<'a, 'input> {
     doc: u32,
     file: Rc<str>,
     file_index: u32,
+    /// The last physical line any scalar or alias was read from. A foot comment
+    /// is claimed relative to this rather than to the collection's closing
+    /// event, whose position is the line AFTER the block ends.
+    last_line: usize,
     /// Physical line of the stream's first CONTENT line, minus one. `yq` counts
     /// lines from there rather than from the top of the file, so a document
     /// behind a leading comment block reports its first entry as line 1.
@@ -296,9 +297,33 @@ impl Composer<'_, '_> {
                 Event::DocumentStart(_) => {
                     self.i += 1;
                     self.anchors.clear();
-                    let v = self.node(&[], None);
+                    // The document's opening comment block is claimed BEFORE the
+                    // root node is composed, because the first KEY would
+                    // otherwise take it as its own head. `yq` puts it on the
+                    // document, and the order of the two claims is the whole
+                    // difference.
+                    let first = self
+                        .evs
+                        .get(self.i)
+                        .map_or(1, |(_, sp)| sp.start.line() as usize);
+                    let head = self.comments.take_head(first);
+                    let v = self.node(&[], None, false);
                     if !matches!(v.bare(), JqVal::Null) {
-                        docs.push(self.finish_doc(v));
+                        // A trailing block at column 0 is the document's foot.
+                        let foot = self.comments.take_foot(self.last_line, 0);
+                        let v = if head.is_empty() && foot.is_empty() {
+                            v
+                        } else {
+                            v.with_meta(|m| {
+                                if !head.is_empty() {
+                                    m.head = Rc::from(head.as_str());
+                                }
+                                if !foot.is_empty() {
+                                    m.foot = Rc::from(foot.as_str());
+                                }
+                            })
+                        };
+                        docs.push(v);
                     }
                     self.doc += 1;
                 }
@@ -308,18 +333,6 @@ impl Composer<'_, '_> {
             }
         }
         docs
-    }
-
-    /// Give the document's root node the leading comment block, which is where
-    /// `yq` puts a file's opening comment (`head_comment` at the root answers
-    /// with it, and the first key's does not).
-    fn finish_doc(&mut self, v: JqVal) -> JqVal {
-        let first = v.meta().map_or(1, |m| m.line_no) as usize + self.line_base as usize;
-        let head = self.comments.take_head(first);
-        if head.is_empty() {
-            return v;
-        }
-        v.with_meta(|m| m.head = Rc::from(head.as_str()))
     }
 
     /// The 1-based line `yq` reports for a span, rebased past the leading
@@ -333,7 +346,10 @@ impl Composer<'_, '_> {
     /// `path` is where the node sits in its document and `key` is the key node
     /// it is the value of, both recorded so `path`/`key`/`parent` can answer
     /// later. See [`crate::ynode`] for what that recording does NOT promise.
-    fn node(&mut self, path: &[JqVal], key: Option<Rc<JqVal>>) -> JqVal {
+    /// `as_key` suppresses the trailing-comment claim: on `a: 1 # x` the key and
+    /// the value are on the SAME line, and `yq` attaches the comment to the
+    /// VALUE. Composing the key first would otherwise take it.
+    fn node(&mut self, path: &[JqVal], key: Option<Rc<JqVal>>, as_key: bool) -> JqVal {
         let Some((ev, sp)) = self.evs.get(self.i) else {
             return JqVal::Null;
         };
@@ -355,7 +371,7 @@ impl Composer<'_, '_> {
                 let v = scalar(&text, style, tref);
                 meta.style = scalar_style(style);
                 meta.tag = tag_name(tref);
-                meta.anchor = Rc::from(self.anchor_name(sp.start.index()).as_str());
+                meta.anchor = self.anchor_of(aid, sp.start.index());
                 self.anchor(aid, &v);
                 // A block scalar spans several lines; its trailing comment, if
                 // any, sits on the line the indicator is on, which is the line
@@ -365,7 +381,21 @@ impl Composer<'_, '_> {
                 } else {
                     sp.start.line() as usize
                 };
-                meta.line = Rc::from(self.comments.take_line(line).as_str());
+                self.last_line = self.last_line.max(sp.end.line() as usize);
+                if !as_key {
+                    meta.line = Rc::from(self.comments.take_line(line).as_str());
+                }
+                // A plain scalar whose SOURCE text is not what the writer would
+                // produce keeps that text, so `0x10` and `007` come back as they
+                // were written rather than as `16` and `7`. Only when they
+                // differ: the box costs an allocation, and the common case must
+                // not pay it.
+                // The SPAN text, not the event's: saphyr normalises a value-less
+                // key to the text `~`, and writing that back would put a `~` on
+                // a line the file left blank.
+                let src_text = self.src.get(sp.start.index()..sp.end.index()).unwrap_or("");
+                meta.blank = style == ScalarStyle::Plain && src_text.is_empty();
+                meta.raw = raw_if_needed(src_text, style, &v);
                 JqVal::wrap(v, meta)
             }
             Event::Alias(aid) => {
@@ -379,15 +409,20 @@ impl Composer<'_, '_> {
                         .unwrap_or("")
                         .trim_start_matches('*'),
                 );
-                meta.line = Rc::from(self.comments.take_line(sp.start.line() as usize).as_str());
+                self.last_line = self.last_line.max(sp.end.line() as usize);
+                if !as_key {
+                    meta.line =
+                        Rc::from(self.comments.take_line(sp.start.line() as usize).as_str());
+                }
                 JqVal::wrap(v.bare().clone(), meta)
             }
             Event::SequenceStart(aid, tag) => {
                 let flow = self.src.as_bytes().get(sp.start.index()) == Some(&b'[');
                 meta.style = if flow { Style::Flow } else { Style::Block };
                 meta.tag = tag_name(tag.as_ref().map(|t| t.as_ref()));
-                meta.anchor = Rc::from(self.anchor_name(sp.start.index()).as_str());
+                meta.anchor = self.anchor_of(aid, sp.start.index());
                 let mut items = Vec::new();
+                let icol = sp.start.col();
                 while !matches!(
                     self.evs.get(self.i).map(|(e, _)| e),
                     Some(Event::SequenceEnd) | None
@@ -395,16 +430,26 @@ impl Composer<'_, '_> {
                     let mut p = path.to_vec();
                     p.push(JqVal::num(items.len() as f64));
                     let start = self.evs[self.i].1.start.line() as usize;
-                    let item = self.node(&p, None);
+                    // Claimed BEFORE the item is composed: an item that is itself
+                    // a mapping starts on the same line, and its first key would
+                    // otherwise take the block that belongs to the item.
                     let head = self.comments.take_head(start);
-                    items.push(if head.is_empty() {
+                    let item = self.node(&p, None, false);
+                    let foot = self.comments.take_foot(self.last_line, icol);
+                    items.push(if head.is_empty() && foot.is_empty() {
                         item
                     } else {
-                        item.with_meta(|m| m.head = Rc::from(head.as_str()))
+                        item.with_meta(|m| {
+                            if !head.is_empty() {
+                                m.head = Rc::from(head.as_str());
+                            }
+                            if !foot.is_empty() {
+                                m.foot = Rc::from(foot.as_str());
+                            }
+                        })
                     });
                 }
                 self.i += 1; // SequenceEnd
-                self.claim_foot(&mut items, sp.start.col());
                 let v = JqVal::arr(items);
                 self.anchor(aid, &v);
                 JqVal::wrap(v, meta)
@@ -413,8 +458,9 @@ impl Composer<'_, '_> {
                 let flow = self.src.as_bytes().get(sp.start.index()) == Some(&b'{');
                 meta.style = if flow { Style::Flow } else { Style::Block };
                 meta.tag = tag_name(tag.as_ref().map(|t| t.as_ref()));
-                meta.anchor = Rc::from(self.anchor_name(sp.start.index()).as_str());
-                let v = self.mapping(path, sp.start.col());
+                meta.anchor = self.anchor_of(aid, sp.start.index());
+                let (v, written) = self.mapping(path);
+                meta.written = written;
                 self.anchor(aid, &v);
                 JqVal::wrap(v, meta)
             }
@@ -426,21 +472,6 @@ impl Composer<'_, '_> {
                 JqVal::Null
             }
             _ => JqVal::Null,
-        }
-    }
-
-    /// Hand the trailing comment block at `col` to the LAST entry of the
-    /// collection that just closed.
-    ///
-    /// The column test is the whole point: a block at column 0 under a nested
-    /// sequence belongs to the outer mapping's last key, which is where `yq`
-    /// puts it, and matching on indent is what lets the inner frame decline it.
-    fn claim_foot(&mut self, items: &mut [JqVal], col: usize) {
-        let Some(last) = items.last_mut() else { return };
-        let end = self.evs[self.i.saturating_sub(1)].1.start.line() as usize;
-        let foot = self.comments.take_foot(end.saturating_sub(1), col);
-        if !foot.is_empty() {
-            *last = last.with_meta(|m| m.foot = Rc::from(foot.as_str()));
         }
     }
 
@@ -458,7 +489,7 @@ impl Composer<'_, '_> {
     ///   `{<<: *a, extra: 1}` is `{"k":"v","extra":1}` and `{extra: 1, <<: *a}`
     ///   is `{"extra":1,"k":"v"}` — appending put `extra` first in both, so the
     ///   identity filter `.` diverged on any document using a merge key.
-    fn mapping(&mut self, path: &[JqVal], col: usize) -> JqVal {
+    fn mapping(&mut self, path: &[JqVal]) -> (JqVal, Option<Rc<Vec<(Rc<str>, JqVal)>>>) {
         let mut pairs: Vec<(Rc<str>, JqVal)> = Vec::new();
         // (index in `pairs` where the `<<` stood, the merge source).
         let mut merges: Vec<(usize, JqVal)> = Vec::new();
@@ -471,7 +502,8 @@ impl Composer<'_, '_> {
             Some(Event::MappingEnd) | None
         ) {
             let kline = self.evs[self.i].1.start.line() as usize;
-            let k = self.node(&[], None);
+            let kcol = self.evs[self.i].1.start.col();
+            let k = self.node(&[], None, true);
             // The head comment above an entry belongs to its KEY node, which is
             // what `.b | key | head_comment` reads.
             let head = self.comments.take_head(kline);
@@ -496,7 +528,21 @@ impl Composer<'_, '_> {
             };
             let mut p = path.to_vec();
             p.push(JqVal::Str(key.clone()));
-            let v = self.node(&p, Some(Rc::new(k.clone())));
+            let v = self.node(&p, Some(Rc::new(k.clone())), false);
+            // A comment block DIRECTLY below this entry, followed by a blank line
+            // or the end of the block, is this entry's foot. Claimed per entry
+            // rather than at `MappingEnd`, because such a block can sit between
+            // two entries; the column test is what lets an inner mapping decline
+            // a block written at the outer indent.
+            let foot = self.comments.take_foot(self.last_line, kcol);
+            let k = if foot.is_empty() {
+                k
+            } else {
+                k.with_meta(|m| {
+                    m.foot = Rc::from(foot.as_str());
+                    m.is_key = true;
+                })
+            };
             if &*key == "<<" {
                 merges.push((pairs.len(), v));
                 continue;
@@ -515,14 +561,21 @@ impl Composer<'_, '_> {
             }
         }
         self.i += 1; // MappingEnd
-        self.claim_foot(&mut keys, col);
-        // Re-attach the (possibly foot-annotated) key nodes to their values.
+        // Re-attach the key nodes to their values.
         for (slot, k) in pairs.iter_mut().zip(keys.iter()) {
             slot.1 = slot.1.with_meta(|m| m.key = Some(Rc::new(k.clone())));
         }
+        if merges.is_empty() {
+            return (JqVal::obj(pairs), None);
+        }
+        // The WRITER needs the entries as they were WRITTEN — `<<: *anc` — while
+        // every reader needs them merged. Both are kept: the merged mapping is
+        // the value, and the pre-merge list rides along so a round trip does not
+        // silently expand a merge key into the keys it stood for.
+        let written = pairs.clone();
         // Each splice shifts every later `<<` position right by what it inserted.
         let mut shift = 0;
-        for (at, src) in merges {
+        for (at, src) in merges.clone() {
             let sources = match src.bare() {
                 JqVal::Arr(a) => a.to_vec(),
                 other => vec![other.clone()],
@@ -542,7 +595,13 @@ impl Composer<'_, '_> {
             pairs.splice(at + shift..at + shift, insert);
             shift += n;
         }
-        JqVal::obj(pairs)
+        let mut shift = 0;
+        let mut written = written;
+        for (at, src) in merges {
+            written.insert(at + shift, (Rc::from("<<"), src));
+            shift += 1;
+        }
+        (JqVal::obj(pairs), Some(Rc::new(written)))
     }
 
     /// Record `v` under anchor id `aid`. Id 0 means the node carried no anchor.
@@ -550,6 +609,17 @@ impl Composer<'_, '_> {
         if aid > 0 {
             self.anchors.insert(aid, v.clone());
         }
+    }
+
+    /// The anchor name for a node the parser reported as anchored, and the empty
+    /// string for one it did not. The `aid` guard matters: a mapping and its
+    /// first KEY start at the same byte, so scanning unconditionally gave the key
+    /// the mapping's `&anc` and wrote it in the wrong place.
+    fn anchor_of(&self, aid: usize, at: usize) -> Rc<str> {
+        if aid == 0 {
+            return Rc::from("");
+        }
+        Rc::from(self.anchor_name(at).as_str())
     }
 
     /// The anchor NAME written just before the node that starts at `at`.
@@ -580,6 +650,25 @@ impl Composer<'_, '_> {
             }
         }
         String::new()
+    }
+}
+
+/// The scalar's SOURCE text, but only when the writer would not reproduce it
+/// from the value alone.
+///
+/// `0x10` holds 16 and renders as `16`; `007` holds 7 and renders as `7`. Both
+/// are what `yq -o=json` prints, and neither is what the file said — so for the
+/// YAML writer the text is kept. `1.50` needs nothing here: the number already
+/// carries its literal, and a quoted string already carries its style.
+fn raw_if_needed(text: &str, style: ScalarStyle, v: &JqVal) -> Rc<str> {
+    if style != ScalarStyle::Plain || text.is_empty() {
+        return Rc::from("");
+    }
+    let written = crate::ynode::quote_scalar_value(v);
+    if written == text {
+        Rc::from("")
+    } else {
+        Rc::from(text)
     }
 }
 
@@ -746,3 +835,4 @@ fn parse_float(text: &str) -> Option<JqVal> {
     };
     Some(crate::jqlang::num_from_literal(n, &lit))
 }
+

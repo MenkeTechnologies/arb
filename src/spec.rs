@@ -1994,6 +1994,32 @@ fn pipeline_from_body(
                     saw_in = true;
                     ops.push(QueryOp::Yaml);
                 }
+                // `out.FORMAT [INDENT]` — yq's `-o=` / `-I` in arb's spelling.
+                //
+                // The default rendering stays one compact JSON line per
+                // document, which is what every existing pipeline and the whole
+                // `yq_probe` corpus expects. `out.yaml` is what turns the node
+                // metadata the YAML reader kept back into YAML, so
+                // `in.yaml; out.yaml` gives the file back — comments, anchors,
+                // tags, quoting and all.
+                "out.yaml" | "out.yml" | "out.json" | "out.props" | "out.xml" | "out.csv"
+                | "out.tsv" => {
+                    let fmt = match c.name.as_str() {
+                        "out.yaml" | "out.yml" => crate::query::OutFmt::Yaml,
+                        "out.json" => crate::query::OutFmt::Json,
+                        "out.props" => crate::query::OutFmt::Props,
+                        "out.xml" => crate::query::OutFmt::Xml,
+                        "out.csv" => crate::query::OutFmt::Csv,
+                        _ => crate::query::OutFmt::Tsv,
+                    };
+                    let indent = match c.args.first().and_then(Arg::as_str) {
+                        Some(n) => n
+                            .parse::<usize>()
+                            .map_err(|_| format!("{}: expected an indent width", c.name))?,
+                        None => 2,
+                    };
+                    ops.push(QueryOp::Emit(fmt, indent));
+                }
                 "in.toml" => {
                     saw_in = true;
                     ops.push(QueryOp::Toml);

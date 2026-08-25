@@ -142,16 +142,32 @@ pub struct NodeMeta {
     pub file: Rc<str>,
     /// 0-based index of that file among the inputs.
     pub file_index: u32,
+    /// The scalar's SOURCE text, kept only when rendering the VALUE would not
+    /// reproduce it (`0x10` holds 16, `007` holds 7). Empty otherwise.
+    pub raw: Rc<str>,
+    /// The node was written with NO text at all — the `empty:` in `empty:\nnext: 1`.
+    /// Its value is null, and so is a node written `null` or `~`; only this says
+    /// which of the three spellings the file used.
+    pub blank: bool,
+    /// A mapping's entries as they were WRITTEN, with `<<` still in place.
+    /// Readers see the merged mapping; the writer emits this, so a round trip
+    /// does not expand a merge key into the keys it stood for.
+    pub written: Option<Rc<Vec<(Rc<str>, JqVal)>>>,
 }
 
 impl NodeMeta {
-    /// Does this node carry nothing a JSON value could not? Such a node is
-    /// unwrapped rather than boxed, so the common case costs one comparison and
-    /// no allocation.
+    /// Is every field still at its default — nothing to record?
     ///
-    /// `path`/`key`/`line_no` are NOT consulted: they are position, not content,
-    /// and every node has them. A node is bare when nothing about it would
-    /// change what the writer puts on the page.
+    /// Such metadata is dropped rather than boxed, which is what makes
+    /// `. anchor = ""` on a JSON value give the value straight back instead of a
+    /// box holding nothing.
+    ///
+    /// POSITION counts. `line_no`, `path` and `key` are as real as a comment is:
+    /// `yq` answers `.a | line` and `.a | key` for a document with no comments in
+    /// it at all, and a node that dropped them would answer wrongly rather than
+    /// cheaply. So a node the YAML reader produced is always boxed — one `Rc`
+    /// per node, which a configuration file affords and a `.` over it does not
+    /// notice.
     pub fn is_bare(&self) -> bool {
         self.head.is_empty()
             && self.line.is_empty()
@@ -159,6 +175,15 @@ impl NodeMeta {
             && self.anchor.is_empty()
             && self.alias.is_empty()
             && self.tag.is_empty()
+            && self.raw.is_empty()
+            && self.written.is_none()
+            && !self.blank
+            && self.line_no == 0
+            && self.col_no == 0
+            && self.path.is_empty()
+            && self.key.is_none()
+            && !self.is_key
+            && self.file.is_empty()
             && matches!(self.style, Style::Plain | Style::Block)
     }
 }
@@ -170,6 +195,22 @@ pub struct YNode {
     /// The value itself. Never another `JqVal::Node` — [`crate::jqlang::JqVal::wrap`]
     /// collapses a re-wrap so `bare()` is one hop, not a chain.
     pub val: JqVal,
+}
+
+/// What the writer would put on the page for a bare value, with no style and no
+/// metadata. Used by the reader to decide whether a scalar's source text needs
+/// keeping.
+pub fn quote_scalar_value(v: &JqVal) -> String {
+    match v.bare() {
+        JqVal::Null => "null".to_string(),
+        JqVal::Bool(b) => b.to_string(),
+        JqVal::Num(n, lit) => match lit {
+            Some(t) => t.to_string(),
+            None => crate::jqlang::fmt_num(*n),
+        },
+        JqVal::Str(s) => quote_scalar(s, Style::Plain),
+        other => crate::jqlang::render(other),
+    }
 }
 
 /// The tag a value resolves to when the node carries none, in `yq`'s spelling.
@@ -252,7 +293,7 @@ pub fn emit_doc(v: &JqVal, o: Emit) -> String {
     }
     match v.bare() {
         JqVal::Obj(map) if !map.is_empty() && !is_flow(v) && !is_alias(v) => {
-            push_block_map(&mut out, map, 0, o)
+            push_block_map(&mut out, entries(v, map), 0, o)
         }
         JqVal::Arr(a) if !a.is_empty() && !is_flow(v) && !is_alias(v) => {
             push_block_seq(&mut out, a, 0, o)
@@ -313,6 +354,15 @@ fn decorations(v: &JqVal) -> String {
     s
 }
 
+/// The entries the writer walks: the mapping as it was WRITTEN when a `<<` merge
+/// key was in it, and the value's own entries otherwise.
+fn entries<'a>(v: &'a JqVal, map: &'a [(Rc<str>, JqVal)]) -> &'a [(Rc<str>, JqVal)] {
+    match v.meta().and_then(|m| m.written.as_ref()) {
+        Some(w) => w.as_slice(),
+        None => map,
+    }
+}
+
 /// Emit a block mapping at `ind`. Each entry is `head comment`, the `key: value`
 /// line, then the key's foot comment — and a foot comment that is not the last
 /// thing in the mapping is followed by the BLANK line that is what made it a
@@ -347,7 +397,7 @@ fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
                 out.push(' ');
                 out.push_str(&decorations(item));
                 let mut body = String::new();
-                push_block_map(&mut body, map, ind + o.indent, o);
+                push_block_map(&mut body, entries(item, map), ind + o.indent, o);
                 // The mapping's FIRST line shares the `- ` the caller just wrote,
                 // so its indent is dropped; every later line keeps the indent
                 // that lines it up under the first key.
@@ -383,7 +433,7 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             }
             push_line_comment(out, v);
             out.push('\n');
-            push_block_map(out, map, ind + o.indent, o);
+            push_block_map(out, entries(v, map), ind + o.indent, o);
         }
         JqVal::Arr(a) if !a.is_empty() && !is_flow(v) && !is_alias(v) => {
             let deco = decorations(v);
@@ -480,21 +530,28 @@ fn inline(v: &JqVal, o: Emit) -> String {
     }
     let deco = decorations(v);
     let style = v.meta().map_or(Style::Plain, |m| m.style);
-    let body = match v.bare() {
-        JqVal::Null => {
-            // `key:` with nothing after it is how an empty value round-trips; a
-            // node that was WRITTEN as `null` keeps that spelling, and one that
-            // was written as nothing keeps that.
-            if style == Style::Plain && deco.is_empty() {
-                return String::new();
-            }
-            "null".to_string()
+    // A scalar whose source text the reader kept (`0x10`, `007`) is written back
+    // as it was written.
+    if let Some(m) = v.meta() {
+        if !m.raw.is_empty() {
+            return format!("{deco}{}", m.raw);
         }
+    }
+    let body = match v.bare() {
+        // `key:` with nothing after it round-trips as nothing; a node written
+        // `null` or `~` keeps the spelling it was written with (`raw` above).
+        JqVal::Null if v.meta().is_some_and(|m| m.blank) && deco.is_empty() => {
+            return String::new()
+        }
+        JqVal::Null => "null".to_string(),
         JqVal::Bool(b) => b.to_string(),
         JqVal::Num(n, lit) => match lit {
             Some(t) => t.to_string(),
             None => crate::jqlang::fmt_num(*n),
         },
+        // `!!str 123` needs no quotes — the tag is what makes it a string, and
+        // quoting it as well is not what the file said.
+        JqVal::Str(s) if !deco.is_empty() && style == Style::Plain => s.to_string(),
         JqVal::Str(s) => quote_scalar(s, style),
         JqVal::Arr(a) => {
             let parts: Vec<String> = a.iter().map(|e| inline(e, o)).collect();

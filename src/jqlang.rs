@@ -3683,6 +3683,36 @@ fn eval_assign(
     env: &Env,
     out: Sink,
 ) -> R<()> {
+    // yq's metadata assignment. Its own spelling is a postfix on a path
+    // (`.a anchor = "x"`); arb's grammar is jq's, so the same edit is written
+    // `.a | anchor = "x"`, and a bare `anchor = "x"` sets it on `.`. Both are
+    // recognised here because `anchor` is a VALUE filter, not a path, and
+    // `eval_paths` would otherwise refuse the left-hand side outright.
+    if op == AssignOp::Set {
+        if let Some((path, name)) = meta_assign_target(lhs) {
+            return eval(it, rhs, input, env, &mut |rv| match path {
+                None => out(set_meta(input, name, &rv)),
+                Some(p) => {
+                    let mut cur = input.clone();
+                    let mut paths = Vec::new();
+                    eval_paths(it, p, input, &[], input, env, &mut |pp, _| {
+                        paths.push(pp);
+                        Ok(())
+                    })?;
+                    for pp in paths {
+                        let at = get_path(&cur, &pp)?;
+                        let set = set_meta(&at, name, &rv);
+                        cur = if pp.is_empty() {
+                            set
+                        } else {
+                            set_path(&cur, &pp, set)?
+                        };
+                    }
+                    out(cur)
+                }
+            });
+        }
+    }
     if op == AssignOp::Update {
         let mut cur = input.clone();
         let mut paths = Vec::new();
@@ -5257,6 +5287,10 @@ fn builtin_names() -> Vec<String> {
         "modulemeta/0",
     ];
     let mut names: Vec<String> = NATIVE.iter().map(|s| (*s).to_string()).collect();
+    // The yq half of the superset claim. Listed from the same table `builtin`
+    // dispatches from, so a name can never be callable but unlisted (or listed
+    // but not callable) — `yq_superset_probe` measures exactly this set.
+    names.extend(yq_builtin_names());
     prelude_env().walk_fn_names(&mut names);
     names.sort();
     names.dedup();
@@ -5392,6 +5426,21 @@ fn yq_builtin_names() -> Vec<String> {
         .iter()
         .map(|(n, a)| format!("{n}/{a}"))
         .collect()
+}
+
+/// Split a metadata assignment's left-hand side into the path it selects (or
+/// `None` for `.` itself) and the metadata field being written.
+fn meta_assign_target(lhs: &Filter) -> Option<(Option<&Filter>, &str)> {
+    match lhs {
+        Filter::Call(name, args) if args.is_empty() && is_meta_setter(name) => Some((None, name)),
+        Filter::Pipe(p, tail) => match &**tail {
+            Filter::Call(name, args) if args.is_empty() && is_meta_setter(name) => {
+                Some((Some(&**p), name))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The metadata accessors that may stand on the LEFT of `=`.
@@ -5776,6 +5825,10 @@ fn to_unix_secs(v: &JqVal) -> R<f64> {
 
 /// `to_json(n)`: jq's own compact rendering when `n` is 0, and an indented one
 /// otherwise. Reuses `render` for the compact case so the two can never drift.
+pub fn render_indented(v: &JqVal, indent: usize) -> String {
+    json_indented(v, indent).trim_end_matches('\n').to_string()
+}
+
 fn json_indented(v: &JqVal, indent: usize) -> String {
     if indent == 0 {
         return render(v);

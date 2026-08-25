@@ -33,8 +33,26 @@ pub enum FieldSel {
     JqKey(Vec<crate::jqval::Seg>),
 }
 
+/// The serializer an `out.FORMAT` verb selects. `yq`'s `-o=` in arb's spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutFmt {
+    /// Block YAML with every node's comments, anchors, tags and quoting put
+    /// back — the rendering that makes `in.yaml; out.yaml` a round trip.
+    Yaml,
+    /// Indented JSON. `0` is jq's compact line, which is arb's default anyway.
+    Json,
+    /// `dotted.path = value` lines.
+    Props,
+    Xml,
+    Csv,
+    Tsv,
+}
+
 #[derive(Debug, Clone)]
 pub enum QueryOp {
+    /// Re-serialize the whole stream in another format (`out.yaml 4`). The
+    /// number is the indent, `yq`'s `-I`.
+    Emit(OutFmt, usize),
     /// Keep lines matching the pattern.
     Match(Regex),
     /// Drop lines matching the pattern.
@@ -419,8 +437,39 @@ pub enum QueryResult {
 /// Evaluate `ops` against `lines`. `elapsed_secs` feeds `rate`.
 pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult {
     let mut cur: Vec<String> = lines.to_vec();
+    // The YAML NODE channel. `cur` is text, so a YAML node's comments, anchors
+    // and quoting cannot survive it — this carries the composed documents beside
+    // it so `in.yaml`, a jq program and `out.yaml` can hand nodes to each other
+    // without a JSON round trip in between.
+    //
+    // It is invalidated by any op that is not one of those three, in ONE place
+    // rather than at every arm, so an op added later drops the metadata (which
+    // is merely a lost comment) instead of answering from a stale one (which
+    // would be a wrong answer).
+    let mut nodes: Option<Vec<crate::jqlang::JqVal>> = None;
     for op in ops {
+        if !matches!(
+            op,
+            QueryOp::Yaml | QueryOp::JqProgram(_) | QueryOp::Emit(..)
+        ) {
+            nodes = None;
+        }
         match op {
+            QueryOp::Emit(fmt, indent) => {
+                let docs = match nodes.clone() {
+                    Some(d) => d,
+                    // Not YAML in: every line is its own document, read through
+                    // the jq model so a non-JSON line stays a string.
+                    None => cur
+                        .iter()
+                        .map(|l| {
+                            crate::jqlang::parse_json(l)
+                                .unwrap_or_else(|_| crate::jqlang::JqVal::str(l.as_str()))
+                        })
+                        .collect(),
+                };
+                cur = emit_stream(&docs, *fmt, *indent);
+            }
             QueryOp::Match(re) => cur.retain(|l| re.is_match(l)),
             QueryOp::Reject(re) => cur.retain(|l| !re.is_match(l)),
             QueryOp::Field(sel) => {
@@ -488,11 +537,52 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 // — `{n: .name, v: .v}` over 2,000 records took 9.7s against
                 // jq's 0.01s. Lines are moved in raw and parsed once, on the way
                 // out.
+                // The YAML path: run over the composed NODES so a program can
+                // read and write comments, anchors, tags and styles. Only taken
+                // when the program does not pull from the input STREAM —
+                // `input`/`inputs` share one cursor over raw text lines, and
+                // splitting that cursor across two representations would let a
+                // document be seen twice.
+                if let Some(docs) = nodes.take().filter(|_| !prog.reads_input_stream()) {
+                    let mut next: Vec<crate::jqlang::JqVal> = Vec::new();
+                    for (i, doc) in docs.iter().enumerate() {
+                        interp.set_line(i + 1);
+                        interp.set_doc(doc);
+                        let r = prog.run_with(&interp, doc, &mut |v| {
+                            out.push(crate::jqlang::render_raw(&v));
+                            next.push(v);
+                            Ok(())
+                        });
+                        if let Err(e) = r {
+                            match e {
+                                crate::jqlang::JqErr::Halt(_, msg) => {
+                                    if let Some(m) = msg {
+                                        return QueryResult::Error(format!(
+                                            "jq: {}",
+                                            crate::jqlang::render_raw(&m)
+                                        ));
+                                    }
+                                    break;
+                                }
+                                other => {
+                                    return QueryResult::Error(format!(
+                                        "jq: {}",
+                                        other.to_message()
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    nodes = Some(next);
+                    cur = out;
+                    continue;
+                }
                 interp.set_input_lines(std::mem::take(&mut cur));
                 let mut lineno = 0usize;
                 while let Some(input) = interp.next_input() {
                     lineno += 1;
                     interp.set_line(lineno);
+                    interp.set_doc(&input);
                     let r = prog.run_with(&interp, &input, &mut |v| {
                         out.push(crate::jqlang::render_raw(&v));
                         Ok(())
@@ -736,7 +826,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::Csv => cur = to_json_records(&cur, ','),
             QueryOp::Tsv => cur = to_json_records(&cur, '\t'),
-            QueryOp::Yaml => cur = yaml_to_json(&cur),
+            QueryOp::Yaml => {
+                let docs = crate::yaml::documents(&cur.join("\n"));
+                cur = docs.iter().map(crate::jqlang::render).collect();
+                nodes = Some(docs);
+            }
             QueryOp::Toml => cur = toml_to_json(&cur),
             QueryOp::Sort { numeric, reverse } => {
                 if *numeric {
@@ -1936,25 +2030,45 @@ fn jq_array_json(elems: &[String]) -> String {
     out
 }
 
-/// Parse the stream as a YAML document (or multi-document) and emit each document
-/// as a compact JSON line.
-///
-/// The composition lives in `crate::yaml`, over the parser's EVENT stream rather
-/// than through serde. serde's data model has nowhere to put a number's source
-/// text — a plain scalar reaches the visitor as an `f64` with the text already
-/// discarded — so `ratio: 1.50` printed `1.5` where `yq -o=json` prints `1.50`,
-/// while the JSON reader beside it kept the literal and printed `1.50`. That
-/// asymmetry is what the swap removes: both readers now build numbers through
-/// the same `num_from_literal`, so one value has one rendering whatever file it
-/// came out of.
-///
-/// Key ORDER is the document's, not sorted — `yq` preserves it and a `BTreeMap`
-/// does not, so `JqVal::Obj` (a vector of pairs) carries it end to end.
-fn yaml_to_json(lines: &[String]) -> Vec<String> {
-    crate::yaml::documents(&lines.join("\n"))
-        .iter()
-        .map(crate::jqlang::render)
-        .collect()
+/// Re-serialize a stream of documents in `fmt`, as the lines the pipeline
+/// carries. Splitting on `\n` and dropping the trailing empty element is what
+/// makes the printed output byte-identical to the rendered text: the printer
+/// writes one `\n` per line.
+fn emit_stream(docs: &[crate::jqlang::JqVal], fmt: OutFmt, indent: usize) -> Vec<String> {
+    let opts = crate::ynode::Emit { indent };
+    let text = match fmt {
+        OutFmt::Yaml => crate::ynode::emit_docs(docs, opts),
+        OutFmt::Json => docs
+            .iter()
+            .map(|d| crate::jqlang::render_indented(d, indent))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        OutFmt::Props => docs
+            .iter()
+            .map(crate::yqfmt::to_props)
+            .collect::<Vec<_>>()
+            .concat(),
+        OutFmt::Xml => docs
+            .iter()
+            .map(|d| crate::yqfmt::to_xml(d, indent))
+            .collect::<Vec<_>>()
+            .concat(),
+        OutFmt::Csv => docs
+            .iter()
+            .map(|d| crate::yqfmt::to_delim(d, ','))
+            .collect::<Vec<_>>()
+            .concat(),
+        OutFmt::Tsv => docs
+            .iter()
+            .map(|d| crate::yqfmt::to_delim(d, '\t'))
+            .collect::<Vec<_>>()
+            .concat(),
+    };
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
 }
 
 /// Parse the stream as one TOML document and emit it as a JSON object line
