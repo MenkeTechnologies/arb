@@ -462,9 +462,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         Some(Value::Array(arr)) => out.extend(arr.iter().map(jq_to_string)),
                         // jq `.[]` over an object iterates its VALUES, in the
                         // object's own key order.
-                        Some(Value::Object(m)) => out.extend(
-                            jq_obj_entries(l, &m).iter().map(|(_, v)| jq_to_string(v)),
-                        ),
+                        Some(Value::Object(m)) => {
+                            out.extend(jq_obj_entries(l, &m).iter().map(|(_, v)| jq_to_string(v)))
+                        }
                         Some(v) => return QueryResult::Error(cannot_iterate(&v)),
                         None => out.push(l.clone()),
                     }

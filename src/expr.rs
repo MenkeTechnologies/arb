@@ -11,8 +11,8 @@
 //! boolean; `eval_pred` reads the result via `Value::is_truthy` for `where`.
 
 use fusevm::vm::{VMResult, VM};
-use std::cell::RefCell;
 use fusevm::{ChunkBuilder, Op, Value};
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinOp {

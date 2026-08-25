@@ -117,7 +117,8 @@ fn run_table(probes: &[(&str, &[&str])]) {
 
 const OBJ: &[&str] = &[r#"{"a":1,"b":"x","c":[1,2,3],"d":{"e":5},"n":null,"t":true}"#];
 const ARR: &[&str] = &["[3,1,2,10,-4]"];
-const RECS: &[&str] = &[r#"[{"id":1,"n":"a","v":10},{"id":2,"n":"b","v":5},{"id":3,"n":"a","v":7}]"#];
+const RECS: &[&str] =
+    &[r#"[{"id":1,"n":"a","v":10},{"id":2,"n":"b","v":5},{"id":3,"n":"a","v":7}]"#];
 
 /// The generator constructs a `Vec<QueryOp>` cannot express — the whole reason
 /// the jq engine exists. Each of these was a hard error before it.
@@ -140,7 +141,10 @@ fn generators_and_control_flow_match_jq() {
         ("def f: . * 2; .c | map(f)", OBJ),
         ("def g(x): x + x; .a | g(.)", OBJ),
         ("def h($n): $n * 3; .a | h(.)", OBJ),
-        ("def fact: if . <= 1 then 1 else . * (. - 1 | fact) end; 5 | fact", OBJ),
+        (
+            "def fact: if . <= 1 then 1 else . * (. - 1 | fact) end; 5 | fact",
+            OBJ,
+        ),
         (".a as $x | .d.e as $y | [$x, $y]", OBJ),
         (". as {a: $q} | $q", OBJ),
         (". as {$a, $b} | [$a, $b]", OBJ),
@@ -237,7 +241,10 @@ fn builtin_library_matches_jq() {
         ("max_by(.v)", RECS),
         ("INDEX(.id)", RECS),
         ("map(.n) | IN(\"a\")", RECS),
-        ("group_by(.n) | map({n: .[0].n, total: (map(.v) | add)})", RECS),
+        (
+            "group_by(.n) | map({n: .[0].n, total: (map(.v) | add)})",
+            RECS,
+        ),
         ("[.[] | with_entries(select(.key != \"id\"))]", RECS),
         ("$ENV | type", OBJ),
         ("env | has(\"PATH\")", OBJ),
@@ -298,7 +305,10 @@ fn error_paths_match_jq() {
         (".t // \"def\"", OBJ),
         ("try error(\"boom\") catch .", OBJ),
         ("try error({code: 7}) catch .code", OBJ),
-        ("[.c[] | try (if . == 2 then error(\"two\") else . end) catch \"caught\"]", OBJ),
+        (
+            "[.c[] | try (if . == 2 then error(\"two\") else . end) catch \"caught\"]",
+            OBJ,
+        ),
         ("[.c[] | (if . == 2 then error(\"two\") else . end)?]", OBJ),
         // Type errors: jq raises, so arb must too.
         (". + 3", OBJ),
@@ -419,9 +429,23 @@ fn generated_number_literals_render_like_jq() {
         lits.push(format!("1.{}", "5".repeat(d + 1)));
     }
     for extra in [
-        "0", "-0", "0.0", "1.50", "3.0", "0.10", "1e2", "1E+2", "12e3", "0.000001",
-        "0.0000001", "5e-3", "100000000000000000000000", "1.7976931348623157e308",
-        "-1.7976931348623157e308", "2.2250738585072014e-308", "9007199254740993",
+        "0",
+        "-0",
+        "0.0",
+        "1.50",
+        "3.0",
+        "0.10",
+        "1e2",
+        "1E+2",
+        "12e3",
+        "0.000001",
+        "0.0000001",
+        "5e-3",
+        "100000000000000000000000",
+        "1.7976931348623157e308",
+        "-1.7976931348623157e308",
+        "2.2250738585072014e-308",
+        "9007199254740993",
     ] {
         lits.push(extra.to_string());
     }
@@ -442,7 +466,9 @@ fn generated_number_literals_render_like_jq() {
         if a == b {
             continue;
         }
-        let big = a.parse::<f64>().is_ok_and(|v| v.abs() > 9_007_199_254_740_992.0);
+        let big = a
+            .parse::<f64>()
+            .is_ok_and(|v| v.abs() > 9_007_199_254_740_992.0);
         assert!(
             big,
             "`{src} + 0`: arb {a}, jq {b} — only jq's >2^53 ULP loss may differ"
@@ -459,7 +485,10 @@ fn generated_number_literals_render_like_jq() {
 /// time it evaluates one, and so must arb.
 #[test]
 fn an_invalid_pattern_raises_on_every_record() {
-    let out = arb_run(r#"[try test("[") catch "ERR"]"#, &[r#""a""#, r#""b""#, r#""c""#]);
+    let out = arb_run(
+        r#"[try test("[") catch "ERR"]"#,
+        &[r#""a""#, r#""b""#, r#""c""#],
+    );
     assert_eq!(
         out.unwrap(),
         vec!["[\"ERR\"]", "[\"ERR\"]", "[\"ERR\"]"],

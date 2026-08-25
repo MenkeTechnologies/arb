@@ -373,9 +373,7 @@ impl JsonParser<'_> {
                                 self.i += 2;
                                 let lo = self.hex4()?;
                                 if (0xDC00..0xE000).contains(&lo) {
-                                    char::from_u32(
-                                        0x1_0000 + ((hi - 0xD800) << 10) + (lo - 0xDC00),
-                                    )
+                                    char::from_u32(0x1_0000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
                                 } else {
                                     self.i = save;
                                     None
@@ -401,7 +399,10 @@ impl JsonParser<'_> {
         }
     }
     fn hex4(&mut self) -> Result<u32, String> {
-        let s = self.b.get(self.i..self.i + 4).ok_or("truncated \\u escape")?;
+        let s = self
+            .b
+            .get(self.i..self.i + 4)
+            .ok_or("truncated \\u escape")?;
         self.i += 4;
         u32::from_str_radix(std::str::from_utf8(s).map_err(|e| e.to_string())?, 16)
             .map_err(|e| e.to_string())
@@ -467,7 +468,6 @@ impl JsonParser<'_> {
         }
     }
 }
-
 
 /// jq's rendering of a number LITERAL it has not computed on.
 ///
@@ -556,7 +556,11 @@ fn canonical_num_literal(text: &str) -> Option<String> {
     } else {
         format!("{head}.{rest}")
     };
-    Some(format!("{sign}{mantissa}E{}{}", if adjusted < 0 { "-" } else { "+" }, adjusted.abs()))
+    Some(format!(
+        "{sign}{mantissa}E{}{}",
+        if adjusted < 0 { "-" } else { "+" },
+        adjusted.abs()
+    ))
 }
 
 /// Build a number value from its source text, keeping the literal only when jq
@@ -599,7 +603,11 @@ fn is_plain_shortest(text: &str) -> bool {
     if int_len == 0 || int_len > 15 || (int_len > 1 && b[int_start] == b'0') {
         return false;
     }
-    let mut sig = if int_len == 1 && b[int_start] == b'0' { 0 } else { int_len };
+    let mut sig = if int_len == 1 && b[int_start] == b'0' {
+        0
+    } else {
+        int_len
+    };
     if b.get(i) == Some(&b'.') {
         i += 1;
         let frac_start = i;
@@ -809,7 +817,9 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
         // `.name` — but not `..`, and not a `.` that begins a number (`.5` is
         // not jq syntax, so a digit here still falls through to the operator).
         if c == '.'
-            && cs.get(i + 1).is_some_and(|n| n.is_alphabetic() || *n == '_')
+            && cs
+                .get(i + 1)
+                .is_some_and(|n| n.is_alphabetic() || *n == '_')
         {
             let start = i + 1;
             let mut j = start;
@@ -939,23 +949,31 @@ fn lex_string(cs: &[char], i: usize) -> Result<(Vec<StrPieceTok>, usize), String
                     '\\' => '\\',
                     '"' => '"',
                     'u' => {
-                        let hex: String = cs.get(i + 2..i + 6).ok_or("jq: truncated \\u")?.iter().collect();
-                        let cp =
-                            u32::from_str_radix(&hex, 16).map_err(|_| "jq: bad \\u escape")?;
+                        let hex: String = cs
+                            .get(i + 2..i + 6)
+                            .ok_or("jq: truncated \\u")?
+                            .iter()
+                            .collect();
+                        let cp = u32::from_str_radix(&hex, 16).map_err(|_| "jq: bad \\u escape")?;
                         i += 4;
                         // Surrogate pair, same rule as the JSON reader.
                         if (0xD800..0xDC00).contains(&cp)
                             && cs.get(i + 2) == Some(&'\\')
                             && cs.get(i + 3) == Some(&'u')
                         {
-                            let hex2: String =
-                                cs.get(i + 4..i + 8).ok_or("jq: truncated \\u")?.iter().collect();
+                            let hex2: String = cs
+                                .get(i + 4..i + 8)
+                                .ok_or("jq: truncated \\u")?
+                                .iter()
+                                .collect();
                             if let Ok(lo) = u32::from_str_radix(&hex2, 16) {
                                 if (0xDC00..0xE000).contains(&lo) {
                                     i += 6;
                                     cur.push(
-                                        char::from_u32(0x1_0000 + ((cp - 0xD800) << 10) + (lo - 0xDC00))
-                                            .unwrap_or('\u{fffd}'),
+                                        char::from_u32(
+                                            0x1_0000 + ((cp - 0xD800) << 10) + (lo - 0xDC00),
+                                        )
+                                        .unwrap_or('\u{fffd}'),
                                     );
                                     i += 2;
                                     continue;
@@ -1067,7 +1085,13 @@ pub(crate) enum Filter {
     If(Vec<(Filter, Filter)>, Option<Box<Filter>>),
     Try(Box<Filter>, Option<Box<Filter>>),
     Reduce(Box<Filter>, Pattern, Box<Filter>, Box<Filter>),
-    Foreach(Box<Filter>, Pattern, Box<Filter>, Box<Filter>, Option<Box<Filter>>),
+    Foreach(
+        Box<Filter>,
+        Pattern,
+        Box<Filter>,
+        Box<Filter>,
+        Option<Box<Filter>>,
+    ),
     /// `SOURCE as PAT ?// PAT | BODY`.
     Bind(Box<Filter>, Vec<Pattern>, Box<Filter>),
     Label(Rc<str>, Box<Filter>),
@@ -1142,14 +1166,20 @@ impl Parser {
         if self.eat_op(op) {
             Ok(())
         } else {
-            Err(format!("jq: expected `{op}`, found `{}`", self.describe(self.i)))
+            Err(format!(
+                "jq: expected `{op}`, found `{}`",
+                self.describe(self.i)
+            ))
         }
     }
     fn want_kw(&mut self, kw: &str) -> Result<(), String> {
         if self.eat_kw(kw) {
             Ok(())
         } else {
-            Err(format!("jq: expected `{kw}`, found `{}`", self.describe(self.i)))
+            Err(format!(
+                "jq: expected `{kw}`, found `{}`",
+                self.describe(self.i)
+            ))
         }
     }
     fn ident(&mut self) -> Result<Rc<str>, String> {
@@ -1159,7 +1189,10 @@ impl Parser {
                 self.i += 1;
                 Ok(s)
             }
-            _ => Err(format!("jq: expected a name, found `{}`", self.describe(self.i))),
+            _ => Err(format!(
+                "jq: expected a name, found `{}`",
+                self.describe(self.i)
+            )),
         }
     }
     fn var(&mut self) -> Result<Rc<str>, String> {
@@ -1169,7 +1202,10 @@ impl Parser {
                 self.i += 1;
                 Ok(s)
             }
-            _ => Err(format!("jq: expected `$name`, found `{}`", self.describe(self.i))),
+            _ => Err(format!(
+                "jq: expected `$name`, found `{}`",
+                self.describe(self.i)
+            )),
         }
     }
 
@@ -1243,7 +1279,11 @@ impl Parser {
                 Box::new(body),
             );
         }
-        Ok(FuncDef { name, params, body: Rc::new(body) })
+        Ok(FuncDef {
+            name,
+            params,
+            body: Rc::new(body),
+        })
     }
 
     fn pattern(&mut self) -> Result<Pattern, String> {
@@ -1277,11 +1317,7 @@ impl Parser {
                                 let sub = self.pattern()?;
                                 out.push((Filter::Var(name), Some(sub), None));
                             } else {
-                                out.push((
-                                    Filter::Lit(JqVal::str(v.clone())),
-                                    None,
-                                    Some(name),
-                                ));
+                                out.push((Filter::Lit(JqVal::str(v.clone())), None, Some(name)));
                             }
                         }
                         Some(Tok::Ident(k)) => {
@@ -1479,10 +1515,7 @@ impl Parser {
                         let pieces: Vec<StrPiece> =
                             pieces.clone().into_iter().map(Into::into).collect();
                         self.i += 2;
-                        f = Filter::Index(
-                            Box::new(f),
-                            Box::new(Filter::Str(pieces, None)),
-                        );
+                        f = Filter::Index(Box::new(f), Box::new(Filter::Str(pieces, None)));
                         continue;
                     }
                     Some(Tok::Op("[")) => {
@@ -1549,7 +1582,10 @@ impl Parser {
             }
             Some(Tok::Field(name)) => {
                 self.i += 1;
-                Ok(Filter::Field(Box::new(Filter::Identity), Rc::from(name.as_str())))
+                Ok(Filter::Field(
+                    Box::new(Filter::Identity),
+                    Rc::from(name.as_str()),
+                ))
             }
             Some(Tok::Op(".")) => {
                 self.i += 1;
@@ -1577,7 +1613,10 @@ impl Parser {
             }
             Some(Tok::Str(pieces)) => {
                 self.i += 1;
-                Ok(Filter::Str(pieces.into_iter().map(Into::into).collect(), None))
+                Ok(Filter::Str(
+                    pieces.into_iter().map(Into::into).collect(),
+                    None,
+                ))
             }
             Some(Tok::Format(name)) => {
                 self.i += 1;
@@ -1616,10 +1655,13 @@ impl Parser {
                 self.object_cons()
             }
             Some(Tok::Ident(name)) => self.ident_term(&name),
-            Some(t) => Err(format!("jq: unexpected `{}`", match t {
-                Tok::Op(o) => o.to_string(),
-                other => format!("{other:?}"),
-            })),
+            Some(t) => Err(format!(
+                "jq: unexpected `{}`",
+                match t {
+                    Tok::Op(o) => o.to_string(),
+                    other => format!("{other:?}"),
+                }
+            )),
         }
     }
 
@@ -1782,7 +1824,10 @@ impl Parser {
                     self.i += 1;
                     (
                         Filter::Lit(JqVal::str(k.clone())),
-                        Some(Filter::Field(Box::new(Filter::Identity), Rc::from(k.as_str()))),
+                        Some(Filter::Field(
+                            Box::new(Filter::Identity),
+                            Rc::from(k.as_str()),
+                        )),
                     )
                 }
                 Some(Tok::Var(v)) => {
@@ -1794,9 +1839,11 @@ impl Parser {
                 }
                 Some(Tok::Str(pieces)) => {
                     self.i += 1;
-                    let key =
-                        Filter::Str(pieces.into_iter().map(Into::into).collect(), None);
-                    (key.clone(), Some(Filter::Index(Box::new(Filter::Identity), Box::new(key))))
+                    let key = Filter::Str(pieces.into_iter().map(Into::into).collect(), None);
+                    (
+                        key.clone(),
+                        Some(Filter::Index(Box::new(Filter::Identity), Box::new(key))),
+                    )
                 }
                 Some(Tok::Format(name)) => {
                     self.i += 1;
@@ -1818,12 +1865,7 @@ impl Parser {
                     self.want_op(")")?;
                     (k, None)
                 }
-                _ => {
-                    return Err(format!(
-                        "jq: bad object key `{}`",
-                        self.describe(self.i)
-                    ))
-                }
+                _ => return Err(format!("jq: bad object key `{}`", self.describe(self.i))),
             };
             let val = if self.eat_op(":") {
                 // An object VALUE binds tighter than `,` (which separates
@@ -1891,7 +1933,11 @@ struct Env {
 impl Env {
     fn bind(&self, name: Rc<str>, val: JqVal) -> Env {
         Env {
-            vars: Some(Rc::new(VarNode { name, val, next: self.vars.clone() })),
+            vars: Some(Rc::new(VarNode {
+                name,
+                val,
+                next: self.vars.clone(),
+            })),
             funcs: self.funcs.clone(),
         }
     }
@@ -2035,11 +2081,12 @@ impl Program {
         // (exit 3), not a runtime one. Checking here keeps that, and it is what
         // lets arb still report `unknown verb` for a typo'd arb verb instead of
         // silently accepting it as a jq program that fails later.
-        let mut funcs: std::collections::HashSet<String> =
-            builtin_names().into_iter().collect();
+        let mut funcs: std::collections::HashSet<String> = builtin_names().into_iter().collect();
         funcs.extend(NATIVE_ONLY.iter().map(|s| (*s).to_string()));
-        let vars: std::collections::HashSet<String> =
-            ["ENV", "__loc__"].iter().map(|s| (*s).to_string()).collect();
+        let vars: std::collections::HashSet<String> = ["ENV", "__loc__"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
         check_names(&filter, &funcs, &vars)?;
         Ok(Program { filter, base })
     }
@@ -2122,7 +2169,9 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             ))),
         }),
         Filter::Optional(inner) => {
-            match eval(it, inner, input, env, &mut |v| out(v).map_err(wrap_downstream)) {
+            match eval(it, inner, input, env, &mut |v| {
+                out(v).map_err(wrap_downstream)
+            }) {
                 Ok(()) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
@@ -2189,7 +2238,9 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
         }
         Filter::If(arms, els) => eval_if(it, arms, els.as_deref(), 0, input, env, out),
         Filter::Try(body, handler) => {
-            match eval(it, body, input, env, &mut |v| out(v).map_err(wrap_downstream)) {
+            match eval(it, body, input, env, &mut |v| {
+                out(v).map_err(wrap_downstream)
+            }) {
                 Ok(()) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
@@ -2248,7 +2299,9 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             let id = it.labels.get() + 1;
             it.labels.set(id);
             let benv = env.bind(label_key(name), JqVal::num(id as f64));
-            match eval(it, body, input, &benv, &mut |v| out(v).map_err(wrap_downstream)) {
+            match eval(it, body, input, &benv, &mut |v| {
+                out(v).map_err(wrap_downstream)
+            }) {
                 Err(JqErr::Break(b)) if b == id => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
@@ -2314,13 +2367,7 @@ fn label_key(name: &str) -> Rc<str> {
     Rc::from(format!("*label*{name}").as_str())
 }
 
-fn eval_opt(
-    it: &Interp,
-    f: Option<&Filter>,
-    input: &JqVal,
-    env: &Env,
-    out: Sink,
-) -> R<()> {
+fn eval_opt(it: &Interp, f: Option<&Filter>, input: &JqVal, env: &Env, out: Sink) -> R<()> {
     match f {
         Some(f) => eval(it, f, input, env, out),
         None => out(JqVal::Null),
@@ -2399,8 +2446,12 @@ fn index_value(v: &JqVal, idx: &JqVal) -> R<JqVal> {
         // reaches `index` when the object form is written out.
         (_, JqVal::Obj(m)) if m.len() == 2 && v.obj_get("start").is_none() => {
             let (s, e) = (
-                m.iter().find(|(k, _)| &**k == "start").map(|(_, x)| x.clone()),
-                m.iter().find(|(k, _)| &**k == "end").map(|(_, x)| x.clone()),
+                m.iter()
+                    .find(|(k, _)| &**k == "start")
+                    .map(|(_, x)| x.clone()),
+                m.iter()
+                    .find(|(k, _)| &**k == "end")
+                    .map(|(_, x)| x.clone()),
             );
             match (s, e) {
                 (Some(s), Some(e)) => slice_value(v, &s, &e),
@@ -2426,12 +2477,19 @@ fn index_err(v: &JqVal, idx: &JqVal) -> JqErr {
 
 /// Every start offset at which `sub` occurs inside array `hay`.
 fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
-    let JqVal::Arr(a) = hay else { return Vec::new() };
+    let JqVal::Arr(a) = hay else {
+        return Vec::new();
+    };
     if sub.is_empty() || sub.len() > a.len() {
         return Vec::new();
     }
     (0..=a.len() - sub.len())
-        .filter(|&i| a[i..i + sub.len()].iter().zip(sub).all(|(x, y)| eq_vals(x, y)))
+        .filter(|&i| {
+            a[i..i + sub.len()]
+                .iter()
+                .zip(sub)
+                .all(|(x, y)| eq_vals(x, y))
+        })
         .map(|i| JqVal::num(i as f64))
         .collect()
 }
@@ -2520,7 +2578,10 @@ fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
         BinOp::Sub => match (a, b) {
             (JqVal::Num(x, _), JqVal::Num(y, _)) => Ok(JqVal::num(x - y)),
             (JqVal::Arr(x), JqVal::Arr(y)) => Ok(JqVal::arr(
-                x.iter().filter(|e| !y.iter().any(|d| eq_vals(e, d))).cloned().collect(),
+                x.iter()
+                    .filter(|e| !y.iter().any(|d| eq_vals(e, d)))
+                    .cloned()
+                    .collect(),
             )),
             _ => Err(bad("subtracted")),
         },
@@ -2655,7 +2716,18 @@ fn eval_string(
             }
         }
     }
-    go(&StrBuild { it, pieces, fmt, input, env }, 0, "", out)
+    go(
+        &StrBuild {
+            it,
+            pieces,
+            fmt,
+            input,
+            env,
+        },
+        0,
+        "",
+        out,
+    )
 }
 
 /// jq's `@name` format strings.
@@ -2754,12 +2826,24 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 fn b64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(B64[(n >> 18) as usize & 63] as char);
         out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -2848,7 +2932,9 @@ fn bind_arr(
 ) -> R<()> {
     let Some(p) = subs.get(i) else { return k(env) };
     let elem = index_value(v, &JqVal::num(i as f64))?;
-    bind_pattern(it, p, &elem, &env, &mut |e| bind_arr(it, subs, i + 1, v, e, k))
+    bind_pattern(it, p, &elem, &env, &mut |e| {
+        bind_arr(it, subs, i + 1, v, e, k)
+    })
 }
 
 /// One entry of an object destructuring pattern: the KEY filter, an optional
@@ -2863,7 +2949,9 @@ fn bind_obj(
     env: Env,
     k: &mut dyn FnMut(Env) -> R<()>,
 ) -> R<()> {
-    let Some((kf, sub, shorthand)) = subs.get(i) else { return k(env) };
+    let Some((kf, sub, shorthand)) = subs.get(i) else {
+        return k(env);
+    };
     eval(it, kf, v, &env, &mut |key| {
         let field = index_value(v, &key)?;
         let base = match shorthand {
@@ -2905,7 +2993,9 @@ fn bind_alternatives(
         // The BODY sees the original `.`, not the bound value: `jq -n '1 as $x
         // | .'` is `null`. Only the pattern reads `v`.
         let r = bind_pattern(it, p, v, &base, &mut |benv| {
-            eval(it, body, input, &benv, &mut |o| out(o).map_err(wrap_downstream))
+            eval(it, body, input, &benv, &mut |o| {
+                out(o).map_err(wrap_downstream)
+            })
         });
         match r {
             Ok(()) => return Ok(()),
@@ -3035,7 +3125,10 @@ fn eval_paths(
         }
         Filter::If(arms, els) => eval_if_paths(
             it,
-            IfNode { arms, els: els.as_deref() },
+            IfNode {
+                arms,
+                els: els.as_deref(),
+            },
             input,
             pre,
             val,
@@ -3081,9 +3174,7 @@ fn eval_paths(
                 eval_paths(it, body, input, pre, val, &benv, out)
             })
         }),
-        Filter::Call(name, args) => {
-            eval_call_paths(it, (name, args), input, pre, val, env, out)
-        }
+        Filter::Call(name, args) => eval_call_paths(it, (name, args), input, pre, val, env, out),
         // `path(1)` and friends: jq reports the literal it could not turn into a
         // path rather than silently answering.
         other => Err(JqErr::msg(format!(
@@ -3132,7 +3223,18 @@ fn eval_if_paths(
         if c.truthy() {
             eval_paths(it, then, input, pre, val, env, out)
         } else {
-            eval_if_paths(it, IfNode { arms: rest, els: node.els }, input, pre, val, env, out)
+            eval_if_paths(
+                it,
+                IfNode {
+                    arms: rest,
+                    els: node.els,
+                },
+                input,
+                pre,
+                val,
+                env,
+                out,
+            )
         }
     })
 }
@@ -3367,7 +3469,9 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
             let cur = JqVal::arr(a[s..e].to_vec());
             let sub = set_path(&cur, rest, newv)?;
             let JqVal::Arr(repl) = sub else {
-                return Err(JqErr::msg("A slice of an array can only be assigned another array"));
+                return Err(JqErr::msg(
+                    "A slice of an array can only be assigned another array",
+                ));
             };
             let mut out = a[..s].to_vec();
             out.extend(repl.iter().cloned());
@@ -3402,7 +3506,11 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
                 }
                 let i = i as usize;
                 Ok(JqVal::arr(
-                    a.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, e)| e.clone()).collect(),
+                    a.iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, e)| e.clone())
+                        .collect(),
                 ))
             }
             (JqVal::Arr(a), JqVal::Obj(_)) => {
@@ -3436,10 +3544,10 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
 /// `delpaths`. Paths are removed LONGEST/LAST first so that deleting `.[0]` does
 /// not shift the index of a sibling path that has not been deleted yet.
 fn del_paths(v: &JqVal, mut paths: Vec<Vec<JqVal>>) -> R<JqVal> {
-    paths.sort_by(|a, b| {
-        cmp_vals(&JqVal::arr(b.clone()), &JqVal::arr(a.clone()))
+    paths.sort_by(|a, b| cmp_vals(&JqVal::arr(b.clone()), &JqVal::arr(a.clone())));
+    paths.dedup_by(|a, b| {
+        cmp_vals(&JqVal::arr(a.clone()), &JqVal::arr(b.clone())) == Ordering::Equal
     });
-    paths.dedup_by(|a, b| cmp_vals(&JqVal::arr(a.clone()), &JqVal::arr(b.clone())) == Ordering::Equal);
     let mut cur = v.clone();
     for p in paths {
         cur = del_path(&cur, &p)?;
@@ -3544,7 +3652,10 @@ fn bind_call(
         FnKind::User(def) => {
             // The body sees the definition's environment PLUS the function node
             // itself, which is what makes a recursive `def` need no fixed point.
-            let mut env = Env { vars: node.vars.clone(), funcs: Some(node.clone()) };
+            let mut env = Env {
+                vars: node.vars.clone(),
+                funcs: Some(node.clone()),
+            };
             for (p, a) in def.params.iter().zip(args) {
                 env = Env {
                     vars: env.vars.clone(),
@@ -3651,11 +3762,13 @@ fn builtin(
 
         ("length", 0) => out(match input {
             JqVal::Null => JqVal::num(0.0),
-            JqVal::Bool(_) => return Err(JqErr::msg(format!(
-                "{}{} has no length",
-                input.type_name(),
-                paren_of(input)
-            ))),
+            JqVal::Bool(_) => {
+                return Err(JqErr::msg(format!(
+                    "{}{} has no length",
+                    input.type_name(),
+                    paren_of(input)
+                )))
+            }
             JqVal::Num(n, _) => JqVal::num(n.abs()),
             JqVal::Str(s) => JqVal::num(s.chars().count() as f64),
             JqVal::Arr(a) => JqVal::num(a.len() as f64),
@@ -3665,7 +3778,10 @@ fn builtin(
 
         ("keys", 0) | ("keys_unsorted", 0) => {
             let mut ks = match input {
-                JqVal::Obj(m) => m.iter().map(|(k, _)| JqVal::Str(k.clone())).collect::<Vec<_>>(),
+                JqVal::Obj(m) => m
+                    .iter()
+                    .map(|(k, _)| JqVal::Str(k.clone()))
+                    .collect::<Vec<_>>(),
                 JqVal::Arr(a) => (0..a.len()).map(|i| JqVal::num(i as f64)).collect(),
                 other => {
                     return Err(JqErr::msg(format!(
@@ -3703,9 +3819,7 @@ fn builtin(
         ("tojson", 0) => out(JqVal::str(render(input))),
         ("fromjson", 0) => {
             let s = want_str(input, "parsed as JSON")?;
-            out(parse_json(&s).map_err(|e| {
-                JqErr::msg(format!("{e} (while parsing '{s}')"))
-            })?)
+            out(parse_json(&s).map_err(|e| JqErr::msg(format!("{e} (while parsing '{s}')")))?)
         }
         ("tonumber", 0) => match input {
             JqVal::Num(..) => out(input.clone()),
@@ -3735,14 +3849,18 @@ fn builtin(
             };
             let mut s = String::with_capacity(a.len());
             for e in a.iter() {
-                let n = e.as_f64().ok_or_else(|| JqErr::msg("Unicode codepoint must be numeric"))?;
+                let n = e
+                    .as_f64()
+                    .ok_or_else(|| JqErr::msg("Unicode codepoint must be numeric"))?;
                 s.push(char::from_u32(n as u32).ok_or_else(|| {
                     JqErr::msg(format!("Invalid codepoint literal {}", fmt_num(n)))
                 })?);
             }
             out(JqVal::str(s))
         }
-        ("ascii_downcase", 0) => out(JqVal::str(want_str(input, "downcased")?.to_ascii_lowercase())),
+        ("ascii_downcase", 0) => out(JqVal::str(
+            want_str(input, "downcased")?.to_ascii_lowercase(),
+        )),
         ("ascii_upcase", 0) => out(JqVal::str(want_str(input, "upcased")?.to_ascii_uppercase())),
         ("startswith", 1) | ("endswith", 1) => {
             let pre = one(it, &args[0], input, env)?;
@@ -3766,7 +3884,10 @@ fn builtin(
         }
         ("_strindices", 1) => {
             let needle = one(it, &args[0], input, env)?;
-            let (h, n) = (want_str(input, "searched")?, want_str(&needle, "searched for")?);
+            let (h, n) = (
+                want_str(input, "searched")?,
+                want_str(&needle, "searched for")?,
+            );
             let mut hits = Vec::new();
             if !n.is_empty() {
                 let mut from = 0usize;
@@ -3833,18 +3954,42 @@ fn builtin(
             // Measured against jq 1.8.2: `min_by` keeps the FIRST minimum and
             // `max_by` the LAST maximum, so the comparisons are not symmetric.
             let best = if name == "min_by" {
-                keyed.into_iter().reduce(|a, b| if cmp_vals(&b.0, &a.0) == Ordering::Less { b } else { a })
+                keyed.into_iter().reduce(|a, b| {
+                    if cmp_vals(&b.0, &a.0) == Ordering::Less {
+                        b
+                    } else {
+                        a
+                    }
+                })
             } else {
-                keyed.into_iter().reduce(|a, b| if cmp_vals(&b.0, &a.0) == Ordering::Less { a } else { b })
+                keyed.into_iter().reduce(|a, b| {
+                    if cmp_vals(&b.0, &a.0) == Ordering::Less {
+                        a
+                    } else {
+                        b
+                    }
+                })
             };
             out(best.map_or(JqVal::Null, |(_, v)| v))
         }
         ("min", 0) | ("max", 0) => {
             let a = want_arr(input, "reduced")?;
             let best = if name == "min" {
-                a.iter().cloned().reduce(|x, y| if cmp_vals(&y, &x) == Ordering::Less { y } else { x })
+                a.iter().cloned().reduce(|x, y| {
+                    if cmp_vals(&y, &x) == Ordering::Less {
+                        y
+                    } else {
+                        x
+                    }
+                })
             } else {
-                a.iter().cloned().reduce(|x, y| if cmp_vals(&y, &x) == Ordering::Less { x } else { y })
+                a.iter().cloned().reduce(|x, y| {
+                    if cmp_vals(&y, &x) == Ordering::Less {
+                        x
+                    } else {
+                        y
+                    }
+                })
             };
             out(best.unwrap_or(JqVal::Null))
         }
@@ -3857,9 +4002,12 @@ fn builtin(
                 None => JqVal::num(1.0),
             };
             let (f, u, b) = (
-                from.as_f64().ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
-                upto.as_f64().ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
-                by.as_f64().ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
+                from.as_f64()
+                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
+                upto.as_f64()
+                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
+                by.as_f64()
+                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
             );
             if b == 0.0 {
                 return Ok(());
@@ -3872,17 +4020,53 @@ fn builtin(
             Ok(())
         }
 
-        ("floor", 0) | ("ceil", 0) | ("round", 0) | ("sqrt", 0) | ("fabs", 0) | ("log", 0)
-        | ("log2", 0) | ("log10", 0) | ("exp", 0) | ("exp2", 0) | ("exp10", 0) | ("trunc", 0)
-        | ("cbrt", 0) | ("sin", 0) | ("cos", 0) | ("tan", 0) | ("asin", 0) | ("acos", 0)
-        | ("atan", 0) | ("sinh", 0) | ("cosh", 0) | ("tanh", 0) | ("nearbyint", 0)
-        | ("significand", 0) | ("logb", 0) | ("acosh", 0) | ("asinh", 0) | ("atanh", 0)
-        | ("expm1", 0) | ("log1p", 0) | ("rint", 0) | ("gamma", 0) | ("lgamma", 0)
-        | ("tgamma", 0) | ("erf", 0) | ("erfc", 0) | ("j0", 0) | ("j1", 0) | ("y0", 0)
+        ("floor", 0)
+        | ("ceil", 0)
+        | ("round", 0)
+        | ("sqrt", 0)
+        | ("fabs", 0)
+        | ("log", 0)
+        | ("log2", 0)
+        | ("log10", 0)
+        | ("exp", 0)
+        | ("exp2", 0)
+        | ("exp10", 0)
+        | ("trunc", 0)
+        | ("cbrt", 0)
+        | ("sin", 0)
+        | ("cos", 0)
+        | ("tan", 0)
+        | ("asin", 0)
+        | ("acos", 0)
+        | ("atan", 0)
+        | ("sinh", 0)
+        | ("cosh", 0)
+        | ("tanh", 0)
+        | ("nearbyint", 0)
+        | ("significand", 0)
+        | ("logb", 0)
+        | ("acosh", 0)
+        | ("asinh", 0)
+        | ("atanh", 0)
+        | ("expm1", 0)
+        | ("log1p", 0)
+        | ("rint", 0)
+        | ("gamma", 0)
+        | ("lgamma", 0)
+        | ("tgamma", 0)
+        | ("erf", 0)
+        | ("erfc", 0)
+        | ("j0", 0)
+        | ("j1", 0)
+        | ("y0", 0)
         | ("y1", 0) => {
-            let n = input
-                .as_f64()
-                .ok_or_else(|| JqErr::msg(format!("{}{} number required", input.type_name(), paren_of(input))))?;
+            let n = input.as_f64().ok_or_else(|| {
+                JqErr::msg(format!(
+                    "{}{} number required",
+                    input.type_name(),
+                    paren_of(input)
+                ))
+            })?;
             out(JqVal::num(match name {
                 "floor" => n.floor(),
                 "ceil" => n.ceil(),
@@ -3906,7 +4090,13 @@ fn builtin(
                 "sinh" => n.sinh(),
                 "cosh" => n.cosh(),
                 "tanh" => n.tanh(),
-                "significand" => if n == 0.0 { 0.0 } else { n / 2f64.powi(n.abs().log2().floor() as i32) },
+                "significand" => {
+                    if n == 0.0 {
+                        0.0
+                    } else {
+                        n / 2f64.powi(n.abs().log2().floor() as i32)
+                    }
+                }
                 "acosh" => n.acosh(),
                 "asinh" => n.asinh(),
                 "atanh" => n.atanh(),
@@ -3966,10 +4156,23 @@ fn builtin(
             let f = want_str(&f, "used as a format name")?;
             out(JqVal::str(apply_format(&f, input)?))
         }
-        ("pow", 2) | ("atan2", 2) | ("fmin", 2) | ("fmax", 2) | ("ldexp", 2)
-        | ("copysign", 2) | ("drem", 2) | ("fdim", 2) | ("fmod", 2) | ("hypot", 2)
-        | ("nextafter", 2) | ("nexttoward", 2) | ("remainder", 2) | ("scalb", 2)
-        | ("scalbln", 2) | ("jn", 2) | ("yn", 2) => {
+        ("pow", 2)
+        | ("atan2", 2)
+        | ("fmin", 2)
+        | ("fmax", 2)
+        | ("ldexp", 2)
+        | ("copysign", 2)
+        | ("drem", 2)
+        | ("fdim", 2)
+        | ("fmod", 2)
+        | ("hypot", 2)
+        | ("nextafter", 2)
+        | ("nexttoward", 2)
+        | ("remainder", 2)
+        | ("scalb", 2)
+        | ("scalbln", 2)
+        | ("jn", 2)
+        | ("yn", 2) => {
             let a = one(it, &args[0], input, env)?
                 .as_f64()
                 .ok_or_else(|| JqErr::msg(format!("{name} requires numbers")))?;
@@ -4163,7 +4366,11 @@ fn builtin(
         ("strftime", 1) | ("strflocaltime", 1) => {
             let f = one(it, &args[0], input, env)?;
             let f = want_str(&f, "used as a strftime format")?;
-            out(JqVal::str(strftime_val(input, &f, name == "strflocaltime")?))
+            out(JqVal::str(strftime_val(
+                input,
+                &f,
+                name == "strflocaltime",
+            )?))
         }
         ("strptime", 1) => {
             let f = one(it, &args[0], input, env)?;
@@ -4189,12 +4396,7 @@ fn want_arr(v: &JqVal, who: &str) -> R<Rc<Vec<JqVal>>> {
 
 /// Pair every element of the input array with `[f]` evaluated over it — the key
 /// array jq's `_sort_by_impl` family sorts on.
-fn keyed_elements(
-    it: &Interp,
-    f: &Filter,
-    input: &JqVal,
-    env: &Env,
-) -> R<Vec<(JqVal, JqVal)>> {
+fn keyed_elements(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<Vec<(JqVal, JqVal)>> {
     let a = want_arr(input, "sorted")?;
     let mut keyed = Vec::with_capacity(a.len());
     for e in a.iter() {
@@ -4296,7 +4498,11 @@ fn compile_re(pat: &str, flags: &str) -> R<(Rc<regex::Regex>, bool)> {
             'p' => prefix.push_str("sm"),
             'n' => {}
             'l' => {}
-            other => return Err(JqErr::msg(format!("{other} is not a valid modifier string"))),
+            other => {
+                return Err(JqErr::msg(format!(
+                    "{other} is not a valid modifier string"
+                )))
+            }
         }
     }
     let key = (pat.to_string(), prefix.clone());
@@ -4379,15 +4585,18 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
                 (Rc::from("offset"), JqVal::num(off)),
                 (Rc::from("length"), JqVal::num(len)),
                 (Rc::from("string"), text),
-                (
-                    Rc::from("name"),
-                    name.map_or(JqVal::Null, JqVal::str),
-                ),
+                (Rc::from("name"), name.map_or(JqVal::Null, JqVal::str)),
             ]));
         }
         hits.push(JqVal::obj(vec![
-            (Rc::from("offset"), JqVal::num(cp_index(&s, whole.start()) as f64)),
-            (Rc::from("length"), JqVal::num(whole.as_str().chars().count() as f64)),
+            (
+                Rc::from("offset"),
+                JqVal::num(cp_index(&s, whole.start()) as f64),
+            ),
+            (
+                Rc::from("length"),
+                JqVal::num(whole.as_str().chars().count() as f64),
+            ),
             (Rc::from("string"), JqVal::str(whole.as_str())),
             (Rc::from("captures"), JqVal::arr(cap_list)),
         ]));
@@ -4438,10 +4647,7 @@ fn regex_sub(
     let s = want_str(input, "matched, as it is not a string")?;
     let (pat, fl) = re_args(re, flags)?;
     let (rx, global) = compile_re(&pat, &fl)?;
-    let names: Vec<Option<String>> = rx
-        .capture_names()
-        .map(|n| n.map(str::to_string))
-        .collect();
+    let names: Vec<Option<String>> = rx.capture_names().map(|n| n.map(str::to_string)).collect();
     let mut spans = Vec::new();
     for caps in rx.captures_iter(&s) {
         let whole = caps.get(0).expect("group 0 always participates");
@@ -4470,7 +4676,19 @@ fn regex_sub(
             go(b, i + 1, *end, &next, out)
         })
     }
-    go(&SubBuild { it, s: &s, spans: &spans, repl, env }, 0, 0, "", out)
+    go(
+        &SubBuild {
+            it,
+            s: &s,
+            spans: &spans,
+            repl,
+            env,
+        },
+        0,
+        0,
+        "",
+        out,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4556,9 +4774,7 @@ fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
     };
     let cfmt = std::ffi::CString::new(fmt).map_err(|_| JqErr::msg("bad format string"))?;
     let mut buf = vec![0u8; 512];
-    let n = unsafe {
-        libc::strftime(buf.as_mut_ptr().cast(), buf.len(), cfmt.as_ptr(), &tm)
-    };
+    let n = unsafe { libc::strftime(buf.as_mut_ptr().cast(), buf.len(), cfmt.as_ptr(), &tm) };
     buf.truncate(n);
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
@@ -4569,7 +4785,9 @@ fn strptime_val(s: &str, fmt: &str) -> R<JqVal> {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let end = unsafe { libc::strptime(cs.as_ptr(), cf.as_ptr(), &mut tm) };
     if end.is_null() {
-        return Err(JqErr::msg(format!("date \"{s}\" does not match format \"{fmt}\"")));
+        return Err(JqErr::msg(format!(
+            "date \"{s}\" does not match format \"{fmt}\""
+        )));
     }
     // `strptime` leaves wday/yday unset on most platforms; jq normalizes through
     // `timegm`+`gmtime` so the two trailing fields are always correct.
@@ -4773,28 +4991,144 @@ fn prelude_env() -> Env {
 fn builtin_names() -> Vec<String> {
     // The Rust half, listed explicitly: these have no `def` to walk.
     const NATIVE: &[&str] = &[
-        "empty/0", "error/0", "error/1", "not/0", "type/0", "length/0", "utf8bytelength/0",
-        "keys/0", "keys_unsorted/0", "has/1", "contains/1", "tostring/0", "tojson/0",
-        "fromjson/0", "tonumber/0", "explode/0", "implode/0", "ascii_downcase/0",
-        "ascii_upcase/0", "startswith/1", "endswith/1", "ltrim/0",
-        "rtrim/0", "trim/0", "split/1", "_strindices/1", "sort/0", "reverse/0", "sort_by/1",
-        "group_by/1", "unique_by/1", "min_by/1", "max_by/1", "min/0", "max/0", "range/2",
-        "range/3", "floor/0", "ceil/0", "round/0", "sqrt/0", "fabs/0", "log/0", "log2/0",
-        "log10/0", "exp/0", "exp2/0", "exp10/0", "trunc/0", "cbrt/0", "sin/0", "cos/0",
-        "tan/0", "asin/0", "acos/0", "atan/0", "sinh/0", "cosh/0", "tanh/0", "nearbyint/0",
-        "significand/0", "logb/0", "pow/2", "atan2/2", "fmin/2", "fmax/2", "ldexp/2",
-        "infinite/0", "nan/0", "isnan/0", "isinfinite/0", "isnormal/0", "path/1", "getpath/1",
-        "setpath/2", "delpaths/1", "_flatten/1", "_match_impl/3", "_split_re/2", "sub_impl/3",
-        "env/0", "builtins/0", "input/0", "inputs/0", "input_line_number/0", "debug/0",
-        "debug/1", "stderr/0", "halt/0", "halt_error/0", "halt_error/1", "input_filename/0",
-        "have_literal_numbers/0", "have_decnum/0", "now/0", "mktime/0", "gmtime/0",
-        "localtime/0", "strftime/1", "strflocaltime/1", "strptime/1", "acosh/0",
-        "asinh/0", "atanh/0", "expm1/0", "log1p/0", "rint/0", "gamma/0", "lgamma/0",
-        "tgamma/0", "erf/0", "erfc/0", "j0/0", "j1/0", "y0/0", "y1/0", "frexp/0",
-        "modf/0", "lgamma_r/0", "isfinite/0", "format/1", "copysign/2", "drem/2",
-        "fdim/2", "fmod/2", "hypot/2", "nextafter/2", "nexttoward/2", "remainder/2",
-        "scalb/2", "scalbln/2", "jn/2", "yn/2", "fma/3", "get_jq_origin/0",
-        "get_prog_origin/0", "get_search_list/0", "modulemeta/0",
+        "empty/0",
+        "error/0",
+        "error/1",
+        "not/0",
+        "type/0",
+        "length/0",
+        "utf8bytelength/0",
+        "keys/0",
+        "keys_unsorted/0",
+        "has/1",
+        "contains/1",
+        "tostring/0",
+        "tojson/0",
+        "fromjson/0",
+        "tonumber/0",
+        "explode/0",
+        "implode/0",
+        "ascii_downcase/0",
+        "ascii_upcase/0",
+        "startswith/1",
+        "endswith/1",
+        "ltrim/0",
+        "rtrim/0",
+        "trim/0",
+        "split/1",
+        "_strindices/1",
+        "sort/0",
+        "reverse/0",
+        "sort_by/1",
+        "group_by/1",
+        "unique_by/1",
+        "min_by/1",
+        "max_by/1",
+        "min/0",
+        "max/0",
+        "range/2",
+        "range/3",
+        "floor/0",
+        "ceil/0",
+        "round/0",
+        "sqrt/0",
+        "fabs/0",
+        "log/0",
+        "log2/0",
+        "log10/0",
+        "exp/0",
+        "exp2/0",
+        "exp10/0",
+        "trunc/0",
+        "cbrt/0",
+        "sin/0",
+        "cos/0",
+        "tan/0",
+        "asin/0",
+        "acos/0",
+        "atan/0",
+        "sinh/0",
+        "cosh/0",
+        "tanh/0",
+        "nearbyint/0",
+        "significand/0",
+        "logb/0",
+        "pow/2",
+        "atan2/2",
+        "fmin/2",
+        "fmax/2",
+        "ldexp/2",
+        "infinite/0",
+        "nan/0",
+        "isnan/0",
+        "isinfinite/0",
+        "isnormal/0",
+        "path/1",
+        "getpath/1",
+        "setpath/2",
+        "delpaths/1",
+        "_flatten/1",
+        "_match_impl/3",
+        "_split_re/2",
+        "sub_impl/3",
+        "env/0",
+        "builtins/0",
+        "input/0",
+        "inputs/0",
+        "input_line_number/0",
+        "debug/0",
+        "debug/1",
+        "stderr/0",
+        "halt/0",
+        "halt_error/0",
+        "halt_error/1",
+        "input_filename/0",
+        "have_literal_numbers/0",
+        "have_decnum/0",
+        "now/0",
+        "mktime/0",
+        "gmtime/0",
+        "localtime/0",
+        "strftime/1",
+        "strflocaltime/1",
+        "strptime/1",
+        "acosh/0",
+        "asinh/0",
+        "atanh/0",
+        "expm1/0",
+        "log1p/0",
+        "rint/0",
+        "gamma/0",
+        "lgamma/0",
+        "tgamma/0",
+        "erf/0",
+        "erfc/0",
+        "j0/0",
+        "j1/0",
+        "y0/0",
+        "y1/0",
+        "frexp/0",
+        "modf/0",
+        "lgamma_r/0",
+        "isfinite/0",
+        "format/1",
+        "copysign/2",
+        "drem/2",
+        "fdim/2",
+        "fmod/2",
+        "hypot/2",
+        "nextafter/2",
+        "nexttoward/2",
+        "remainder/2",
+        "scalb/2",
+        "scalbln/2",
+        "jn/2",
+        "yn/2",
+        "fma/3",
+        "get_jq_origin/0",
+        "get_prog_origin/0",
+        "get_search_list/0",
+        "modulemeta/0",
     ];
     let mut names: Vec<String> = NATIVE.iter().map(|s| (*s).to_string()).collect();
     prelude_env().walk_fn_names(&mut names);
@@ -4815,7 +5149,13 @@ impl Env {
 
 /// Names the resolver must accept that `builtins` does not list, because jq does
 /// not list them either: its own internal helpers.
-const NATIVE_ONLY: &[&str] = &["_match_impl/3", "_split_re/2", "sub_impl/3", "_flatten/1", "_strindices/1"];
+const NATIVE_ONLY: &[&str] = &[
+    "_match_impl/3",
+    "_split_re/2",
+    "sub_impl/3",
+    "_flatten/1",
+    "_strindices/1",
+];
 
 /// Reject a call to an undefined function or a reference to an unbound variable,
 /// the way jq's compiler does. `funcs` holds `name/arity` keys.

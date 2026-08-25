@@ -285,7 +285,9 @@ mod tests {
     /// unit test.
     #[test]
     fn shard_from_another_build_is_not_read() {
-        let _guard = FS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = FS_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = std::env::temp_dir().join(format!("arb_cache_stamp_{}.rkyv", std::process::id()));
         std::env::set_var("ARB_CACHE", &tmp);
         let _ = std::fs::remove_file(&tmp);
@@ -309,7 +311,9 @@ mod tests {
 
     #[test]
     fn parse_cached_matches_direct_parse_via_fs_round_trip() {
-        let _guard = FS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = FS_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Isolate the shard to a scratch file so the test never touches ~/.arb.
         let tmp = std::env::temp_dir().join(format!("arb_cache_test_{}.rkyv", std::process::id()));
         std::env::set_var("ARB_CACHE", &tmp);
