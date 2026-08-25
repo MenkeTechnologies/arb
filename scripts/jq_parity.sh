@@ -257,7 +257,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=798
+MIN_PROBES=814
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -1730,6 +1730,72 @@ css_probe "$XPF" "a[href='/x']"   "//a[@href='/x']/text()"
 css_probe "$XPF" 'a[rel="nf"]'    "//a[@rel='nf']/text()"
 css_probe "$XPF" 'div[class="card"] h2' "//div[@class='card']//h2/text()"
 css_probe "$XPF" 'a[href^="/"]'   '//a[@href]/text()'
+
+# ── the css leg's CONTAINMENT probe ─────────────────────────────────────────
+#
+# jq, xpath and yq each have one; css had only SAMPLES, which measure what was
+# thought to write down rather than what the reference defines.
+#
+# One honest difference from the other three, stated because it weakens the
+# oracle: jq enumerates itself (`jq -rn builtins`), yq's lexer refuses a name it
+# does not define, and xmllint refuses an expression libxml2 cannot parse — so
+# those three probes cannot charge arb for something the reference lacks. There
+# is no CSS tool on this machine, so this list is taken by hand from the
+# Selectors Level 3 Recommendation (w3.org/TR/css3-selectors/): the four
+# combinators of §8, the seven attribute operators of §6.3, and the structural
+# pseudo-classes of §6.6.5. It is therefore an enumeration of the SPEC, not of a
+# running reference, and it is only as complete as this list.
+#
+# What each entry asserts is that arb ACCEPTS the selector. Whether it selects
+# the right nodes is the `css_probe` rows below, which byte-diff against the
+# equivalent XPath through xmllint.
+CSS_SURFACE='p * .card #main div|p div>p p+p p~p
+[href] [href="/x"] [rel~="nf"] [lang|="en"] [href^="/"] [href$="x"] [title*="lo"]
+p:first-child p:last-child p:nth-child(2) p:nth-of-type(2) p:not(.a) span:empty
+:root em:only-child h2,a'
+css_superset_probe() {
+    local missing='' sel out
+    for sel in $CSS_SURFACE; do
+        # `|` stands in for the space in a descendant combinator, which the
+        # word-split list cannot carry literally.
+        sel=$(printf '%s' "$sel" | tr '|' ' ')
+        out=$("$ARB" -e "out { in.html; sel { $sel } }" <"$CSSF" 2>&1)
+        if [ $? -ne 0 ]; then
+            missing="$missing $sel"
+        fi
+        case "$out" in *'not a valid CSS selector'*) missing="$missing $sel" ;; esac
+    done
+    report_containment css "css selector" "$missing"
+}
+
+# A fixture with the structure the surface above needs: siblings to count, an
+# empty element, an `|=` language value, and an attribute value with a space.
+CSSF=$(mktemp -t arbcss).html
+cat >"$CSSF" <<'EOF'
+<html><body><div id="main" class="card wide" lang="en"><h2>T</h2><p class="a">1</p><p class="b">2</p><p class="c">3</p><a href="/x" rel="nf" title="hello world">X</a></div><div class="other"><span></span><em>e</em></div></body></html>
+EOF
+css_superset_probe
+
+# The behavioural half of the surface: every construct above that has an exact
+# XPath equivalent, byte-diffed against xmllint on the same document. The
+# translation is stated per row and kept exact — a structural pseudo-class
+# becomes the sibling count it is defined as.
+css_probe "$CSSF" 'p'                '//p/text()'
+css_probe "$CSSF" '.card h2'         "//div[@class='card wide']//h2/text()"
+css_probe "$CSSF" '#main h2'         "//div[@id='main']//h2/text()"
+css_probe "$CSSF" 'div > p'          '//div/p/text()'
+css_probe "$CSSF" 'p + p'            '//p/following-sibling::p[1]/text()'
+css_probe "$CSSF" '[href]'           '//*[@href]/text()'
+css_probe "$CSSF" '[href="/x"]'      "//*[@href='/x']/text()"
+css_probe "$CSSF" '[rel~="nf"]'      "//*[@rel='nf']/text()"
+css_probe "$CSSF" '[href^="/"]'      "//*[starts-with(@href,'/')]/text()"
+css_probe "$CSSF" '[title*="lo w"]'  "//*[contains(@title,'lo w')]/text()"
+css_probe "$CSSF" 'p:first-child'    '//p[not(preceding-sibling::*)]/text()'
+css_probe "$CSSF" 'p:last-child'     '//p[not(following-sibling::*)]/text()'
+css_probe "$CSSF" 'p:nth-child(2)'   '//p[count(preceding-sibling::*)=1]/text()'
+css_probe "$CSSF" 'p:not(.a)'        "//p[@class!='a']/text()"
+css_probe "$CSSF" 'h2, a'            '//h2/text()|//a/text()'
+rm -f "$CSSF"
 
 css_probe "$XPF" 'h2'          '//h2/text()'
 css_probe "$XPF" 'a'           '//a/text()'
