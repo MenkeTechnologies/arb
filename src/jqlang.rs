@@ -1604,6 +1604,23 @@ impl Parser {
                 f = self.bracket_suffix(f)?;
                 continue;
             }
+            // yq's METADATA POSTFIX: `.a anchor`, and with it `.a anchor = "x"`.
+            //
+            // jq never allows a bare identifier to follow a complete expression —
+            // juxtaposition is a syntax error in every jq grammar position — so
+            // claiming this shape takes nothing away from the jq leg. It desugars
+            // to the pipe arb already spelled it with, which is what makes the
+            // ASSIGNMENT form work for free: `.a anchor = "x"` is
+            // `Assign(Set, Pipe(.a, anchor), "x")`, and `eval_assign` already
+            // recognises that left-hand side and edits the whole document.
+            if let Some(Tok::Ident(name)) = self.peek() {
+                if is_meta_setter(name) || matches!(&**name, "alias" | "kind") {
+                    let name: Rc<str> = Rc::from(name.as_str());
+                    self.i += 1;
+                    f = Filter::Pipe(Box::new(f), Box::new(Filter::Call(name, Vec::new())));
+                    continue;
+                }
+            }
             break;
         }
         if self.is_kw("as") {
@@ -1611,6 +1628,24 @@ impl Parser {
             let mut pats = vec![self.pattern()?];
             while self.eat_op("?//") {
                 pats.push(self.pattern()?);
+            }
+            // yq's POSTFIX REDUCE: `.[] as $item ireduce (0; . + $item)`, where
+            // jq writes `reduce .[] as $item (0; . + $item)`. Same three parts in
+            // a different order, and `as … ireduce` is not valid jq either — jq
+            // requires a `|` here — so this is another shape with no owner.
+            if matches!(self.peek(), Some(Tok::Ident(n)) if n == "ireduce") {
+                self.i += 1;
+                self.want_op("(")?;
+                let init = self.pipe()?;
+                self.want_op(";")?;
+                let update = self.pipe()?;
+                self.want_op(")")?;
+                return Ok(Filter::Reduce(
+                    Box::new(f),
+                    pats.remove(0),
+                    Box::new(init),
+                    Box::new(update),
+                ));
             }
             self.want_op("|")?;
             let body = self.pipe()?;
