@@ -16,14 +16,56 @@ use std::rc::Rc;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `to_props`: one `dotted.path = value` line per leaf, arrays indexed by
-/// position (`l.0 = 1`), in document order.
+/// position (`l.0 = 1`), in document order, with every comment the nodes carry
+/// written above the entry it belongs to — which is what `yq -o=props` emits.
 pub fn to_props(v: &JqVal) -> String {
     let mut out = String::new();
-    walk_props(v, &mut String::new(), &mut out);
+    if let Some(m) = v.meta() {
+        push_props_comment(&mut out, &m.head);
+    }
+    walk_props(v, &mut String::new(), &mut out, true);
     out
 }
 
-fn walk_props(v: &JqVal, prefix: &mut String, out: &mut String) {
+fn push_props_comment(out: &mut String, text: &str) {
+    for line in text.split('\n') {
+        if text.is_empty() {
+            return;
+        }
+        out.push('#');
+        if !line.is_empty() {
+            out.push(' ');
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+}
+
+/// A leaf's text, in the `.properties` escaping: a backslash, newline, tab or
+/// LEADING space is escaped, a null writes nothing, and a scalar whose SOURCE
+/// text the reader kept (`0x10`) is written as it was written.
+fn props_leaf(v: &JqVal) -> String {
+    let text = match v.meta().filter(|m| !m.raw.is_empty()) {
+        Some(m) => m.raw.to_string(),
+        None => match v.bare() {
+            JqVal::Null => return String::new(),
+            other => render_raw(other),
+        },
+    };
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.chars().enumerate() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            ' ' if i == 0 => out.push_str("\\ "),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn walk_props(v: &JqVal, prefix: &mut String, out: &mut String, root: bool) {
     match v.bare() {
         JqVal::Obj(m) => {
             for (k, val) in m.iter() {
@@ -32,7 +74,7 @@ fn walk_props(v: &JqVal, prefix: &mut String, out: &mut String) {
                     prefix.push('.');
                 }
                 prefix.push_str(k);
-                walk_props(val, prefix, out);
+                walk_props(val, prefix, out, false);
                 prefix.truncate(at);
             }
         }
@@ -43,14 +85,43 @@ fn walk_props(v: &JqVal, prefix: &mut String, out: &mut String) {
                     prefix.push('.');
                 }
                 prefix.push_str(&i.to_string());
-                walk_props(e, prefix, out);
+                walk_props(e, prefix, out, false);
                 prefix.truncate(at);
             }
         }
-        leaf => {
+        _ => {
+            // Only a LEAF carries comments into this format, and its key's head
+            // and its own trailing comment go on ONE line, separated from the
+            // previous entry by a blank. Every rule here is `yq -o=props`'s
+            // (`# d head d line` above `c.d = 4`); a foot comment and a comment
+            // on a non-leaf key have nowhere to go and are dropped, which is
+            // what the reference does with them too.
+            let mut note: Vec<&str> = Vec::new();
+            if let Some(m) = v.meta() {
+                match m.key.as_deref().and_then(JqVal::meta) {
+                    // A mapping entry's head comment lives on its KEY node.
+                    Some(k) => note.extend(k.head.split('\n').filter(|l| !l.is_empty())),
+                    // A SEQUENCE item has no key, so its head is its own — except
+                    // at the document root, whose head `to_props` already wrote.
+                    None if !root => note.extend(m.head.split('\n').filter(|l| !l.is_empty())),
+                    None => {}
+                }
+                note.extend(std::iter::once(&*m.line).filter(|l| !l.is_empty()));
+            }
+            if !note.is_empty() {
+                if out.ends_with("\n")
+                    && !out.trim_end().ends_with('#')
+                    && out.lines().last().is_some_and(|l| !l.starts_with('#'))
+                {
+                    out.push('\n');
+                }
+                out.push_str("# ");
+                out.push_str(&note.join(" "));
+                out.push('\n');
+            }
             out.push_str(prefix);
             out.push_str(" = ");
-            out.push_str(&render_raw(leaf));
+            out.push_str(&props_leaf(v));
             out.push('\n');
         }
     }
@@ -132,11 +203,7 @@ fn put(cur: &JqVal, key: &str, val: JqVal) -> JqVal {
             }
             JqVal::obj(pairs)
         }
-        _ => {
-            let mut pairs = Vec::new();
-            pairs.push((Rc::from(key), val));
-            JqVal::obj(pairs)
-        }
+        _ => JqVal::obj(vec![(Rc::from(key), val)]),
     }
 }
 
@@ -303,9 +370,9 @@ impl XmlParser<'_> {
             while self.i < self.b.len() && self.b[self.i] != b'<' {
                 self.i += 1;
             }
-            text.push_str(&xml_unescape(
-                &String::from_utf8_lossy(&self.b[before..self.i]),
-            ));
+            text.push_str(&xml_unescape(&String::from_utf8_lossy(
+                &self.b[before..self.i],
+            )));
             if self.b.get(self.i + 1) == Some(&b'/') || self.i >= self.b.len() {
                 // Consume `</name>`.
                 while self.i < self.b.len() && self.b[self.i] != b'>' {
@@ -390,12 +457,9 @@ pub fn to_delim(v: &JqVal, sep: char) -> String {
         match row.bare() {
             JqVal::Obj(_) => push_row(
                 &mut out,
-                header.iter().map(|k| {
-                    row.bare()
-                        .obj_lookup(k)
-                        .map(|v| render_raw(v))
-                        .unwrap_or_default()
-                }),
+                header
+                    .iter()
+                    .map(|k| row.bare().obj_lookup(k).map(render_raw).unwrap_or_default()),
                 sep,
             ),
             JqVal::Arr(cells) => push_row(&mut out, cells.iter().map(render_raw), sep),
@@ -540,7 +604,11 @@ fn go_tokens(tm: &libc::tm, utc: bool) -> Vec<(&'static str, String)> {
     } else {
         let off = tm.tm_gmtoff;
         let sign = if off < 0 { '-' } else { '+' };
-        format!("{sign}{:02}:{:02}", off.abs() / 3600, (off.abs() % 3600) / 60)
+        format!(
+            "{sign}{:02}:{:02}",
+            off.abs() / 3600,
+            (off.abs() % 3600) / 60
+        )
     };
     vec![
         ("2006", format!("{:04}", tm.tm_year + 1900)),

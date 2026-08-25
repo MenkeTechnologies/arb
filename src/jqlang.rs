@@ -2276,7 +2276,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             other => Err(JqErr::msg(format!(
                 "{}{} cannot be negated",
                 other.type_name(),
-                paren_of(&other)
+                paren_of(other)
             ))),
         }),
         // jq evaluates a binary operator's RIGHT side in the outer loop: for
@@ -3176,30 +3176,32 @@ fn eval_paths(
                 })
             })
         }),
-        Filter::Iterate(base) => eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
-            JqVal::Arr(a) => {
-                for (i, e) in a.iter().enumerate() {
-                    let mut np = p.clone();
-                    np.push(JqVal::num(i as f64));
-                    out(np, e.clone())?;
+        Filter::Iterate(base) => {
+            eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
+                JqVal::Arr(a) => {
+                    for (i, e) in a.iter().enumerate() {
+                        let mut np = p.clone();
+                        np.push(JqVal::num(i as f64));
+                        out(np, e.clone())?;
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            JqVal::Obj(m) => {
-                for (k, e) in m.iter() {
-                    let mut np = p.clone();
-                    np.push(JqVal::Str(k.clone()));
-                    out(np, e.clone())?;
+                JqVal::Obj(m) => {
+                    for (k, e) in m.iter() {
+                        let mut np = p.clone();
+                        np.push(JqVal::Str(k.clone()));
+                        out(np, e.clone())?;
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            JqVal::Null => Ok(()),
-            other => Err(JqErr::msg(format!(
-                "Cannot iterate over {}{}",
-                other.type_name(),
-                paren_of(other)
-            ))),
-        }),
+                JqVal::Null => Ok(()),
+                other => Err(JqErr::msg(format!(
+                    "Cannot iterate over {}{}",
+                    other.type_name(),
+                    paren_of(other)
+                ))),
+            })
+        }
         Filter::Pipe(a, b) => eval_paths(it, a, input, pre, val, env, &mut |p, v| {
             eval_paths(it, b, &v, &p, &v, env, out)
         }),
@@ -3822,9 +3824,19 @@ fn eval_call(
     env: &Env,
     out: Sink,
 ) -> R<()> {
-    if let Some(node) = env.find_fn(name, args.len()) {
-        let (body, benv) = bind_call(it, &node, args, env)?;
-        return eval(it, &body, input, &benv, out);
+    // `pick/1` is the ONE spelling jq and yq both define, and they take
+    // different arguments: jq wants path expressions (`pick(.a, .b)`) and yq
+    // wants an array of keys (`pick(["a","b"])`), which jq refuses outright.
+    // The Rust arm decides by looking at the argument and calls jq's own
+    // definition for jq's form — so the decision has to happen BEFORE the
+    // definition lookup, or the definition always wins and yq's form is an
+    // error.
+    let collision = name == "pick" && args.len() == 1;
+    if !collision {
+        if let Some(node) = env.find_fn(name, args.len()) {
+            let (body, benv) = bind_call(it, &node, args, env)?;
+            return eval(it, &body, input, &benv, out);
+        }
     }
     builtin(it, name, args, input, env, out)
 }
@@ -5307,8 +5319,6 @@ impl Env {
     }
 }
 
-/// Names the resolver must accept that `builtins` does not list, because jq does
-/// not list them either: its own internal helpers.
 // ─────────────────────────────────────────────────────────────────────────────
 // The yq surface
 //
@@ -5404,6 +5414,7 @@ const YQ_BUILTINS: &[(&str, usize)] = &[
     ("sortKeys", 1),
     ("shuffle", 0),
     ("pivot", 0),
+    ("pick", 1),
     ("ireduce", 2),
     ("eval", 1),
     ("downcase", 0),
@@ -5490,8 +5501,7 @@ fn set_meta(node: &JqVal, name: &str, val: &JqVal) -> JqVal {
 
 /// Read a file, reporting yq's own message shape on failure.
 fn read_file(path: &str) -> R<String> {
-    std::fs::read_to_string(path)
-        .map_err(|e| JqErr::msg(format!("failed to load {path}: {e}")))
+    std::fs::read_to_string(path).map_err(|e| JqErr::msg(format!("failed to load {path}: {e}")))
 }
 
 fn yq_builtin(
@@ -5613,7 +5623,10 @@ fn yq_builtin(
         }
         ("from_yaml", 0) => {
             let s = want_str(input, "parsed as YAML")?;
-            out(crate::yaml::documents(&s).into_iter().next().unwrap_or(JqVal::Null))
+            out(crate::yaml::documents(&s)
+                .into_iter()
+                .next()
+                .unwrap_or(JqVal::Null))
         }
         ("to_xml", 0) => out(JqVal::str(crate::yqfmt::to_xml(input, 2))),
         ("to_xml", 1) => {
@@ -5644,7 +5657,10 @@ fn yq_builtin(
         ("env", 1) => {
             let n = str_arg(0)?;
             out(match std::env::var(&*n) {
-                Ok(v) => crate::yaml::documents(&v).into_iter().next().unwrap_or(JqVal::Null),
+                Ok(v) => crate::yaml::documents(&v)
+                    .into_iter()
+                    .next()
+                    .unwrap_or(JqVal::Null),
                 Err(_) => JqVal::Null,
             })
         }
@@ -5653,8 +5669,7 @@ fn yq_builtin(
             out(JqVal::str(std::env::var(&*n).unwrap_or_default()))
         }
         ("envsubst", 0) => out(JqVal::str(crate::yqfmt::envsubst(&want_str(
-            input,
-            "expanded",
+            input, "expanded",
         )?))),
         ("load", 1) => {
             let path = str_arg(0)?;
@@ -5707,6 +5722,37 @@ fn yq_builtin(
         }
 
         // ── reshaping ───────────────────────────────────────────────────────
+        // `pick(["a","b"])` is yq's spelling and `pick(.a, .b)` is jq's. jq
+        // REFUSES the array form ("Invalid path expression with result
+        // [\"a\"]"), so answering it is a superset extension rather than a
+        // conflict, and the jq form still reaches jq's own definition below.
+        ("pick", 1) => {
+            let keys = one(it, &args[0], input, env)?;
+            let JqVal::Arr(want) = keys.bare() else {
+                return builtin_jq_pick(it, args, input, env, out);
+            };
+            if !want.iter().all(|k| matches!(k.bare(), JqVal::Str(_))) {
+                return builtin_jq_pick(it, args, input, env, out);
+            }
+            let JqVal::Obj(m) = input.bare() else {
+                return out(input.clone());
+            };
+            // In the ORDER ASKED FOR, which is what yq answers with
+            // (`pick(["c","a"])` is `{c: …, a: …}`), and a key the object does
+            // not have contributes nothing.
+            let kept: Vec<(Rc<str>, JqVal)> = want
+                .iter()
+                .filter_map(|k| match k.bare() {
+                    JqVal::Str(name) => input.obj_lookup(name).map(|v| (name.clone(), v.clone())),
+                    _ => None,
+                })
+                .collect();
+            let _ = m;
+            out(match input.meta() {
+                Some(mm) => JqVal::wrap(JqVal::obj(kept), mm.clone()),
+                None => JqVal::obj(kept),
+            })
+        }
         ("omit", 1) => {
             let keys = one(it, &args[0], input, env)?;
             let JqVal::Arr(drop) = keys.bare() else {
@@ -5717,7 +5763,11 @@ fn yq_builtin(
             };
             let kept: Vec<(Rc<str>, JqVal)> = m
                 .iter()
-                .filter(|(k, _)| !drop.iter().any(|d| matches!(d.bare(), JqVal::Str(s) if s == k)))
+                .filter(|(k, _)| {
+                    !drop
+                        .iter()
+                        .any(|d| matches!(d.bare(), JqVal::Str(s) if s == k))
+                })
                 .cloned()
                 .collect();
             out(match input.meta() {
@@ -5784,6 +5834,16 @@ fn yq_builtin(
         },
         _ => Err(JqErr::msg(format!("{name} is not a yq operator"))),
     }
+}
+
+/// jq's own `pick(pathexps)`, reached when the argument is not yq's array of
+/// keys. Defined in the prelude, so it is called rather than reimplemented.
+fn builtin_jq_pick(it: &Interp, args: &[Rc<Filter>], input: &JqVal, env: &Env, out: Sink) -> R<()> {
+    let node = env
+        .find_fn("pick", 1)
+        .ok_or_else(|| JqErr::msg("pick/1 is not defined"))?;
+    let (body, benv) = bind_call(it, &node, args, env)?;
+    eval(it, &body, input, &benv, out)
 }
 
 /// Drop anchor/alias metadata through a whole subtree, which is what `explode`
@@ -5874,6 +5934,8 @@ fn write_indented(out: &mut String, v: &JqVal, depth: usize, step: usize) {
     }
 }
 
+/// Names the resolver must accept that `builtins` does not list, because jq does
+/// not list them either: its own internal helpers.
 const NATIVE_ONLY: &[&str] = &[
     "_match_impl/3",
     "_split_re/2",

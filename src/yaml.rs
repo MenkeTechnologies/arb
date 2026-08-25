@@ -302,10 +302,7 @@ impl Composer<'_, '_> {
                     // otherwise take it as its own head. `yq` puts it on the
                     // document, and the order of the two claims is the whole
                     // difference.
-                    let first = self
-                        .evs
-                        .get(self.i)
-                        .map_or(1, |(_, sp)| sp.start.line() as usize);
+                    let first = self.evs.get(self.i).map_or(1, |(_, sp)| sp.start.line());
                     let head = self.comments.take_head(first);
                     let v = self.node(&[], None, false);
                     if !matches!(v.bare(), JqVal::Null) {
@@ -338,7 +335,9 @@ impl Composer<'_, '_> {
     /// The 1-based line `yq` reports for a span, rebased past the leading
     /// comment block.
     fn line_of(&self, sp: &Span) -> u32 {
-        (sp.start.line() as u32).saturating_sub(self.line_base).max(1)
+        (sp.start.line() as u32)
+            .saturating_sub(self.line_base)
+            .max(1)
     }
 
     /// Compose the node starting at the cursor, leaving the cursor just past it.
@@ -377,11 +376,11 @@ impl Composer<'_, '_> {
                 // any, sits on the line the indicator is on, which is the line
                 // BEFORE the span starts.
                 let line = if style == ScalarStyle::Literal || style == ScalarStyle::Folded {
-                    (sp.start.line() as usize).saturating_sub(1)
+                    sp.start.line().saturating_sub(1)
                 } else {
-                    sp.start.line() as usize
+                    sp.start.line()
                 };
-                self.last_line = self.last_line.max(sp.end.line() as usize);
+                self.last_line = self.last_line.max(sp.end.line());
                 if !as_key {
                     meta.line = Rc::from(self.comments.take_line(line).as_str());
                 }
@@ -409,10 +408,9 @@ impl Composer<'_, '_> {
                         .unwrap_or("")
                         .trim_start_matches('*'),
                 );
-                self.last_line = self.last_line.max(sp.end.line() as usize);
+                self.last_line = self.last_line.max(sp.end.line());
                 if !as_key {
-                    meta.line =
-                        Rc::from(self.comments.take_line(sp.start.line() as usize).as_str());
+                    meta.line = Rc::from(self.comments.take_line(sp.start.line()).as_str());
                 }
                 JqVal::wrap(v.bare().clone(), meta)
             }
@@ -429,7 +427,7 @@ impl Composer<'_, '_> {
                 ) {
                     let mut p = path.to_vec();
                     p.push(JqVal::num(items.len() as f64));
-                    let start = self.evs[self.i].1.start.line() as usize;
+                    let start = self.evs[self.i].1.start.line();
                     // Claimed BEFORE the item is composed: an item that is itself
                     // a mapping starts on the same line, and its first key would
                     // otherwise take the block that belongs to the item.
@@ -489,7 +487,7 @@ impl Composer<'_, '_> {
     ///   `{<<: *a, extra: 1}` is `{"k":"v","extra":1}` and `{extra: 1, <<: *a}`
     ///   is `{"extra":1,"k":"v"}` — appending put `extra` first in both, so the
     ///   identity filter `.` diverged on any document using a merge key.
-    fn mapping(&mut self, path: &[JqVal]) -> (JqVal, Option<Rc<Vec<(Rc<str>, JqVal)>>>) {
+    fn mapping(&mut self, path: &[JqVal]) -> (JqVal, Option<crate::ynode::Entries>) {
         let mut pairs: Vec<(Rc<str>, JqVal)> = Vec::new();
         // (index in `pairs` where the `<<` stood, the merge source).
         let mut merges: Vec<(usize, JqVal)> = Vec::new();
@@ -501,7 +499,7 @@ impl Composer<'_, '_> {
             self.evs.get(self.i).map(|(e, _)| e),
             Some(Event::MappingEnd) | None
         ) {
-            let kline = self.evs[self.i].1.start.line() as usize;
+            let kline = self.evs[self.i].1.start.line();
             let kcol = self.evs[self.i].1.start.col();
             let k = self.node(&[], None, true);
             // The head comment above an entry belongs to its KEY node, which is
@@ -561,7 +559,7 @@ impl Composer<'_, '_> {
             }
         }
         self.i += 1; // MappingEnd
-        // Re-attach the key nodes to their values.
+                     // Re-attach the key nodes to their values.
         for (slot, k) in pairs.iter_mut().zip(keys.iter()) {
             slot.1 = slot.1.with_meta(|m| m.key = Some(Rc::new(k.clone())));
         }
@@ -595,11 +593,9 @@ impl Composer<'_, '_> {
             pairs.splice(at + shift..at + shift, insert);
             shift += n;
         }
-        let mut shift = 0;
         let mut written = written;
-        for (at, src) in merges {
+        for (shift, (at, src)) in merges.into_iter().enumerate() {
             written.insert(at + shift, (Rc::from("<<"), src));
-            shift += 1;
         }
         (JqVal::obj(pairs), Some(Rc::new(written)))
     }
@@ -835,4 +831,3 @@ fn parse_float(text: &str) -> Option<JqVal> {
     };
     Some(crate::jqlang::num_from_literal(n, &lit))
 }
-

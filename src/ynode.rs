@@ -152,7 +152,7 @@ pub struct NodeMeta {
     /// A mapping's entries as they were WRITTEN, with `<<` still in place.
     /// Readers see the merged mapping; the writer emits this, so a round trip
     /// does not expand a merge key into the keys it stood for.
-    pub written: Option<Rc<Vec<(Rc<str>, JqVal)>>>,
+    pub written: Option<Entries>,
 }
 
 impl NodeMeta {
@@ -187,6 +187,10 @@ impl NodeMeta {
             && matches!(self.style, Style::Plain | Style::Block)
     }
 }
+
+/// A mapping's entry list. Named because it appears in both `NodeMeta` and the
+/// composer's return, and spelling it out at both sites reads worse than this.
+pub type Entries = Rc<Vec<(Rc<str>, JqVal)>>;
 
 /// A value plus the metadata YAML recorded about it.
 #[derive(Debug, Clone)]
@@ -523,6 +527,9 @@ fn scalar_key(k: &str, node: Option<&JqVal>) -> String {
 
 /// Render a node on ONE line: a scalar, an alias, or a flow collection.
 fn inline(v: &JqVal, o: Emit) -> String {
+    // `o` rides along unused by the scalar arms; a flow collection needs it for
+    // its children, which is why it is threaded rather than dropped.
+    let _ = o;
     if let Some(m) = v.meta() {
         if !m.alias.is_empty() {
             return format!("*{}", m.alias);
@@ -626,8 +633,22 @@ fn needs_single_quote(s: &str) -> bool {
     let first = s.chars().next().unwrap_or(' ');
     if matches!(
         first,
-        '#' | '&' | '*' | '!' | '|' | '>' | '%' | '@' | '`' | '{' | '}' | '[' | ']' | ',' | '\''
-            | '"' | ' '
+        '#' | '&'
+            | '*'
+            | '!'
+            | '|'
+            | '>'
+            | '%'
+            | '@'
+            | '`'
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | ','
+            | '\''
+            | '"'
+            | ' '
     ) {
         return true;
     }
