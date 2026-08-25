@@ -28,6 +28,49 @@ use scraper::{ElementRef, Html};
 
 use crate::xpath_syntax::{Axis, Expr, NodeTest, PathStart, Principal, RelOp, Step};
 
+/// Rewrite `<![CDATA[…]]>` sections into escaped character data.
+///
+/// XPath 1.0 §5.7: "characters inside CDATA sections are treated as character
+/// data" — a CDATA section is TEXT, not a node type of its own. html5ever
+/// implements the HTML5 tree-construction algorithm, where CDATA is only legal
+/// in foreign content (SVG/MathML) and is otherwise parsed as a bogus COMMENT,
+/// so `<a><![CDATA[x<y&z]]></a>` lost its content entirely: `string(//a)` was
+/// empty where `xmllint --xpath` answers `x<y&z`, and `count(//a/text())` was 0
+/// against its 1. Silently dropping input is the failure this engine exists to
+/// remove, so the section is turned into the text it denotes before parsing.
+///
+/// The rewrite is textual and deliberately literal-minded: `<![CDATA[` inside a
+/// comment would also be rewritten. That matches how an XML parser reads the
+/// same bytes, and the alternative — losing the content — is worse.
+fn decode_cdata(src: &str) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<![CDATA[";
+    const CLOSE: &str = "]]>";
+    if !src.contains(OPEN) {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(i) = rest.find(OPEN) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + OPEN.len()..];
+        match after.find(CLOSE) {
+            Some(j) => {
+                out.push_str(&escape_text(&after[..j]));
+                rest = &after[j + CLOSE.len()..];
+            }
+            // Unterminated: the rest of the document is character data, which is
+            // what an XML parser would report as an error and a lenient HTML one
+            // treats as text. Keeping it beats dropping it.
+            None => {
+                out.push_str(&escape_text(after));
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// A hasher for the two `NodeId`-keyed tables below.
 ///
 /// A `NodeId` is one `NonZeroUsize`, and the default `HashMap` hashes it with
@@ -111,7 +154,7 @@ pub struct Doc {
 
 impl Doc {
     pub fn parse(src: &str) -> Doc {
-        let html = Html::parse_document(src);
+        let html = Html::parse_document(&decode_cdata(src));
         // html5ever inserts a `tbody` around a table's rows; libxml2 never
         // synthesizes one. Measured: `xmllint --html --xpath 'count(//tbody)'`
         // answers 0 for `<table><tr><td>1</td></tr></table>` and 1 for the same

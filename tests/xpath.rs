@@ -308,3 +308,76 @@ fn following_and_preceding_over_nested_structure() {
     assert_eq!(run_on("//span/preceding::p/text()"), vec!["1"]);
     assert_eq!(run_on("//b/ancestor::div/@id"), vec!["a"]);
 }
+
+/// A CDATA section is CHARACTER DATA (§5.7), not a node type of its own.
+///
+/// html5ever implements the HTML5 tree-construction algorithm, where CDATA is
+/// legal only in foreign content (SVG/MathML) and is otherwise a bogus COMMENT,
+/// so `<a><![CDATA[x<y&z]]></a>` lost its content outright. References,
+/// `xmllint --xpath` on that document:
+///   `string(//a)`          -> `x<y&z`
+///   `string-length(//a)`   -> `5`
+///   `count(//a/text())`    -> `1`
+///   `substring(//a,2,3)`   -> `<y&`
+/// arb answered ``, `0`, `0` — silently dropping input, which is the failure
+/// this engine exists to remove.
+#[test]
+fn a_cdata_section_is_character_data() {
+    const CD: &str = "<r><a><![CDATA[x<y&z]]></a><b>plain</b></r>";
+    let on = |expr: &str| -> Vec<String> {
+        let src = format!("tail .x\nsource .x {{ in.xml; {expr} }}");
+        let cmds = parse(&src).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let spec = arb::spec::build(&cmds).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let ops = spec.widgets[0]
+            .source
+            .as_ref()
+            .expect("source")
+            .pipeline
+            .clone();
+        match eval(&ops, &[CD.to_string()], 0.0) {
+            QueryResult::Lines(l) => l,
+            other => panic!("`{expr}` -> {other:?}"),
+        }
+    };
+    assert_eq!(on("string(//a)"), vec!["x<y&z"]);
+    assert_eq!(on("string-length(//a)"), vec!["5"]);
+    assert_eq!(on("count(//a/text())"), vec!["1"]);
+    assert_eq!(on("substring(//a,2,3)"), vec!["<y&"]);
+    // The sibling is untouched, so the rewrite is not eating the document.
+    assert_eq!(on("count(//b)"), vec!["1"]);
+    assert_eq!(on("string(//b)"), vec!["plain"]);
+}
+
+/// Entities are decoded into the STRING-VALUE, and both engines agree there.
+///
+/// They disagree only in SERIALIZATION — `xmllint --xpath` re-escapes when it
+/// prints a text node, so its `//p/text()` shows `a&amp;b` where arb's stream
+/// emits the raw `a&b`. That is an output convention, not a data model, and
+/// these probe the MODEL so neither engine's escaping is involved. References,
+/// `xmllint --html --xpath` on the fixture below: `16`, `a&b <`, `1`, `true`.
+#[test]
+fn entities_are_decoded_into_the_string_value() {
+    const ENT: &str = r#"<html><body><p id="e">a&amp;b &lt;tag&gt; &#65; &nbsp;end</p><p title="x&amp;y">t</p></body></html>"#;
+    let on = |expr: &str| -> Vec<String> {
+        let src = format!("tail .x\nsource .x {{ in.html; {expr} }}");
+        let cmds = parse(&src).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let spec = arb::spec::build(&cmds).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let ops = spec.widgets[0]
+            .source
+            .as_ref()
+            .expect("source")
+            .pipeline
+            .clone();
+        match eval(&ops, &[ENT.to_string()], 0.0) {
+            QueryResult::Lines(l) => l,
+            other => panic!("`{expr}` -> {other:?}"),
+        }
+    };
+    assert_eq!(on(r#"string-length(//p[@id="e"])"#), vec!["16"]);
+    assert_eq!(on(r#"substring(//p[@id="e"],1,5)"#), vec!["a&b <"]);
+    assert_eq!(on(r#"count(//p[contains(text(),"<tag>")])"#), vec!["1"]);
+    assert_eq!(on(r#"starts-with(//p[@id="e"],"a&b")"#), vec!["true"]);
+    // An entity in an ATTRIBUTE value decodes the same way.
+    assert_eq!(on(r#"string-length(//p/@title)"#), vec!["3"]);
+    assert_eq!(on(r#"count(//p[@title="x&y"])"#), vec!["1"]);
+}
