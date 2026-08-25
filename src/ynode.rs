@@ -308,7 +308,13 @@ pub fn emit_doc(v: &JqVal, o: Emit) -> String {
         }
     }
     if let Some(m) = m {
-        push_comment(&mut out, &m.foot, 0);
+        push_foot(&mut out, &m.foot, 0);
+    }
+    // A foot comment at the END of the document has nothing after it, so the
+    // blank `push_foot` always writes is trimmed back to the single newline every
+    // document ends with.
+    while out.ends_with("\n\n") {
+        out.pop();
     }
     out
 }
@@ -319,6 +325,21 @@ fn is_flow(v: &JqVal) -> bool {
 
 fn is_alias(v: &JqVal) -> bool {
     v.meta().is_some_and(|m| !m.alias.is_empty())
+}
+
+/// Emit a FOOT comment block, which is always followed by a blank line.
+///
+/// The blank is what made it a foot rather than the next entry's head, so
+/// writing one back is what closes the round trip. A foot at the very end of a
+/// document has no blank after it in the source; rather than tracking "is this
+/// the last thing anywhere" down through every nesting level, `emit_doc` trims
+/// the trailing blank once, at the top, where the question is answerable.
+fn push_foot(out: &mut String, text: &str, ind: usize) {
+    if text.is_empty() {
+        return;
+    }
+    push_comment(out, text, ind);
+    out.push('\n');
 }
 
 /// Emit a comment block, one `# `-prefixed line per stored line.
@@ -388,10 +409,7 @@ fn push_block_map(out: &mut String, map: &[(Rc<str>, JqVal)], ind: usize, o: Emi
         out.push_str(&scalar_key(k, key_node.as_deref()));
         out.push(':');
         push_value(out, v, ind, o);
-        push_comment(out, &foot, ind);
-        if !foot.is_empty() && i + 1 < map.len() {
-            out.push('\n');
-        }
+        push_foot(out, &foot, ind);
     }
 }
 
@@ -425,7 +443,7 @@ fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
             }
         }
         if let Some(m) = item.meta() {
-            push_comment(out, &m.foot, ind);
+            push_foot(out, &m.foot, ind);
         }
     }
 }
