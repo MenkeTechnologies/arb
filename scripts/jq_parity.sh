@@ -257,7 +257,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=686
+MIN_PROBES=696
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -693,11 +693,16 @@ xp_probe() {
     command -v xmllint >/dev/null || { skip=$((skip + 1)); return; }
     a=$("$ARB" -e "out { in.html; $xp }" <"$file" 2>&1 | sort_attrs)
     b=$(xmllint --html --xpath "$xp" "$file" 2>/dev/null | sort_attrs)
-    # Normalize ONLY when the path SELECTS attributes (a trailing `/@name` or a
-    # bare `@name` step). An `@` inside a predicate (`//div[@class]//span`) still
-    # selects elements, so its output must be compared unmodified.
+    # Normalize ONLY when the path SELECTS attributes (a trailing `/@name`, a
+    # bare `@name` step, or either in the `@*` WILDCARD form). An `@` inside a
+    # predicate (`//div[@class]//span`) still selects elements, so its output is
+    # compared unmodified.
+    #
+    # The rule is unchanged; the `@*` spellings are added because the engine can
+    # now select with them. It stays per-LINE, so the attribute VALUES and their
+    # ORDER are still both compared and a selection difference cannot hide in it.
     case "$xp" in
-        *'/@'[A-Za-z_]* | '@'[A-Za-z_]*)
+        *'/@'[A-Za-z_]* | '@'[A-Za-z_]* | *'/@*' | '@*')
             b=$(printf '%s\n' "$b" | perl -ne 'print "$1\n" if /="(.*)"\s*$/') ;;
     esac
     if [ "$a" = "$b" ]; then
@@ -1630,22 +1635,37 @@ xp_probe "$XPF" '//div[@class]/h2/text()'
 xp_probe "$XPF" '//li'
 xp_probe "$XPF" '//span'
 
-# xpath: out-of-subset location paths must be a hard error, not a guess. Same
-# reasoning as err_probe above; xmllint answers all of these.
-for xbad in '//a[1]' '//a[position()=1]' '//a/../span' '//a[text()="X"]' '//a/@*' \
-            '//a[last()]' 'ancestor::div' '//a[@href][2]' \
-            '//*' 'count(//a)' '//@href' '//a[@href and @rel]' \
-            '//a[@href!="/x"]' '//a/following-sibling::span' \
-            '//a[contains(text(),"X")]' '//a[not(@rel)]' 'normalize-space(//a)'; do
-    if "$ARB" -e "out { in.html; $xbad }" <"$XPF" >/dev/null 2>&1; then
-        fail=$((fail + 1))
-        fails+=("xp!  $xbad — OUT OF SUBSET but accepted silently")
-        [ "$QUIET" = 1 ] || printf 'DIFF xp!  %-24s accepted silently\n' "$xbad"
-    else
-        pass=$((pass + 1))
-        [ "$QUIET" = 1 ] || printf 'ok   xp!  %-24s (refused)\n' "$xbad"
-    fi
-done
+# These SEVENTEEN were the `xp!` list: each asserted that arb REFUSES an XPath
+# construct, and each is now an `xp_probe` against xmllint on the same input.
+#
+# That is the measurement moving, not a change to it. The refusal contract was
+# true only because the xpath front-end compiled XPath-shaped syntax to a CSS
+# selector, which has no spelling for an axis, a function or a positional
+# predicate — so the honest thing was to refuse them. arb now runs a real XPath
+# 1.0 engine, so asserting "arb refuses this" would assert something FALSE, and
+# a probe that encodes a retired contract measures nothing. Same move, and same
+# reasoning, as the 99 `err_probe`s in the jq wave (`d3fb2c880f`).
+#
+# Every converted line asserts strictly MORE than the one it replaces. "arb
+# exits non-zero" is satisfied by any error at all, including the wrong one;
+# "arb's stdout equals xmllint's, byte for byte" is not.
+xp_probe "$XPF" '//a[1]'
+xp_probe "$XPF" '//a[position()=1]'
+xp_probe "$XPF" '//a/../span'
+xp_probe "$XPF" '//a[text()="X"]'
+xp_probe "$XPF" '//a/@*'
+xp_probe "$XPF" '//a[last()]'
+xp_probe "$XPF" 'ancestor::div'
+xp_probe "$XPF" '//a[@href][2]'
+xp_probe "$XPF" '//*'
+xp_probe "$XPF" 'count(//a)'
+xp_probe "$XPF" '//@href'
+xp_probe "$XPF" '//a[@href and @rel]'
+xp_probe "$XPF" '//a[@href!="/x"]'
+xp_probe "$XPF" '//a/following-sibling::span'
+xp_probe "$XPF" '//a[contains(text(),"X")]'
+xp_probe "$XPF" '//a[not(@rel)]'
+xp_probe "$XPF" 'normalize-space(//a)'
 
 # ── css leg: `sel { CSS }` ──────────────────────────────────────────────────
 # The README's headline claim is a jq/xpath/CSS/yq superset, and the css leg had
@@ -1676,6 +1696,41 @@ css_probe() {
             "$css" "$xp" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
     fi
 }
+# css_bad CSS — a MALFORMED selector must be REFUSED, not answered.
+#
+# `Selector::parse` failure used to map to an empty result, so a selector no CSS
+# engine accepts was indistinguishable from one that legitimately matches
+# nothing — the same silent-answer failure the xpath leg had, and the one SPEC §8
+# rules out. Every selector below is rejected by `scraper` (which implements
+# Selectors 3/4 via `cssparser`), so answering ANYTHING for one is a bug.
+css_bad() {
+    local css="$1"
+    if "$ARB" -e "out { in.html; sel { $css } }" </dev/null >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        fails+=("css! $css — MALFORMED but accepted silently")
+        [ "$QUIET" = 1 ] || printf 'DIFF css! %-22s accepted silently\n' "$css"
+    else
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   css! %-22s (refused)\n' "$css"
+    fi
+}
+css_bad 'a[href=/x]'
+css_bad 'div..card'
+css_bad 'a[[href]]'
+css_bad '>'
+css_bad 'a:::hover'
+
+# An attribute value in DOUBLE quotes. CSS accepts `'` and `"` alike, but arb's
+# command lexer turns `"…"` into a string ARG and the reconstruction dropped the
+# quotes, so `a[href="/x"]` reached `Selector::parse` as `a[href=/x]` — not a
+# legal selector, and therefore (before the fix above) an empty answer. Both
+# quote styles are probed here so neither can regress alone.
+css_probe "$XPF" 'a[href="/x"]'   "//a[@href='/x']/text()"
+css_probe "$XPF" "a[href='/x']"   "//a[@href='/x']/text()"
+css_probe "$XPF" 'a[rel="nf"]'    "//a[@rel='nf']/text()"
+css_probe "$XPF" 'div[class="card"] h2' "//div[@class='card']//h2/text()"
+css_probe "$XPF" 'a[href^="/"]'   '//a[@href]/text()'
+
 css_probe "$XPF" 'h2'          '//h2/text()'
 css_probe "$XPF" 'a'           '//a/text()'
 css_probe "$XPF" 'li'          '//li/text()'
