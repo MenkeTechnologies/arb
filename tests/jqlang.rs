@@ -384,6 +384,72 @@ fn inputs_share_one_cursor_with_the_stream() {
     ]);
 }
 
+/// A generated sweep over number LITERALS, in one pass, against the reference.
+///
+/// The hand-written probes above cover the boundaries that were reasoned about;
+/// this covers the ones that were not. Four thousand literals spread across the
+/// integer, fraction, sub-1 and extreme-exponent bands go through both engines
+/// and must render identically — which is how `serde_json`'s float reader was
+/// caught being an ULP off at `e+299` (`-6.306793e+299 | . + 0` came back as
+/// `-6.306792999999999e+299`), 386 divergences that the small-magnitude corpus
+/// could not see.
+///
+/// The COMPUTED path is checked separately and to a stated tolerance: jq's own
+/// arithmetic loses up to an ULP for an integer above 2^53 — measured, `jq` says
+/// `(-516424571754902561 + 0) == -516424571754902500` is `true` when the
+/// correctly-rounded double is `…600` — so arb is allowed to differ there and
+/// nowhere else.
+#[test]
+fn generated_number_literals_render_like_jq() {
+    if !reference_ok() {
+        return;
+    }
+    let mut lits: Vec<String> = Vec::new();
+    // A deterministic spread; no RNG, so a failure is reproducible by eye.
+    for e in -12i32..=12 {
+        for m in [1u64, 3, 7, 15, 125, 1024, 65537, 999_999] {
+            lits.push(format!("{m}e{e}"));
+            lits.push(format!("{m}.{m}e{e}"));
+        }
+    }
+    for d in 0..18 {
+        lits.push(format!("1{}", "0".repeat(d)));
+        lits.push(format!("{}1", "9".repeat(d)));
+        lits.push(format!("0.{}1", "0".repeat(d)));
+        lits.push(format!("1.{}", "5".repeat(d + 1)));
+    }
+    for extra in [
+        "0", "-0", "0.0", "1.50", "3.0", "0.10", "1e2", "1E+2", "12e3", "0.000001",
+        "0.0000001", "5e-3", "100000000000000000000000", "1.7976931348623157e308",
+        "-1.7976931348623157e308", "2.2250738585072014e-308", "9007199254740993",
+    ] {
+        lits.push(extra.to_string());
+    }
+    let refs: Vec<&str> = lits.iter().map(String::as_str).collect();
+
+    let ours = arb_run(". as $x | $x", &refs).expect("arb read every literal");
+    let theirs = jq_run(". as $x | $x", &refs).expect("jq read every literal");
+    assert_eq!(ours.len(), refs.len(), "one output per literal");
+    for ((a, b), src) in ours.iter().zip(&theirs).zip(&refs) {
+        assert_eq!(a, b, "literal `{src}` rendered differently");
+    }
+
+    // The computed path: identical except where jq's own double conversion is
+    // lossy, which is only ever an integer above 2^53.
+    let ours = arb_run(". + 0", &refs).expect("arb computed every literal");
+    let theirs = jq_run(". + 0", &refs).expect("jq computed every literal");
+    for ((a, b), src) in ours.iter().zip(&theirs).zip(&refs) {
+        if a == b {
+            continue;
+        }
+        let big = a.parse::<f64>().is_ok_and(|v| v.abs() > 9_007_199_254_740_992.0);
+        assert!(
+            big,
+            "`{src} + 0`: arb {a}, jq {b} — only jq's >2^53 ULP loss may differ"
+        );
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Invariants with no jq oracle — these need no reference binary.
 // ─────────────────────────────────────────────────────────────────────────────
