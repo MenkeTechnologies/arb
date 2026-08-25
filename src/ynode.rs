@@ -552,6 +552,13 @@ fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
 /// scalar and a nested collection.
 fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
     let style = v.meta().map_or(Style::Plain, |m| m.style);
+    // A head comment on the VALUE node of a mapping entry, which is what
+    // `.a head_comment = "x"` sets. The reader never produces one — it files an
+    // entry's head on the KEY — so this is the assignment's shape, and `yq`
+    // renders it AFTER the entry's own content: after `a: 1`, and after `c:` (so
+    // before the block that follows it). Both are "where the value's rendering
+    // begins", and both are measured.
+    let head: Rc<str> = v.meta().map_or(Rc::from(""), |m| m.head.clone());
     match v.bare() {
         JqVal::Obj(map) if !map.is_empty() && !is_flow(v) && !is_alias(v) => {
             let deco = decorations(v);
@@ -561,6 +568,7 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             }
             push_line_comment(out, v);
             out.push('\n');
+            push_comment(out, &head, ind + o.indent);
             push_block_map(out, entries(v, map), ind + o.indent, o);
         }
         JqVal::Arr(a) if !a.is_empty() && !is_flow(v) && !is_alias(v) => {
@@ -571,6 +579,7 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             }
             push_line_comment(out, v);
             out.push('\n');
+            push_comment(out, &head, ind + o.indent);
             push_block_seq(out, a, ind + o.indent, o);
         }
         JqVal::Str(s) if style.is_block_scalar() && !is_alias(v) => {
@@ -585,6 +594,7 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             // which is the line the reader took it from.
             let note = v.meta().map_or(Rc::from(""), |m| m.line.clone());
             push_block_scalar(out, s, raw.as_deref(), style, &note, ind + o.indent);
+            push_comment(out, &head, ind);
         }
         _ => {
             let text = inline(v, o);
@@ -594,6 +604,7 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             }
             push_line_comment(out, v);
             out.push('\n');
+            push_comment(out, &head, ind);
         }
     }
 }
