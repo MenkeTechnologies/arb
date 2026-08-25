@@ -748,6 +748,13 @@ impl Composer<'_, '_> {
 /// YAML writer the text is kept. `1.50` needs nothing here: the number already
 /// carries its literal, and a quoted string already carries its style.
 fn raw_if_needed(text: &str, style: ScalarStyle, v: &JqVal) -> Rc<str> {
+    // A FOLDED block is the one scalar whose value cannot rebuild its source:
+    // folding replaces the line breaks with spaces, so `>-` over two lines comes
+    // back as one. Its body is kept verbatim and re-emitted; a `|` literal needs
+    // no help, because its value IS its body.
+    if style == ScalarStyle::Folded {
+        return Rc::from(text);
+    }
     if style != ScalarStyle::Plain || text.is_empty() {
         return Rc::from("");
     }

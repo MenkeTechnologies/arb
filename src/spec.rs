@@ -1964,6 +1964,15 @@ fn pipeline_from_body(
                     // valid jq EITHER keeps the original refusal.
                     Err(sub_err) => match crate::query::jq_program(&src) {
                         Ok(_) => ops.push(QueryOp::JqProgram(src)),
+                        // A name arb DOES define, called at the wrong ARITY, is
+                        // an arity error and not an unknown verb. Both
+                        // references say so for their own (`jq 'ltrimstr'` ->
+                        // "ltrimstr/0 is not defined", `yq -n 'ref'` -> "'ref'
+                        // expects 2 args"), and reporting "unknown verb" for a
+                        // name that exists points at the wrong mistake.
+                        Err(jq_err) if crate::jqlang::defines_name(&src) => {
+                            return Err(jq_err.into())
+                        }
                         Err(_) => return Err(sub_err.into()),
                     },
                 }
@@ -2540,6 +2549,15 @@ fn pipeline_from_body(
                     let src = parts.join(" ");
                     match crate::query::jq_program(&src) {
                         Ok(_) => ops.push(QueryOp::JqProgram(src)),
+                        // A name arb DOES define, called at the wrong ARITY, is
+                        // an arity error and not an unknown verb. Both
+                        // references say so for their own (`jq 'ltrimstr'` ->
+                        // "ltrimstr/0 is not defined", `yq -n 'ref'` -> "'ref'
+                        // expects 2 args"), and reporting "unknown verb" for a
+                        // name that exists points at the wrong mistake.
+                        Err(jq_err) if crate::jqlang::defines_name(&src) => {
+                            return Err(jq_err.into())
+                        }
                         // Report arb's own diagnostic, not jq's parse error: a
                         // typo'd arb verb is far likelier than a jq program, and
                         // "unknown verb" is what points at the real mistake.

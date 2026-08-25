@@ -376,7 +376,13 @@ fn push_block_map(out: &mut String, map: &[(Rc<str>, JqVal)], ind: usize, o: Emi
         let key_node = v.meta().and_then(|m| m.key.clone());
         let km = key_node.as_deref().and_then(JqVal::meta);
         let head: Rc<str> = km.map_or(Rc::from(""), |m| m.head.clone());
-        let foot: Rc<str> = km.map_or(Rc::from(""), |m| m.foot.clone());
+        // The reader puts an entry's foot on its KEY node, but `.a |= (foot_comment
+        // = "f")` sets it on the VALUE — the node the update operator hands the
+        // filter. Both spellings have to reach the page, so either carries it.
+        let foot: Rc<str> = match km.map(|m| m.foot.clone()).filter(|f| !f.is_empty()) {
+            Some(f) => f,
+            None => v.meta().map_or(Rc::from(""), |m| m.foot.clone()),
+        };
         push_comment(out, &head, ind);
         pad(out, ind);
         out.push_str(&scalar_key(k, key_node.as_deref()));
@@ -452,10 +458,15 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
         JqVal::Str(s) if style.is_block_scalar() && !is_alias(v) => {
             out.push(' ');
             out.push_str(&decorations(v));
+            // A folded block's SOURCE body, where the reader kept one: the value
+            // has already lost the line breaks folding replaced. The CHOMPING
+            // indicator still comes from the value — it is the value's trailing
+            // newlines that `-`/`+` encode, not the body's.
+            let raw = v.meta().map(|m| m.raw.to_string()).filter(|r| !r.is_empty());
             // A block scalar's trailing comment belongs on the INDICATOR line,
             // which is the line the reader took it from.
             let note = v.meta().map_or(Rc::from(""), |m| m.line.clone());
-            push_block_scalar(out, s, style, &note, ind + o.indent);
+            push_block_scalar(out, s, raw.as_deref(), style, &note, ind + o.indent);
         }
         _ => {
             let text = inline(v, o);
@@ -480,7 +491,14 @@ fn push_line_comment(out: &mut String, v: &JqVal) {
 
 /// `|` / `>` with the body indented, plus the chomping indicator the text needs:
 /// `-` when it does not end in a newline, `+` when it ends in more than one.
-fn push_block_scalar(out: &mut String, s: &str, style: Style, note: &str, ind: usize) {
+fn push_block_scalar(
+    out: &mut String,
+    s: &str,
+    raw: Option<&str>,
+    style: Style,
+    note: &str,
+    ind: usize,
+) {
     out.push(if style == Style::Literal { '|' } else { '>' });
     let trailing = s.len() - s.trim_end_matches('\n').len();
     match trailing {
@@ -498,13 +516,25 @@ fn push_block_scalar(out: &mut String, s: &str, style: Style, note: &str, ind: u
     } else {
         s
     };
-    for line in body.trim_end_matches('\n').split('\n') {
-        if line.is_empty() {
+    // A kept SOURCE body is written line for line. Its continuation lines still
+    // carry the indent they were read at, so that is stripped and the target
+    // indent applied — otherwise re-emitting at the same depth doubles it.
+    let body = raw.unwrap_or(body);
+    let lines: Vec<&str> = body.trim_end_matches('\n').split('\n').collect();
+    let strip = lines
+        .iter()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches(' ').len())
+        .min()
+        .unwrap_or(0);
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
             out.push('\n');
             continue;
         }
         pad(out, ind);
-        out.push_str(line);
+        out.push_str(if i == 0 { line } else { &line[strip.min(line.len())..] });
         out.push('\n');
     }
     for _ in 1..trailing {

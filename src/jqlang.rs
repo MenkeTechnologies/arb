@@ -5423,6 +5423,26 @@ const YQ_BUILTINS: &[(&str, usize)] = &[
     ("to_number", 0),
 ];
 
+/// Does arb define `src` as a FUNCTION NAME at some arity?
+///
+/// Asked when a one-word jq program fails to compile, to tell an unknown verb
+/// apart from a known name called at the wrong arity. Both references report the
+/// latter as an arity problem — `jq 'ltrimstr'` says "ltrimstr/0 is not
+/// defined", `yq -n 'ref'` says "'ref' expects 2 args" — so answering "unknown
+/// verb" for a name that exists is wrong information, not merely a worse
+/// message.
+pub fn defines_name(src: &str) -> bool {
+    let word = src.trim();
+    if word.is_empty() || !word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return false;
+    }
+    if YQ_BUILTINS.iter().any(|&(n, _)| n == word) {
+        return true;
+    }
+    let prefix = format!("{word}/");
+    builtin_names().iter().any(|n| n.starts_with(&prefix))
+}
+
 /// Is `name/arity` one of the yq operators dispatched by [`yq_builtin`]?
 ///
 /// Checked BEFORE `builtin` unboxes its input, because the metadata group is the
@@ -5485,6 +5505,19 @@ fn set_meta(node: &JqVal, name: &str, val: &JqVal) -> JqVal {
         JqVal::Null => Rc::from(""),
         other => Rc::from(render_raw(other).as_str()),
     };
+    // Setting a CORE-SCHEMA tag converts the value, which is what the tag means:
+    // `.a tag = "!!str"` on `a: 1` gives `a: "1"` in yq, not `a: !!str 1`. Once
+    // converted the tag is implicit, so it is not written out as well.
+    if name == "tag" {
+        if let Some(v) = coerce_to_tag(node.bare(), &text) {
+            let implicit = crate::ynode::implicit_tag(&v) == &*text;
+            let mut meta = node.meta().cloned().unwrap_or_default();
+            meta.tag = if implicit { Rc::from("") } else { text.clone() };
+            meta.raw = Rc::from("");
+            meta.blank = false;
+            return JqVal::wrap(v, meta);
+        }
+    }
     node.with_meta(|m| match name {
         "anchor" => m.anchor = text.clone(),
         "tag" => m.tag = text.clone(),
@@ -5500,6 +5533,33 @@ fn set_meta(node: &JqVal, name: &str, val: &JqVal) -> JqVal {
         }
         _ => {}
     })
+}
+
+/// Convert a value to the type a core-schema tag names, or `None` for a tag with
+/// no conversion (a local `!mytag`, or one already matching).
+fn coerce_to_tag(v: &JqVal, tag: &str) -> Option<JqVal> {
+    match tag {
+        "!!str" => Some(JqVal::str(render_raw(v))),
+        "!!int" => v.as_f64().or_else(|| match v {
+            JqVal::Str(s) => s.trim().parse().ok(),
+            _ => None,
+        }).map(|n| JqVal::num(n.trunc())),
+        "!!float" => v.as_f64().or_else(|| match v {
+            JqVal::Str(s) => s.trim().parse().ok(),
+            _ => None,
+        }).map(JqVal::num),
+        "!!bool" => match v {
+            JqVal::Bool(_) => Some(v.clone()),
+            JqVal::Str(s) => match &**s {
+                "true" => Some(JqVal::Bool(true)),
+                "false" => Some(JqVal::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        },
+        "!!null" => Some(JqVal::Null),
+        _ => None,
+    }
 }
 
 /// Read a file, reporting yq's own message shape on failure.
