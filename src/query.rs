@@ -1937,94 +1937,24 @@ fn jq_array_json(elems: &[String]) -> String {
 }
 
 /// Parse the stream as a YAML document (or multi-document) and emit each document
-/// as a compact JSON line. Uses serde_yaml's document deserializer so every valid
-/// YAML `---` document-start marker splits — including `--- # comment` and a
-/// trailing-space `--- ` (a naive `split("\n---\n")` misses those and then feeds
-/// the whole multi-doc stream to a single-doc parse that errors, dropping it all).
+/// as a compact JSON line.
+///
+/// The composition lives in `crate::yaml`, over the parser's EVENT stream rather
+/// than through serde. serde's data model has nowhere to put a number's source
+/// text — a plain scalar reaches the visitor as an `f64` with the text already
+/// discarded — so `ratio: 1.50` printed `1.5` where `yq -o=json` prints `1.50`,
+/// while the JSON reader beside it kept the literal and printed `1.50`. That
+/// asymmetry is what the swap removes: both readers now build numbers through
+/// the same `num_from_literal`, so one value has one rendering whatever file it
+/// came out of.
+///
+/// Key ORDER is the document's, not sorted — `yq` preserves it and a `BTreeMap`
+/// does not, so `JqVal::Obj` (a vector of pairs) carries it end to end.
 fn yaml_to_json(lines: &[String]) -> Vec<String> {
-    use serde::Deserialize;
-    let doc = lines.join("\n");
-    serde_yaml::Deserializer::from_str(&doc)
-        .filter_map(|de| serde_yaml::Value::deserialize(de).ok())
-        .filter(|v| !v.is_null())
-        .map(|mut v| {
-            apply_yaml_merge(&mut v);
-            crate::jqlang::render(&yaml_to_jq(&v))
-        })
+    crate::yaml::documents(&lines.join("\n"))
+        .iter()
+        .map(crate::jqlang::render)
         .collect()
-}
-
-/// `serde_yaml::Value` -> the jq value model.
-///
-/// Deserializing straight into `serde_json::Value` was one line shorter and
-/// dropped the document's KEY ORDER on the way — `serde_json::Map` is a
-/// `BTreeMap`. That order is the thing `yq` preserves, so a `.` over
-/// `name: …\ncount: …` came back alphabetised while `yq -o=json` kept the file's
-/// order. `serde_yaml::Mapping` is insertion-ordered, and so is `JqVal::Obj`.
-///
-/// A non-string mapping key (YAML allows `1: x`) is rendered as its scalar text,
-/// which is what a JSON object requires and what `yq -o=json` emits.
-fn yaml_to_jq(v: &serde_yaml::Value) -> crate::jqlang::JqVal {
-    use crate::jqlang::JqVal;
-    match v {
-        serde_yaml::Value::Null => JqVal::Null,
-        serde_yaml::Value::Bool(b) => JqVal::Bool(*b),
-        // Through the JSON reader so a literal that a double would not print back
-        // the same way (a large integer, a trailing zero) keeps its source text.
-        serde_yaml::Value::Number(n) => {
-            crate::jqlang::parse_json(&n.to_string()).unwrap_or(JqVal::Null)
-        }
-        serde_yaml::Value::String(s) => JqVal::str(s.as_str()),
-        serde_yaml::Value::Sequence(a) => JqVal::arr(a.iter().map(yaml_to_jq).collect()),
-        serde_yaml::Value::Mapping(m) => JqVal::obj(
-            m.iter()
-                .map(|(k, val)| {
-                    let key = match k {
-                        serde_yaml::Value::String(s) => s.clone(),
-                        other => crate::jqlang::render_raw(&yaml_to_jq(other)),
-                    };
-                    (std::rc::Rc::from(key.as_str()), yaml_to_jq(val))
-                })
-                .collect(),
-        ),
-        // A `!Tag value` carries its payload; the tag itself has no JSON form.
-        serde_yaml::Value::Tagged(t) => yaml_to_jq(&t.value),
-    }
-}
-
-/// Apply YAML merge keys (`<<`). serde_yaml expands anchors/aliases but leaves the
-/// `<<` merge key literal, so `<<: *base` would otherwise surface a stray `<<`
-/// key and omit the merged fields. Merge each `<<` source into its parent object
-/// with correct precedence: an explicit key wins over any merged key, and among
-/// several merged sources (`<<: [*a, *b]`) an earlier source wins.
-fn apply_yaml_merge(v: &mut serde_yaml::Value) {
-    if let serde_yaml::Value::Mapping(map) = v {
-        let key = serde_yaml::Value::String("<<".to_string());
-        if let Some(merge) = map.remove(&key) {
-            let sources = match merge {
-                serde_yaml::Value::Sequence(a) => a,
-                other => vec![other],
-            };
-            for src in sources {
-                if let serde_yaml::Value::Mapping(m) = src {
-                    for (k, val) in m {
-                        // A key already present wins, so explicit keys and
-                        // earlier merge sources both take precedence.
-                        if !map.contains_key(&k) {
-                            map.insert(k, val);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    match v {
-        serde_yaml::Value::Mapping(map) => {
-            map.iter_mut().for_each(|(_, val)| apply_yaml_merge(val));
-        }
-        serde_yaml::Value::Sequence(a) => a.iter_mut().for_each(apply_yaml_merge),
-        _ => {}
-    }
 }
 
 /// Parse the stream as one TOML document and emit it as a JSON object line

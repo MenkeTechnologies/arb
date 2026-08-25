@@ -44,3 +44,4 @@ pub mod tiers;
 pub mod tui;
 pub mod web;
 pub mod xpath;
+pub mod yaml;

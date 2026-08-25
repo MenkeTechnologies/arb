@@ -387,10 +387,21 @@ and `keys` in every spelling is jq's. `stdlib/json.arb` runs `names; tally` and
 its in-language test (`arb --test stdlib/json.arb`) pins the shape. **The jq leg
 of the superset now has ZERO divergences**, machine-checked every run.
 
-**One measured deviation remains, and it is not silent.** A YAML number keeps its
-value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where `yq -o=json`
-prints `1.50`; the JSON path does preserve it. It is probed and reported as a
-divergence every run rather than allowlisted.
+**A YAML number keeps its LITERAL, the same way a JSON number does.** It did
+not: `ratio: 1.50` printed `1.5` where `yq -o=json` prints `1.50`, while the
+JSON reader beside it printed `1.50` for the same text. serde's data model has
+nowhere to put a number's source text — a plain scalar reaches the visitor as an
+`f64` with the text already discarded — so the YAML reader now composes from the
+parser's EVENT stream (`src/yaml.rs`), where a scalar arrives as its raw text,
+and builds numbers through the same `num_from_literal` the JSON reader uses. One
+number representation, one renderer, both formats.
+
+An INTEGER is the other rule and is not an oversight: it renders as its VALUE,
+never its text, because that is what `yq -o=json` prints (`007` -> `7`,
+`0xFF` -> `255`, `1_000` -> `1000`). Both rules are probed.
+
+**With that, `scripts/jq_parity.sh` reports ZERO divergences across every leg it
+runs** — 676 probes, no allowlist.
 
 **One deviation runs the other way.** For an integer above 2^53, jq's own
 arithmetic loses up to an ULP: `jq` answers `true` to

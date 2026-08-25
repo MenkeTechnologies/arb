@@ -565,7 +565,7 @@ fn canonical_num_literal(text: &str) -> Option<String> {
 
 /// Build a number value from its source text, keeping the literal only when jq
 /// would print something other than the double's own shortest form.
-fn num_from_literal(n: f64, text: &str) -> JqVal {
+pub(crate) fn num_from_literal(n: f64, text: &str) -> JqVal {
     if is_plain_shortest(text) {
         return JqVal::Num(n, None);
     }

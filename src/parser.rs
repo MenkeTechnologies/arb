@@ -73,8 +73,7 @@ fn parse_at(
                 // A block ARGUMENT of `sel` is a CSS selector, so its `#` is an ID
                 // and not a comment. The command's verb is already `cur[0]` by the
                 // time an argument block arrives.
-                let sel_arg =
-                    matches!(cur.first(), Some(Arg::Word(w)) if brace_is_not_commands(w));
+                let sel_arg = matches!(cur.first(), Some(Arg::Word(w)) if brace_is_not_commands(w));
                 // The block's inner text starts one char after the `{`.
                 cur.push(Arg::Block(parse_at(
                     raw,

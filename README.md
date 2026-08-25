@@ -537,15 +537,21 @@ the shortest decimal that round-trips, so it differs from the reference by being
 right; `tests/jqlang.rs` states that tolerance explicitly and byte-matches jq
 everywhere else.
 
-**The jq leg reports zero divergences.** The last one was a SPELLING collision:
-the native verb table is matched before the jq fall-through, so arb's native
-line-per-key verb — spelled `keys` — shadowed jq's builtin and the bare word
-printed a line per key where jq prints one sorted array. The native verb is
-spelled `names` now and `keys` in every spelling is jq's.
+**The harness reports zero divergences, on every leg it runs.** The last two
+were:
 
-One deviation is still reported as a divergence on every run rather than
-allowlisted: a YAML number keeps its value but not its literal, so `ratio: 1.50`
-prints as `1.5` where `yq` prints `1.50`. It is stated in full in
+A SPELLING collision. The native verb table is matched before the jq
+fall-through, so arb's native line-per-key verb — spelled `keys` — shadowed jq's
+builtin, and the bare word printed a line per key where jq prints one sorted
+array. The native verb is spelled `names` now and `keys` in every spelling is
+jq's.
+
+A LITERAL loss. A YAML number kept its value but not its source text, so
+`ratio: 1.50` printed `1.5` where `yq` prints `1.50` — while the JSON reader
+beside it printed `1.50` for the same text. serde's data model has nowhere to
+put a number's source text, so the YAML reader composes from the parser's EVENT
+stream now (`src/yaml.rs`) and builds numbers through the same helper the JSON
+reader uses. Both are stated in full in
 [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind

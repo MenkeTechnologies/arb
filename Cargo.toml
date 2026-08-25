@@ -57,7 +57,6 @@ time = "0.3"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1"
 serde_json = "1"
-serde_yaml = "0.9"
 scraper = "0.20"
 base64 = "0.22"
 percent-encoding = "2.3"
@@ -92,6 +91,7 @@ rkyv = { version = "0.7", features = ["validation", "archive_le", "size_32"] }
 bincode = "1"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
+saphyr-parser = "0.0.12"
 
 [profile.release]
 lto = true

@@ -2021,6 +2021,109 @@ fn yaml_merge_key_is_applied_with_correct_precedence() {
     }
 }
 
+/// A YAML number keeps the LITERAL it was written with, the same way a JSON
+/// number does. `serde_yaml` handed over an `f64` with the scalar's source text
+/// already discarded — serde's data model has nowhere to put it — so `ratio: 1.50`
+/// printed `1.5` while the JSON reader beside it printed `1.50`. The composer in
+/// `arb::yaml` reads the raw scalar off the parser's event stream instead.
+///
+/// Every expectation here is `yq -o=json -I=0 '.k'` on the same one-key document,
+/// except the four the comments name, which are stated tolerances.
+#[test]
+fn yaml_numbers_keep_their_source_literal() {
+    let one = |text: &str| -> String {
+        let ops = pipeline("tail .x\nsource .x { in.yaml; .k }");
+        match eval(&ops, &lines(&[&format!("k: {text}")]), 1.0) {
+            QueryResult::Lines(l) => l.join("|"),
+            other => panic!("k: {text} -> {other:?}"),
+        }
+    };
+    // The literal cases — the value is the same double, the TEXT is what differs.
+    for (src, want) in [
+        ("1.50", "1.50"),
+        ("1.500", "1.500"),
+        ("0.50", "0.50"),
+        ("-0.50", "-0.50"),
+        ("1.0", "1.0"),
+        ("0.1", "0.1"),
+        // A trailing `.` is a legal YAML float with an empty fraction and has no
+        // JSON spelling, so its zero is made explicit — `yq` answers `5.0` too.
+        ("5.", "5.0"),
+        ("-5.", "-5.0"),
+        (".5", "0.5"),
+    ] {
+        assert_eq!(one(src), want, "`{src}` must keep its literal");
+    }
+    // An INTEGER renders as its VALUE, never its text — `yq -o=json` prints `007`
+    // as `7` and `0xFF` as `255`. The opposite rule from floats, and measured.
+    for (src, want) in [
+        ("007", "7"),
+        ("+7", "7"),
+        ("010", "10"),
+        ("0x10", "16"),
+        ("0xFF", "255"),
+        ("0o17", "15"),
+        ("1_000", "1000"),
+        ("-516424571754902561", "-516424571754902561"),
+        ("9007199254740993", "9007199254740993"),
+    ] {
+        assert_eq!(one(src), want, "`{src}` must render its value");
+    }
+    // Stated tolerances, all four cases where `yq` itself does NOT answer:
+    // `.inf`/`.nan` and an integer past i64 make yq exit with a marshal error.
+    // arb takes its own jq value model instead, where an infinity clamps to
+    // ±DBL_MAX and a NaN renders as `null` (`fmt_num`, measured against jq 1.8.2).
+    assert_eq!(one(".inf"), "1.7976931348623157E+308");
+    assert_eq!(one("-.inf"), "-1.7976931348623157E+308");
+    assert_eq!(one(".nan"), "null");
+    assert_eq!(one("12345678901234567890"), "12345678901234567890");
+    // A QUOTED scalar is a string whatever it looks like, and a plain word that
+    // is not a YAML number stays a string.
+    assert_eq!(one("\"1.50\""), "1.50"); // rendered raw, `jq -r`-style
+    assert_eq!(one("yes"), "yes");
+    assert_eq!(one("null"), "null");
+    assert_eq!(one("~"), "null");
+    assert_eq!(one("true"), "true");
+    assert_eq!(one("True"), "true");
+}
+
+/// A merged key lands where the `<<` WAS, not at the end of the mapping.
+///
+/// Appending them put the mapping's own keys first in every case, so the
+/// identity filter over any document using a merge key came back in an order
+/// `yq` never prints. Both references:
+///   `yq -o=json -I=0 . ` on `{<<: *a, extra: 1}`  ->  `{"k":"v","extra":1}`
+///   ...             on `{extra: 1, <<: *a}`       ->  `{"extra":1,"k":"v"}`
+#[test]
+fn yaml_merge_key_expands_in_place() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; . }");
+    let src = [
+        "b: &a {k: v}",
+        "m: {<<: *a, extra: 1}",
+        "n: {extra: 1, <<: *a}",
+    ];
+    assert_eq!(
+        eval(&ops, &lines(&src), 1.0),
+        QueryResult::Lines(lines(&[
+            r#"{"b":{"k":"v"},"m":{"k":"v","extra":1},"n":{"extra":1,"k":"v"}}"#
+        ]))
+    );
+}
+
+/// Key order is the FILE's, not sorted, and it survives the reader swap. This is
+/// the property `yq` preserves and a `BTreeMap`-backed value model destroys.
+#[test]
+fn yaml_keeps_document_key_order() {
+    let ops = pipeline("tail .x\nsource .x { in.yaml; . }");
+    let src = ["zebra: 1", "alpha: 2", "middle:", "  yak: 3", "  ant: 4"];
+    assert_eq!(
+        eval(&ops, &lines(&src), 1.0),
+        QueryResult::Lines(lines(&[
+            r#"{"zebra":1,"alpha":2,"middle":{"yak":3,"ant":4}}"#
+        ]))
+    );
+}
+
 // ── jq value semantics (SPEC §8) ────────────────────────────────────────────
 // Round-7: the jq front-end used to lower `select(…)`/`map(…)` bodies and bare
 // arithmetic stages onto `crate::expr`, arb's f64 evaluator. Every test below
@@ -2291,7 +2394,10 @@ fn sel_brace_reads_a_leading_hash_as_an_id_not_a_comment() {
 #[test]
 fn hash_still_comments_in_command_blocks() {
     let ops = pipeline("tail .x\nsource .x { in\n# a comment, not a verb\ncount }");
-    assert_eq!(eval(&ops, &lines(&["a", "b"]), 1.0), QueryResult::Scalar(2.0));
+    assert_eq!(
+        eval(&ops, &lines(&["a", "b"]), 1.0),
+        QueryResult::Scalar(2.0)
+    );
 
     let src = "tail .x\nsource .x { in.html; sel { } }";
     assert!(
