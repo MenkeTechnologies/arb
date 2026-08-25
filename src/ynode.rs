@@ -149,6 +149,18 @@ pub struct NodeMeta {
     /// Its value is null, and so is a node written `null` or `~`; only this says
     /// which of the three spellings the file used.
     pub blank: bool,
+    /// A comment written after a sequence item's `-` marker, before the item's
+    /// own content (`- # note` on the line above an indented mapping).
+    ///
+    /// WRITER-ONLY, and deliberately so: `yq` puts the comment back on round trip
+    /// but reports nothing for it through `head_comment` or `line_comment`, so
+    /// exposing it through either accessor would answer where the reference
+    /// answers empty. This slot round-trips it and stays invisible, which is
+    /// exactly the reference's observable behaviour.
+    pub marker: Rc<str>,
+    /// The document opened with an explicit `---`. `yq` keeps it; a document
+    /// that began implicitly must not grow one.
+    pub explicit_doc: bool,
     /// A mapping's entries as they were WRITTEN, with `<<` still in place.
     /// Readers see the merged mapping; the writer emits this, so a round trip
     /// does not expand a merge key into the keys it stood for.
@@ -178,6 +190,8 @@ impl NodeMeta {
             && self.raw.is_empty()
             && self.written.is_none()
             && !self.blank
+            && self.marker.is_empty()
+            && !self.explicit_doc
             && self.line_no == 0
             && self.col_no == 0
             && self.path.is_empty()
@@ -280,7 +294,10 @@ impl Default for Emit {
 pub fn emit_docs(docs: &[JqVal], o: Emit) -> String {
     let mut out = String::new();
     for (i, d) in docs.iter().enumerate() {
-        if i > 0 {
+        // Every document after the first needs the separator; the FIRST gets one
+        // only if the source wrote one, so an implicit document does not grow a
+        // `---` it never had.
+        if i > 0 || d.meta().is_some_and(|m| m.explicit_doc) {
             out.push_str("---\n");
         }
         out.push_str(&emit_doc(d, o));
@@ -393,7 +410,7 @@ fn entries<'a>(v: &'a JqVal, map: &'a [(Rc<str>, JqVal)]) -> &'a [(Rc<str>, JqVa
 /// thing in the mapping is followed by the BLANK line that is what made it a
 /// foot rather than the next entry's head.
 fn push_block_map(out: &mut String, map: &[(Rc<str>, JqVal)], ind: usize, o: Emit) {
-    for (i, (k, v)) in map.iter().enumerate() {
+    for (k, v) in map.iter() {
         let key_node = v.meta().and_then(|m| m.key.clone());
         let km = key_node.as_deref().and_then(JqVal::meta);
         let head: Rc<str> = km.map_or(Rc::from(""), |m| m.head.clone());
@@ -420,16 +437,28 @@ fn push_block_seq(out: &mut String, items: &[JqVal], ind: usize, o: Emit) {
         }
         pad(out, ind);
         out.push('-');
+        // A comment on the MARKER line ends it, so the item's content starts on
+        // the line below at the item's own indent rather than sharing the `- `.
+        let marker = item.meta().map(|m| m.marker.clone()).filter(|s| !s.is_empty());
+        if let Some(note) = &marker {
+            out.push_str(" # ");
+            out.push_str(note);
+            out.push('\n');
+        }
         match item.bare() {
             JqVal::Obj(map) if !map.is_empty() && !is_flow(item) && !is_alias(item) => {
-                out.push(' ');
-                out.push_str(&decorations(item));
                 let mut body = String::new();
                 push_block_map(&mut body, entries(item, map), ind + o.indent, o);
-                // The mapping's FIRST line shares the `- ` the caller just wrote,
-                // so its indent is dropped; every later line keeps the indent
-                // that lines it up under the first key.
-                out.push_str(body.trim_start_matches(' '));
+                if marker.is_some() {
+                    out.push_str(&body);
+                } else {
+                    out.push(' ');
+                    out.push_str(&decorations(item));
+                    // The mapping's FIRST line shares the `- ` the caller just
+                    // wrote, so its indent is dropped; every later line keeps the
+                    // indent that lines it up under the first key.
+                    out.push_str(body.trim_start_matches(' '));
+                }
             }
             JqVal::Arr(a) if !a.is_empty() && !is_flow(item) && !is_alias(item) => {
                 out.push('\n');

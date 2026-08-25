@@ -344,7 +344,8 @@ impl Composer<'_, '_> {
         while let Some((ev, _)) = self.evs.get(self.i) {
             match ev {
                 Event::StreamEnd => break,
-                Event::DocumentStart(_) => {
+                Event::DocumentStart(explicit) => {
+                    let explicit = *explicit;
                     self.i += 1;
                     self.anchors.clear();
                     // The document's opening comment block is claimed BEFORE the
@@ -358,7 +359,7 @@ impl Composer<'_, '_> {
                     if !matches!(v.bare(), JqVal::Null) {
                         // A trailing block at column 0 is the document's foot.
                         let foot = self.comments.take_foot(self.last_line, 0);
-                        let v = if head.is_empty() && foot.is_empty() {
+                        let v = if head.is_empty() && foot.is_empty() && !explicit {
                             v
                         } else {
                             v.with_meta(|m| {
@@ -368,6 +369,9 @@ impl Composer<'_, '_> {
                                 if !foot.is_empty() {
                                     m.foot = Rc::from(foot.as_str());
                                 }
+                                // A document that opened with `---` keeps it; one
+                                // that opened implicitly must not grow one.
+                                m.explicit_doc = explicit;
                             })
                         };
                         docs.push(v);
@@ -380,6 +384,26 @@ impl Composer<'_, '_> {
             }
         }
         docs
+    }
+
+    /// The comment on the `-` marker line above an item that starts at `line`.
+    ///
+    /// Only a line whose content before the `#` is exactly the marker qualifies,
+    /// so this can never take a comment that trails real content.
+    fn marker_comment(&mut self, line: usize) -> String {
+        if line < 2 {
+            return String::new();
+        }
+        let prev = line - 1;
+        let start = self.lines.0.get(prev.saturating_sub(1)).copied().unwrap_or(0);
+        let end = self.src[start..]
+            .find('\n')
+            .map_or(self.src.len(), |n| start + n);
+        let text = &self.src[start..end];
+        match text.find('#') {
+            Some(at) if text[..at].trim() == "-" => self.comments.take_line(prev),
+            _ => String::new(),
+        }
     }
 
     /// The 1-based column of the `|`/`>` on source line `line`.
@@ -505,20 +529,29 @@ impl Composer<'_, '_> {
                     // a mapping starts on the same line, and its first key would
                     // otherwise take the block that belongs to the item.
                     let head = self.comments.take_head(start);
+                    // A comment written after the `-` MARKER, on the line above an
+                    // indented item. Nothing else can claim it: the marker line
+                    // holds no node, and the item's own line is the one below.
+                    let marker = self.marker_comment(start);
                     let item = self.node(&p, None, false);
                     let foot = self.comments.take_foot(self.last_line, icol);
-                    items.push(if head.is_empty() && foot.is_empty() {
-                        item
-                    } else {
-                        item.with_meta(|m| {
-                            if !head.is_empty() {
-                                m.head = Rc::from(head.as_str());
-                            }
-                            if !foot.is_empty() {
-                                m.foot = Rc::from(foot.as_str());
-                            }
-                        })
-                    });
+                    items.push(
+                        if head.is_empty() && foot.is_empty() && marker.is_empty() {
+                            item
+                        } else {
+                            item.with_meta(|m| {
+                                if !head.is_empty() {
+                                    m.head = Rc::from(head.as_str());
+                                }
+                                if !foot.is_empty() {
+                                    m.foot = Rc::from(foot.as_str());
+                                }
+                                if !marker.is_empty() {
+                                    m.marker = Rc::from(marker.as_str());
+                                }
+                            })
+                        },
+                    );
                 }
                 self.i += 1; // SequenceEnd
                 let v = JqVal::arr(items);
