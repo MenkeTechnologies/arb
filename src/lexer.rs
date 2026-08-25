@@ -4,7 +4,9 @@
 //! whose inner text is re-lexed by the parser when it is known to be a command
 //! body. `"..."` is a literal string (no interpolation in M1). `#` begins a
 //! comment to end-of-line, but only where a command is expected (start of line,
-//! after `;`). `;` and newline terminate commands.
+//! after `;`) and only in a brace that holds commands — `sel { … }` holds a CSS
+//! selector, so `#` is an ID selector there (see `lex_opts`). `;` and newline
+//! terminate commands.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -26,7 +28,26 @@ pub enum Tok {
 /// command legitimately starts with a widget path — `.x <- in` (bind shorthand)
 /// and `.g configure -max 200` — so reading `.`-first commands as jq literals
 /// there would swallow those whole.
+///
+/// Comments are enabled. `lex_opts` is the spelling that can turn them off, for
+/// the one brace whose contents are not commands.
 pub fn lex(src: &str, jq_ok: bool) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
+    lex_opts(src, jq_ok, true)
+}
+
+/// `lex`, with the `#` comment rule made optional.
+///
+/// `hash_comments` is false for exactly one brace: `sel { … }`, whose contents
+/// are a CSS SELECTOR rather than a command list. `#main` is an ID selector
+/// there, and reading it as a comment to end-of-line emptied the block, so the
+/// documented spelling `sel { #main }` reported `sel: expected a CSS selector`
+/// instead of selecting the element. Every other brace in the language holds
+/// commands, where `#` keeps its comment meaning.
+pub fn lex_opts(
+    src: &str,
+    jq_ok: bool,
+    hash_comments: bool,
+) -> Result<Vec<(Tok, usize)>, crate::err::SpecError> {
     use crate::err::SpecError;
     let cs: Vec<char> = src.chars().collect();
     let n = cs.len();
@@ -44,7 +65,7 @@ pub fn lex(src: &str, jq_ok: bool) -> Result<Vec<(Tok, usize)>, crate::err::Spec
                 i += 1;
                 at_cmd_start = true;
             }
-            '#' if at_cmd_start => {
+            '#' if at_cmd_start && hash_comments => {
                 while i < n && cs[i] != '\n' {
                     i += 1;
                 }

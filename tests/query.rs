@@ -2214,3 +2214,58 @@ fn sel_accepts_the_braced_spelling_the_docs_print() {
         );
     }
 }
+
+/// `sel { #main }` — the ID selector inside the braced spelling.
+///
+/// `#` opens a comment to end-of-line wherever a command is expected, and the
+/// brace's contents were re-lexed as commands, so `#main` was eaten whole: the
+/// block came back EMPTY and `sel` reported `expected a CSS selector` (exit 1)
+/// for a selector the docs advertise. `sel`'s brace holds a CSS SELECTOR, not
+/// commands, so it is now re-lexed with the comment rule off.
+///
+/// The reference is `xmllint --html --xpath '//div[@id="main"]//p/text()'` on
+/// this document, which prints `Hello`. Checked in `scripts/jq_parity.sh` too;
+/// this pins it without needing xmllint on the machine.
+#[test]
+fn sel_brace_reads_a_leading_hash_as_an_id_not_a_comment() {
+    let html = lines(&[
+        r#"<html><body><div id="main"><p>Hello</p></div><p id="two">Bye</p></body></html>"#,
+    ]);
+    // Every spelling of the same selection, braced and unbraced, leading `#` and
+    // compound. All four reached the same nodes except the first, which errored.
+    for spelling in [
+        "sel { #main p }",
+        "sel { #main }",
+        "sel #main",
+        "sel { div#main p }",
+    ] {
+        let ops = pipeline(&format!("tail .x\nsource .x {{ in.html; {spelling} }}"));
+        assert_eq!(
+            eval(&ops, &html, 1.0),
+            QueryResult::Lines(lines(&["Hello"])),
+            "`{spelling}` must select the `#main` paragraph"
+        );
+    }
+    // A selector LIST inside the brace, so the `#` fix is not just the leading
+    // position: the second `#two` is mid-block, past a comma.
+    let ops = pipeline("tail .x\nsource .x { in.html; sel { #main p, #two } }");
+    assert_eq!(
+        eval(&ops, &html, 1.0),
+        QueryResult::Lines(lines(&["Hello", "Bye"]))
+    );
+}
+
+/// The comment rule is scoped, not deleted. `#` still opens a comment in every
+/// brace that holds COMMANDS — which is every brace but `sel`'s — and an empty
+/// `sel { }` still errors rather than selecting everything.
+#[test]
+fn hash_still_comments_in_command_blocks() {
+    let ops = pipeline("tail .x\nsource .x { in\n# a comment, not a verb\ncount }");
+    assert_eq!(eval(&ops, &lines(&["a", "b"]), 1.0), QueryResult::Scalar(2.0));
+
+    let src = "tail .x\nsource .x { in.html; sel { } }";
+    assert!(
+        build(&parse(src).unwrap()).is_err(),
+        "an empty `sel` block must still be refused"
+    );
+}

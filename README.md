@@ -537,12 +537,10 @@ the shortest decimal that round-trips, so it differs from the reference by being
 right; `tests/jqlang.rs` states that tolerance explicitly and byte-matches jq
 everywhere else.
 
-Three deviations are reported as divergences on every run rather than
-allowlisted: a `sel { … }` selector cannot begin with `#` (that opens a comment
-in arb's lexer — `sel #main`, `sel { div#main p }` and the xpath
-`//div[@id='main']` all work); a YAML number keeps its value but not its literal,
-so `ratio: 1.50` prints as `1.5` where `yq` prints `1.50`; and the bare `keys`
-spelling is arb's native verb. All three are stated in full in
+Two deviations are reported as divergences on every run rather than
+allowlisted: a YAML number keeps its value but not its literal, so `ratio: 1.50`
+prints as `1.5` where `yq` prints `1.50`; and the bare `keys` spelling is arb's
+native verb. Both are stated in full in
 [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind

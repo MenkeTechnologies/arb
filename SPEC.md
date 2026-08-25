@@ -367,17 +367,21 @@ BARE word is the native verb and the CALL spelling is jq's — `sort_by v` is
 arb's, `sort_by(.v)` is jq's, and `. | sort` reaches jq's. That is the context
 rule below, not a jq leak.
 
-**Three measured deviations, none of them silent.** A `sel { CSS }` selector
-cannot begin with `#`: `#` opens a comment in arb's lexer, so `sel { #main }`
-lexes to an empty block and reports `sel: expected a CSS selector` (exit 1) rather
-than selecting anything. The unbraced `sel #main`, the compound `sel { div#main p }`
-and the xpath `//div[@id='main']` all reach the same nodes. A YAML number keeps its
-value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where `yq -o=json`
-prints `1.50` — `serde_yaml`'s data model hands over an `f64` with the scalar's
-source text already discarded, which is not reachable without replacing the YAML
-parser; the JSON path does preserve it. And the bare `keys` spelling is the
-native verb, described in full below. All three are probed and reported as
-divergences every run rather than allowlisted.
+**`#` inside `sel { … }` is an ID, not a comment.** `#` opens a comment to
+end-of-line wherever a command is expected, and `sel`'s brace used to be re-lexed
+as commands — so `sel { #main }`, a spelling the docs advertise, lexed to an
+EMPTY block and reported `sel: expected a CSS selector` (exit 1) instead of
+selecting the element. `sel` is the one brace in the language whose contents are
+not commands (they are a CSS selector), so it is re-lexed with the comment rule
+off and `sel { #main }`, `sel { #main p }` and the selector list
+`sel { #main p, #two }` all select what xmllint's equivalent XPath selects. Every
+other brace holds commands and keeps `#` as a comment.
+
+**Two measured deviations remain, neither of them silent.** A YAML number keeps
+its value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where
+`yq -o=json` prints `1.50`; the JSON path does preserve it. And the bare `keys`
+spelling is the native verb, described in full below. Both are probed and
+reported as divergences every run rather than allowlisted.
 
 **One deviation runs the other way.** For an integer above 2^53, jq's own
 arithmetic loses up to an ULP: `jq` answers `true` to
