@@ -499,37 +499,50 @@ out { in.html; //a/@href }                               # xpath literal
 | `//a/@href` | `find a; attr href` |
 | `div.card h2` | `sel {div.card h2}` |
 
-The jq/xpath literal front-ends cover the common path/filter subset; anything
-outside it is a **hard error** (`jq: …` / `xpath: …`), never silently guessed.
-That includes a TYPE mismatch inside the subset — `null | .[]`, `true | length`,
+arb implements **jq**, not a subset of it. The comma operator, object and array
+construction, `if`/`elif`, `try`/`catch` and `?`, `//`, `..`, `as` bindings with
+destructuring and `?//`, `reduce`/`foreach`, `label`/`break`, `def` (with filter
+and value parameters, and recursion), string interpolation and every `@format`,
+the whole assignment family, the path builtins, the regex family and the stream
+builtins all answer exactly as jq does. The xpath front-end is still a documented
+subset: anything outside it is a **hard error** (`xpath: …`), never silently
+guessed. So is a TYPE mismatch on either side — `null | .[]`, `true | length`,
 `{"a":1} | . + 3` and `.n / 0` all refuse and exit non-zero, because jq refuses
 them too and an answer where the reference raises is the same silent guess.
-A `select(…)`/`map(…)` body evaluates over jq VALUES, so a compare yields
-`true`/`false`, only `false` and `null` are falsy, `==` is type-strict, `+` is
-overloaded per type (string concat, array concat, object merge, `null` as the
-identity) and `%` truncates to integers the way jq's does.
 
-A top-level JSON string renders RAW, as `jq -r` prints one — a line reading
-`"hello"` is `hello` — through identity/`select`/`values` as well as through a
-path or a slice.
+Two things about the value model are observable and both match jq. Object keys
+keep INSERTION order, so `keys_unsorted` and `to_entries` report the document's
+own order while `keys` sorts. And a number keeps the source LITERAL it was read
+with until arithmetic touches it, printed in decNumber's canonical form: `1.50`
+stays `1.50`, `1e2` prints as `1E+2`, `12345678901234567890` round-trips, and
+`. + 0` on any of them collapses to the double. A top-level JSON string renders
+RAW, as `jq -r` prints one — a line reading `"hello"` is `hello`.
 
 All of that is checked by `scripts/jq_parity.sh`, which runs arb and the
-reference tool over one corpus and byte-diffs stdout: an in-subset construct must
-match `jq -rc` / `xmllint --xpath`, an out-of-subset one must exit non-zero, and
-a type error must be refused by BOTH engines — the probe verifies that jq really
-does refuse, so a refusal arb invented alone is never scored as parity. The css
-leg (`sel { … }`) is probed against the xmllint XPath that selects the same
-elements. A fifth probe kind covers the non-JSON line, where `jq` refuses the
-input outright and there is therefore no oracle at all: the expected values come
-from the SPEC prose, and the probe asserts that jq really does refuse, so it can
-never quietly pin arb against a live reference. It has no allowlist, and the `yq`
-leg is reported as unverified rather than passing while no `yq` is installed.
+reference tool over one corpus and byte-diffs stdout. Six probe kinds:
+`jq_probe` must match `jq -rc`, `xp_probe` must match `xmllint --xpath`,
+`yq_probe` must match `yq -o=json -I=0`, `type_probe` requires BOTH engines to
+refuse and verifies that jq really does, `text_probe` covers the non-JSON line
+where jq refuses the input outright and there is no oracle at all, and
+`ext_probe` covers a builtin arb keeps that jq 1.8 dropped. A seventh,
+`superset_probe`, is the containment the word *superset* actually names: every
+`name/arity` in jq's own `builtins` must exist in arb's. It found 44 missing on
+its first run and reports none today. There is no allowlist.
 
-Two deviations are reported as divergences on every run rather than allowlisted: a
-`sel { … }` selector cannot begin with `#` (that opens a comment in arb's lexer —
-`sel #main`, `sel { div#main p }` and the xpath `//div[@id='main']` all work), and
-a passed-through line keeps its source spacing where `jq -c` re-serializes it
-compact. Both are stated in full in
+One deviation runs the other way and is deliberate: for an integer above 2^53,
+jq's own arithmetic loses up to an ULP (`jq` answers `true` to
+`(-516424571754902561 + 0) == -516424571754902500` when the correctly-rounded
+double ends `…600`). arb reads with Rust's correctly-rounded parser and prints
+the shortest decimal that round-trips, so it differs from the reference by being
+right; `tests/jqlang.rs` states that tolerance explicitly and byte-matches jq
+everywhere else.
+
+Three deviations are reported as divergences on every run rather than
+allowlisted: a `sel { … }` selector cannot begin with `#` (that opens a comment
+in arb's lexer — `sel #main`, `sel { div#main p }` and the xpath
+`//div[@id='main']` all work); a YAML number keeps its value but not its literal,
+so `ratio: 1.50` prints as `1.5` where `yq` prints `1.50`; and the bare `keys`
+spelling is arb's native verb. All three are stated in full in
 [`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind
@@ -550,9 +563,9 @@ and fails below a floor — otherwise a missing tool drains the whole reference
 leg into `skipped` and the divergence count reaches 0 by comparing nothing.
 
 Where a spelling means one thing to jq and another to arb, **context decides**: a
-body command that begins with a jq literal (`.`, `select(`, `map(`, `has(`) goes
-to the jq front-end and every builtin in it answers as jq does, while a bare
-alphanumeric word is arb's native verb. So `. | keys` is jq's one sorted array and
+bare alphanumeric word is arb's NATIVE verb and the `name(` CALL spelling is jq's,
+so `sort_by v` is arb's and `sort_by(.v)` is jq's. Piping into a builtin puts it
+in jq context too. So `. | keys` is jq's one sorted array and
 `keys` alone is the native line-per-key verb; likewise `. | flatten` vs `flatten`,
 and jq `to_entries` vs native `entries`. The bare `keys` collision is the one that
 stays unresolved — `stdlib/json.arb` pipes the line-per-key shape into `tally` —

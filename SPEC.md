@@ -311,52 +311,82 @@ out { in.html; //a/@href }                               # xpath: descendant + a
 out { in.html; //div[@class]//span/text() }              # xpath: predicate + child + text()
 ```
 
-Supported jq: identity `.`, key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index
-`.[N]` (and negative `.[-1]`), slice `.[a:b]` (bounds optional/negative), pipe
-`|`, `select(…)`, `map(…)`, and the builtins arb already has (`keys`/`values`/
-`length` (JSON-aware — array/object/string/number)/`add`/`has`/`to_entries`/
-`flatten`). `map(…)` is jq's `map`, so it returns an ARRAY (`map(f)` == `[.[] | f]`)
-and is scoped to one input line; the iterate-without-rewrap reading is jq's own
-`.[] | f`. Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
+**The whole jq language.** arb implements jq, not a subset of it: identity `.`,
+key/path `.foo.bar`, iterate `.[]`/`.foo[]`, index `.[N]` (and negative `.[-1]`),
+slice `.[a:b]`, pipe `|`, the comma operator `.a, .b`, object and array
+construction (`{a: .a}`, `[.a, .b]`), parentheses, `if`/`then`/`elif`/`else`,
+`try`/`catch` and the `?` suppressor, the `//` alternative, `..` recursive
+descent, `as` bindings including array/object destructuring and the `?//`
+alternative, `reduce` and `foreach`, `label`/`break`, `def` with filter and value
+parameters (and recursion), `$ENV`/`$__loc__`, string interpolation `\(…)` and
+every `@format`, the whole assignment family (`=`, `|=`, `+=`, `-=`, `*=`, `/=`,
+`%=`, `//=`), path expressions (`path`, `paths`, `getpath`, `setpath`,
+`delpaths`, `del`, `pick`, `to_entries`/`from_entries`/`with_entries`), the regex
+family (`test`/`match`/`capture`/`scan`/`split`/`splits`/`sub`/`gsub`), the
+stream builtins (`tostream`/`fromstream`/`truncate_stream`, `input`/`inputs`,
+`limit`/`first`/`last`/`nth`/`until`/`while`/`repeat`/`isempty`), and the
+date and libm surfaces.
+
+That is not a list to be taken on trust. `scripts/jq_parity.sh` carries a
+`superset_probe` that compares jq's own `builtins` output against arb's and fails
+on any `name/arity` jq defines and arb does not; it currently reports none
+missing. On its first run it reported 44, which is how `JOIN`, `bsearch`, `skip`,
+`toboolean`, `trimstr`, `format` and the libm names from `acosh` to `yn` came to
+be implemented. Every other construct is byte-diffed against `jq -rc` on the same
+input, and a construct applied to the WRONG TYPE must be refused by both engines
+— with jq's refusal checked, so a refusal arb invented alone is never scored as
+parity.
+
+Two engines sit behind that. A jq literal that maps onto arb's line-stream ops
+(a path, an iterate, a `select`, a `map`) is translated to them, which is what
+keeps arb's own promises about a non-JSON line. Everything else compiles to a
+program on arb's jq engine, whose value model is jq's: object keys keep INSERTION
+order (`keys_unsorted` and `to_entries` expose it), and a number keeps the source
+LITERAL it was read with until arithmetic touches it, printed in decNumber's
+canonical form — so `1.50` stays `1.50`, `1e2` prints as `1E+2`, and
+`12345678901234567890` round-trips.
+
+Names resolve at COMPILE time, as jq's do. A word that is neither an arb verb nor
+a jq builtin is still arb's `unknown verb`, not a jq runtime failure — a typo'd
+arb verb is far likelier than a jq program, and that diagnostic is what points at
+the real mistake.
+
+Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
 `[@attr]` existence, `[@attr='v']`/`[@attr="v"]` equality (either quote) and
 `[contains(@attr,'v')]` substring predicates, union `//a|//b`, and the `/@attr` /
 `/text()` accessors, plus a standalone `@attr` step, which is arb's line-stream
 continuation (`//a; @href`) rather than XPath's `attribute::` axis from the
-document node. **Anything outside the documented subset is a hard error**
-(`jq: …` / `xpath: …`) anchored to the offending verb — never silently
-reinterpreted (no reduce/foreach, no `//` alternative, no `?` suppression, no
-try/catch, no `..` recursive descent, no variable binding, no
-`paths`/`getpath`/`setpath`, no `from_entries`/`with_entries`, no
-`group_by`/`unique_by`/`min_by`/`max_by` in jq spelling, no `range`, no
-regex builtins (`sub`/`gsub`/`splits`), no `@base64`/`@csv`/`@tsv`/`@json` format
-strings, no `env`/`$ENV`, no `input`/`inputs`, no positional/text predicates, no
-axes, no `*` wildcard step). The same applies to jq's SYNTAX forms, which the list
-above does not name because none of them is a builtin: no object construction
-(`{a: .a}`), no array construction (`[.a, .b]`), no comma operator (`.a, .b`), no
-`if`/`then`/`else`, and no parentheses (`(.a + 3) * 2` — the body dispatcher hands
-only `.`, `select(`, `map(` and `has(` to the jq front-end, so a leading `(` is
-refused as an unknown verb). Nor the remaining builtin families: no
-`type`/`tojson`/`fromjson`, no string builtins (`startswith`/`ltrimstr`/`explode`/
-`join`), no `reverse`/`unique`/`contains`/`indices`/`del`/`path`/`walk`, no
-type filters (`objects`/`arrays`/`nulls`/`scalars`), no math builtins
-(`sqrt`/`infinite`/`nan`/`now`). Where a jq builtin shares a spelling with an arb
-NATIVE verb (`sort`, `min`, `max`, `floor`, `abs`, …) the bare word is the native
-verb, per the context rule below — that is the documented gating, not a jq leak.
-`scripts/jq_parity.sh` probes BOTH halves of this
-contract: every claimed construct is byte-diffed against the reference tool, and
-every construct named as out-of-subset is asserted to exit non-zero.
+document node. **Anything outside the documented xpath subset is a hard error**
+(`xpath: …`) anchored to the offending verb — never silently reinterpreted (no
+positional/text predicates, no axes, no `*` wildcard step).
 
-**Two measured deviations, neither of them silent.** A `sel { CSS }` selector
+Where a jq builtin shares a spelling with an arb NATIVE verb (`sort`, `min`,
+`max`, `floor`, `abs`, `keys`, `length`, `add`, `flatten`, `first`, `last`,
+`split`, `join`, `del`, `index`, `contains`, `range`, `match`, `repeat`, …) the
+BARE word is the native verb and the CALL spelling is jq's — `sort_by v` is
+arb's, `sort_by(.v)` is jq's, and `. | sort` reaches jq's. That is the context
+rule below, not a jq leak.
+
+**Three measured deviations, none of them silent.** A `sel { CSS }` selector
 cannot begin with `#`: `#` opens a comment in arb's lexer, so `sel { #main }`
 lexes to an empty block and reports `sel: expected a CSS selector` (exit 1) rather
 than selecting anything. The unbraced `sel #main`, the compound `sel { div#main p }`
-and the xpath `//div[@id='main']` all reach the same nodes. And identity/`select`/
-`values` emit the SOURCE line for a non-string value, so a line carrying interior
-whitespace (`{ "a" : 1 }`) is passed through as written where `jq -c` re-serializes
-it compact; arb keeps no literal (§6), and rebuilding the value to compact it would
-re-sort object keys (`serde_json::Map` is a `BTreeMap`, where jq preserves input
-order) and reprint jq's preserved `1.50` as `1.5`. Both are probed and reported as
+and the xpath `//div[@id='main']` all reach the same nodes. A YAML number keeps its
+value but not its LITERAL, so `ratio: 1.50` prints as `1.5` where `yq -o=json`
+prints `1.50` — `serde_yaml`'s data model hands over an `f64` with the scalar's
+source text already discarded, which is not reachable without replacing the YAML
+parser; the JSON path does preserve it. And the bare `keys` spelling is the
+native verb, described in full below. All three are probed and reported as
 divergences every run rather than allowlisted.
+
+**One deviation runs the other way.** For an integer above 2^53, jq's own
+arithmetic loses up to an ULP: `jq` answers `true` to
+`(-516424571754902561 + 0) == -516424571754902500` when the correctly-rounded
+double is `…600`. arb reads every number with Rust's correctly-rounded parser and
+prints the shortest decimal that round-trips, so it answers `…600` and differs
+from the reference by being right. It is not "fixed" to match, and the generated
+sweep in `tests/jqlang.rs` states the tolerance explicitly: the computed path may
+differ from jq ONLY above 2^53, and byte-matches everywhere else.
 
 **jq expression bodies are jq VALUES.** A `select(…)` predicate, a `map(…)` body
 and a bare arithmetic stage evaluate over JSON values, not over arb's f64
