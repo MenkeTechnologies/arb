@@ -2908,7 +2908,7 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
                     ))),
                 }
             };
-            match v {
+            match v.bare() {
                 JqVal::Arr(a) => Ok(a.iter().map(one).collect::<R<Vec<_>>>()?.join(" ")),
                 other => one(other),
             }
@@ -3411,8 +3411,11 @@ fn eval_call_paths(
 }
 
 fn recurse_paths(pre: &[JqVal], val: &JqVal, out: PathSink) -> R<()> {
+    // The NODE is what comes out, so `.. | anchor` sees the box; the traversal
+    // walks the value inside it, so `paths` does not stop at the first commented
+    // container.
     out(pre.to_vec(), val.clone())?;
-    match val {
+    match val.bare() {
         JqVal::Arr(a) => {
             for (i, e) in a.iter().enumerate() {
                 let mut np = pre.to_vec();
@@ -4431,7 +4434,7 @@ fn builtin(
             // an object as well as an array (`{"a":[1,[2]]} | flatten` is
             // `[1,2]`); only the RECURSION is array-only. Same rule here, and the
             // refusal is the iterate error jq raises, not an array-only one.
-            let top: Vec<JqVal> = match input {
+            let top: Vec<JqVal> = match input.bare() {
                 JqVal::Arr(a) => a.as_ref().clone(),
                 JqVal::Obj(m) => m.iter().map(|(_, v)| v.clone()).collect(),
                 other => {
@@ -4551,7 +4554,7 @@ fn builtin(
 }
 
 fn want_arr(v: &JqVal, who: &str) -> R<Rc<Vec<JqVal>>> {
-    match v {
+    match v.bare() {
         JqVal::Arr(a) => Ok(a.clone()),
         other => Err(JqErr::msg(format!(
             "{}{} cannot be {who}, as it is not an array",
@@ -4579,9 +4582,11 @@ fn keyed_elements(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<Vec<(J
 
 fn flatten_into(a: &[JqVal], depth: i64, out: &mut Vec<JqVal>) {
     for e in a {
-        match e {
+        // Whether an element RECURSES is about its value; what comes out is the
+        // element itself, box and all.
+        match e.bare() {
             JqVal::Arr(inner) if depth > 0 => flatten_into(inner, depth - 1, out),
-            other => out.push(other.clone()),
+            _ => out.push(e.clone()),
         }
     }
 }
@@ -4896,7 +4901,7 @@ fn broken_down(t: f64, local: bool) -> JqVal {
 }
 
 fn to_tm(v: &JqVal) -> R<libc::tm> {
-    let JqVal::Arr(a) = v else {
+    let JqVal::Arr(a) = v.bare() else {
         return Err(JqErr::msg("not a valid time"));
     };
     if a.len() < 6 {
@@ -4926,7 +4931,7 @@ fn mktime(v: &JqVal) -> R<i64> {
 }
 
 fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
-    let tm = match v {
+    let tm = match v.bare() {
         JqVal::Num(n, _) => {
             let bd = broken_down(*n, local);
             to_tm(&bd)?
