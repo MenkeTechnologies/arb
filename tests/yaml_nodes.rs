@@ -146,6 +146,33 @@ const FILTERS: &[&str] = &[
     "if .ratio > 1 then \"big\" else \"small\" end",
     "try (.name | tonumber) catch \"nope\"",
     ".name | @base64 | @base64d",
+    // Added as the surface grew. Each is a jq question whose answer must not
+    // change when the input carries metadata.
+    ".nums | pick([0])",
+    "pick(.name, .ratio)",
+    ".base | to_entries | from_entries",
+    ".items | map(.id) | sort",
+    ".nums as $n | $n | add",
+    ".items[] as {$id} | $id",
+    "[paths(type == \"number\")]",
+    "path(.base.k)",
+    "[.items[] | .v] | sort | reverse",
+    ".flow | to_entries | map(.key)",
+    ".base * {n: 8}",
+    ".nums - [1]",
+    ".items | max_by(.v) | .id",
+    ".items | min_by(.v) | .id",
+    "[.[] | if type == \"array\" then length else empty end]",
+    "reduce (.nums[]) as $x ({}; .[$x | tostring] = $x) | keys",
+    ".lit | ltrimstr(\"line1\")",
+    ".name | splits(\"-\") ",
+    "[.. | select(type == \"object\") | keys_unsorted] | length",
+    "{a: .name, b: .ratio} | tojson",
+    ".items | INDEX(.id) | keys",
+    ".nums | IN(1)",
+    ".base | with_entries(select(.key == \"k\"))",
+    "getpath([\"items\", 0, \"v\"])",
+    ".items | tostream | length",
 ];
 
 #[test]
@@ -251,6 +278,26 @@ fn a_document_survives_the_round_trip() {
             "multi-document stream",
             "# first\na: 1\n---\n# second\nb: 2\n",
         ),
+        (
+            "deeply nested anchors",
+            "outer: &o\n  inner: &i\n    deep: &d\n      leaf: 1\n    other: *d\n  second: *i\ntop: *o\n",
+        ),
+        (
+            "aliases inside merge keys",
+            "base: &b\n  a: 1\nextra: &e\n  b: 2\nboth:\n  <<: [*b, *e]\n  c: 3\n",
+        ),
+        (
+            "a comment on the sequence marker line",
+            "nested:\n  - # head inside item\n    k: v # line of k\n",
+        ),
+        (
+            "a foot comment on a sequence's last item",
+            "seq:\n  - one\n  - two\n  # foot of the seq\n\nmap:\n  a: 1\n",
+        ),
+        (
+            "an explicit leading document marker",
+            "---\na: 1\n---\nb: 2\n",
+        ),
     ] {
         assert_eq!(roundtrip(src), src, "round trip lost something: {label}");
     }
@@ -329,6 +376,77 @@ fn the_reader_records_what_yq_reports() {
     assert_eq!(jqlang::render(&at(&["hexed"])), "16");
     // A float already carries its literal, so it needs no source text.
     assert_eq!(jqlang::render(&at(&["ratio"])), "1.50");
+}
+
+/// A `- # note` on the marker line is the first KEY's head comment, which is
+/// where `yq` files it: `.nested[0].k | key | head_comment` answers it, and
+/// `.nested[0] | head_comment` is empty because the comment belongs one level in.
+/// Pinned because the obvious reading — that it is the ITEM's head — round-trips
+/// just as well and answers the accessors wrongly.
+#[test]
+fn a_marker_comment_belongs_to_the_first_key() {
+    let docs = arb::yaml::documents("nested:\n  - # head inside item\n    k: v\n");
+    let JqVal::Obj(root) = docs[0].bare() else {
+        panic!("expected a mapping")
+    };
+    let JqVal::Arr(seq) = root[0].1.bare() else {
+        panic!("expected a sequence")
+    };
+    let item = &seq[0];
+    assert!(
+        item.meta().is_some_and(|m| m.marker),
+        "the item does not record that its first key's head was on the marker line"
+    );
+    assert_eq!(
+        item.meta().map_or("", |m| &m.head),
+        "",
+        "the comment was filed on the item, where yq reports nothing"
+    );
+    let JqVal::Obj(inner) = item.bare() else {
+        panic!("expected a mapping item")
+    };
+    let key_head = inner[0]
+        .1
+        .meta()
+        .and_then(|m| m.key.clone())
+        .and_then(|k| k.meta().map(|km| km.head.to_string()));
+    assert_eq!(key_head.as_deref(), Some("head inside item"));
+}
+
+/// yq's OWN spellings, which the grammar accepts in the positions jq leaves
+/// empty. Pinned here as well as in the parity harness so the extension cannot be
+/// lost on a machine with no `yq` installed.
+#[test]
+fn yq_native_spellings_parse_and_answer() {
+    let docs = arb::yaml::documents("a: 1\nb: two\n");
+    let doc = &docs[0];
+    let run1 = |src: &str| -> String {
+        let prog = jqlang::Program::compile(src).unwrap_or_else(|e| panic!("compile `{src}`: {e}"));
+        let interp = jqlang::Interp::default();
+        interp.set_doc(doc);
+        let out = prog.run(&interp, doc).unwrap_or_else(|e| panic!("run `{src}`: {}", e.to_message()));
+        ynode::emit_docs(&out, Emit::default())
+    };
+    // The metadata postfix, in yq's spelling and in arb's, must agree.
+    assert_eq!(run1(r#".a anchor = "x""#), "a: &x 1\nb: two\n");
+    assert_eq!(run1(r#".a |= (anchor = "x")"#), "a: &x 1\nb: two\n");
+    assert_eq!(run1(r#".b style = "double""#), "a: 1\nb: \"two\"\n");
+    assert_eq!(run1(r#".a line_comment = "hi""#), "a: 1 # hi\nb: two\n");
+    // The postfix reduce, against jq's prefix form on the same stream.
+    let sum = |src: &str| -> Vec<String> {
+        let prog = jqlang::Program::compile(src).unwrap();
+        let interp = jqlang::Interp::default();
+        prog.run(&interp, &JqVal::Null)
+            .unwrap()
+            .iter()
+            .map(jqlang::render)
+            .collect()
+    };
+    assert_eq!(sum("[1,2,3] | .[] as $item ireduce (0; . + $item)"), ["6"]);
+    assert_eq!(
+        sum("[1,2,3] | .[] as $item ireduce (0; . + $item)"),
+        sum("reduce [1,2,3][] as $item (0; . + $item)"),
+    );
 }
 
 /// Key order is the DOCUMENT's, not sorted. `serde_json::Map` is a `BTreeMap`
