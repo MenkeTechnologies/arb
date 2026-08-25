@@ -614,6 +614,65 @@ yq_probe() {
     fi
 }
 
+# yq_rt_probe FILE LABEL — the ROUND TRIP, which is yq's defining behaviour.
+#
+# `yq '.' file.yaml` gives the file back essentially unchanged: comments in every
+# position, anchor names, aliases, merge keys, quoting style, block scalars,
+# flow-vs-block, tags, empty values and non-ASCII all survive. `arb -e 'out {
+# in.yaml; out.yaml }'` must do the same.
+#
+# The comparison is against the SOURCE FILE rather than against yq's output, and
+# that is deliberately STRICTER rather than looser: `yq '.'` is not idempotent on
+# two of the shapes below — it re-folds a `>` block onto one line, and escapes a
+# non-BMP character as an "\U0001F680" sequence — so requiring arb to match yq
+# would require arb to reproduce yq's own infidelities. "The file comes back" is
+# the property the claim names, and it implies matching yq everywhere yq does
+# return the file.
+#
+# It is the strongest single check of the node model in this file. A metadata
+# accessor that answers correctly proves one field is carried; a byte-identical
+# round trip proves every field is carried AND put back in the right place, on a
+# document that exercises all of them at once. Nothing is normalized on either
+# side.
+yq_rt_probe() {
+    local file="$1" label="$2" a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e 'out { in.yaml; out.yaml }' <"$file" 2>&1)
+    b=$(cat "$file")
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   rt   %s\n' "$label"
+    else
+        fail=$((fail + 1))
+        fails+=("rt   $label — round trip differs from the source"$'\n'"$(diff <(printf '%s\n' "$b") <(printf '%s\n' "$a") | sed 's/^/       /')")
+        [ "$QUIET" = 1 ] || {
+            printf 'DIFF rt   %s\n' "$label"
+            diff <(printf '%s\n' "$b") <(printf '%s\n' "$a") | sed 's/^/       /'
+        }
+    fi
+}
+
+# yq_fmt_probe FILE FMT — an OUTPUT MODE, against `yq -o=FMT`.
+#
+# `out.yaml`/`out.props`/`out.json` are arb's spelling of yq's `-o=`, and each
+# renders the whole stream rather than one value, so `yq_probe`'s per-filter
+# comparison cannot reach them. Byte-diffed, nothing normalized.
+yq_fmt_probe() {
+    local file="$1" fmt="$2" a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.yaml; out.$fmt }" <"$file" 2>&1)
+    b=$(yq -o="$fmt" '.' "$file" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   fmt  %-6s %s\n' "$fmt" "$file"
+    else
+        fail=$((fail + 1))
+        fails+=("fmt  -o=$fmt on $file"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')"$'\n'"       yq : $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF fmt  %-6s\n       arb: %s\n       yq : %s\n' \
+            "$fmt" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+}
+
 # xp_probe FILE XPATH — compare arb's xpath front-end against xmllint.
 # `@attr` probes normalize the reference from ` name="v"` to `v` (see header).
 
@@ -1807,6 +1866,289 @@ yq_probe "$YQ_FIXTURE" '.nested.deep'
 yq_probe "$YQ_FIXTURE" '.items[] | {"id": .id}'
 yq_superset_probe
 rm -f "$YQ_FIXTURE"
+# ── the yq NODE-METADATA leg ────────────────────────────────────────────────
+#
+# Everything above this point compares filters jq could also spell. What follows
+# is the half of yq that jq has no equivalent for: the operators that read and
+# write a NODE's metadata, the encode/decode family, and the round trip that is
+# the reason all of them exist.
+#
+# `yq_superset_probe` scores those by NAME. These score them by ANSWER, which is
+# the stronger of the two and the only one that can catch an operator that exists
+# and is wrong.
+YQ_META=$(mktemp -t arb_yqm_XXXXXX)
+cat >"$YQ_META" <<'YAMLEOF'
+# leading doc comment
+name: widget # trailing name
+base: &anc
+  k: v
+  n: 7
+use: *anc
+merged:
+  <<: *anc
+  extra: 1
+quoted: "dq"
+single: 'sq'
+lit: |
+  line1
+  line2
+flow: {a: 1, b: [2, 3]}
+tagged: !!str 123
+custom: !mytag hello
+empty:
+explicit: null
+tilde: ~
+hexed: 0x10
+padded: 007
+ratio: 1.50
+uni: "héllo → ✓"
+# key head
+listed:
+  # item head
+  - x # item line
+  - y
+YAMLEOF
+
+# The metadata accessors, each against yq's own answer for the same node.
+yq_probe "$YQ_META" '.base | anchor'
+yq_probe "$YQ_META" '.use | alias'
+yq_probe "$YQ_META" '.use | kind'
+yq_probe "$YQ_META" '.base | kind'
+yq_probe "$YQ_META" '.name | kind'
+yq_probe "$YQ_META" 'kind'
+yq_probe "$YQ_META" '.base | tag'
+yq_probe "$YQ_META" '.quoted | tag'
+yq_probe "$YQ_META" '.tagged | tag'
+yq_probe "$YQ_META" '.custom | tag'
+yq_probe "$YQ_META" '.name | tag'
+yq_probe "$YQ_META" '.ratio | tag'
+yq_probe "$YQ_META" '.empty | tag'
+yq_probe "$YQ_META" '.listed | tag'
+yq_probe "$YQ_META" '.quoted | style'
+yq_probe "$YQ_META" '.single | style'
+yq_probe "$YQ_META" '.lit | style'
+yq_probe "$YQ_META" '.flow | style'
+yq_probe "$YQ_META" '.name | style'
+yq_probe "$YQ_META" '.name | line_comment'
+yq_probe "$YQ_META" '.name | lineComment'
+yq_probe "$YQ_META" '.listed[0] | line_comment'
+yq_probe "$YQ_META" '.listed[0] | head_comment'
+yq_probe "$YQ_META" '.listed | key | head_comment'
+yq_probe "$YQ_META" 'head_comment'
+yq_probe "$YQ_META" 'headComment'
+yq_probe "$YQ_META" '.name | key'
+yq_probe "$YQ_META" '.name | is_key'
+yq_probe "$YQ_META" '.name | key | is_key'
+yq_probe "$YQ_META" '.name | path'
+yq_probe "$YQ_META" '.base.k | path'
+yq_probe "$YQ_META" '.listed[1] | path'
+yq_probe "$YQ_META" '.name | line'
+yq_probe "$YQ_META" '.name | column'
+yq_probe "$YQ_META" '.base | line'
+yq_probe "$YQ_META" '.lit | line'
+yq_probe "$YQ_META" 'document_index'
+yq_probe "$YQ_META" 'documentIndex'
+yq_probe "$YQ_META" 'di'
+yq_probe "$YQ_META" '.name | fileIndex'
+yq_probe "$YQ_META" '.base | parent | length'
+yq_probe "$YQ_META" '.base | parent | to_entries | .[0].key'
+yq_probe "$YQ_META" '.merged'
+yq_probe "$YQ_META" '.merged.k'
+yq_probe "$YQ_META" '.use'
+yq_probe "$YQ_META" '.hexed'
+yq_probe "$YQ_META" '.padded'
+yq_probe "$YQ_META" '.ratio'
+yq_probe "$YQ_META" '.uni'
+yq_probe "$YQ_META" '.tagged'
+yq_probe "$YQ_META" '.custom'
+yq_probe "$YQ_META" '.empty'
+yq_probe "$YQ_META" '.explicit'
+yq_probe "$YQ_META" '.tilde'
+yq_probe "$YQ_META" '.lit'
+yq_probe "$YQ_META" '.flow'
+yq_probe "$YQ_META" '.flow.b'
+
+# The reshaping and conversion group.
+yq_probe "$YQ_META" 'pick(["name","quoted"])'
+yq_probe "$YQ_META" 'omit(["name"]) | length'
+yq_probe "$YQ_META" 'omit(["name"]) | to_entries | .[0].key'
+yq_probe "$YQ_META" 'omit(["name","base"]) | to_entries | .[0].key'
+yq_probe "$YQ_META" 'sort_keys(.) | to_entries | .[0].key'
+yq_probe "$YQ_META" 'sort_keys(.) | to_entries | .[1].key'
+yq_probe "$YQ_META" 'sortKeys(.) | to_entries | .[0].key'
+yq_probe "$YQ_META" '.name | to_string'
+yq_probe "$YQ_META" '.name | upcase'
+yq_probe "$YQ_META" '.name | downcase'
+yq_probe "$YQ_META" '.padded | to_string'
+yq_probe "$YQ_META" 'with(.name; . = "z") | .name'
+yq_probe "$YQ_META" '.listed | length'
+yq_probe "$YQ_META" '.base | to_json(0)'
+yq_probe "$YQ_META" '.flow | to_json(0)'
+yq_probe "$YQ_META" '.listed | splitDoc | length'
+yq_probe "$YQ_META" '.name | splitDoc'
+
+# The metadata WRITERS. yq spells these as a postfix on a path
+# (`.a anchor = "x"`); arb's grammar is jq's, so the same edit is
+# `.a | anchor = "x"`, and the reference is asked in ITS spelling.
+yq_write_probe() {
+    local file="$1" arb_f="$2" yq_f="$3" a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    a=$("$ARB" -e "out { in.yaml; $arb_f; out.yaml }" <"$file" 2>&1)
+    b=$(yq "$yq_f" "$file" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   yqw  %s\n' "$arb_f"
+    else
+        fail=$((fail + 1))
+        fails+=("yqw  $arb_f (yq: $yq_f)"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')"$'\n'"       yq : $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF yqw  %s\n       arb: %s\n       yq : %s\n' \
+            "$arb_f" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+}
+YQ_SMALL=$(mktemp -t arb_yqs_XXXXXX)
+printf 'a: 1\nb: two\n' >"$YQ_SMALL"
+yq_write_probe "$YQ_SMALL" '.a |= (anchor = "x")'        '.a anchor = "x"'
+yq_write_probe "$YQ_SMALL" '.a |= (tag = "!!str")'       '.a tag = "!!str"'
+yq_write_probe "$YQ_SMALL" '.b |= (style = "double")'    '.b style = "double"'
+yq_write_probe "$YQ_SMALL" '.b |= (style = "single")'    '.b style = "single"'
+yq_write_probe "$YQ_SMALL" '.b |= (style = "literal")'   '.b style = "literal"'
+yq_write_probe "$YQ_SMALL" '.a |= (line_comment = "hi")' '.a line_comment = "hi"'
+yq_write_probe "$YQ_SMALL" '.a |= (lineComment = "hi")'  '.a lineComment = "hi"'
+yq_write_probe "$YQ_SMALL" '.a |= (foot_comment = "f")'  '.a foot_comment = "f"'
+rm -f "$YQ_SMALL"
+
+# ── the round trip ──────────────────────────────────────────────────────────
+#
+# One fixture per feature the model has to carry, so a failure names WHICH one
+# broke rather than reporting that "yaml" broke.
+yq_rt_probe "$YQ_META" 'every feature at once'
+rm -f "$YQ_META"
+
+yq_rt_case() {
+    local label="$1" f
+    f=$(mktemp -t arb_yqrt_XXXXXX)
+    cat >"$f"
+    yq_rt_probe "$f" "$label"
+    yq_fmt_probe "$f" props
+    rm -f "$f"
+}
+
+yq_rt_case 'comments in every position' <<'YAMLEOF'
+# doc head
+a: 1 # a line
+# b head
+b: 2
+# c head 1
+# c head 2
+c:
+  # d head
+  d: 4 # d line
+  # e head
+
+  e: 5
+list:
+  # item head
+  - x # item line
+  - y
+# tail
+YAMLEOF
+
+yq_rt_case 'anchors, aliases and merge keys' <<'YAMLEOF'
+defaults: &def
+  retries: 3
+  timeout: 30
+prod:
+  <<: *def
+  timeout: 60
+dev: *def
+list: &l
+  - one
+  - two
+copy: *l
+YAMLEOF
+
+yq_rt_case 'all six scalar styles' <<'YAMLEOF'
+plain: hello
+single: 'it''s here'
+double: "a\ttab"
+literal: |
+  keep
+  the breaks
+folded: >-
+  fold these
+  two lines
+empty:
+YAMLEOF
+
+yq_rt_case 'flow versus block collections' <<'YAMLEOF'
+flowmap: {a: 1, b: 2}
+flowseq: [1, 2, 3]
+nested: {x: [1, {y: 2}]}
+blockmap:
+  a: 1
+  b: 2
+blockseq:
+  - 1
+  - 2
+emptymap: {}
+emptyseq: []
+YAMLEOF
+
+yq_rt_case 'tags' <<'YAMLEOF'
+s: !!str 123
+i: !!int 7
+f: !!float 1.5
+b: !!bool true
+custom: !mytag payload
+seq: !!seq
+  - 1
+YAMLEOF
+
+yq_rt_case 'empty values and nulls' <<'YAMLEOF'
+blank:
+explicit: null
+tilde: ~
+emptystr: ""
+zero: 0
+false: false
+YAMLEOF
+
+yq_rt_case 'non-ASCII' <<'YAMLEOF'
+greek: αβγ
+arrows: "a → b"
+emoji: 🚀
+mixed: héllo wörld
+key→: value
+YAMLEOF
+
+yq_rt_case 'number spellings' <<'YAMLEOF'
+padded: 007
+hex: 0x1F
+octal: 0o17
+float: 1.50
+exp: 1e3
+neg: -42
+big: 12345678901234
+YAMLEOF
+
+# Multi-document streams get their own probe: `---` separation is what
+# `splitDoc` relies on and what a per-document `document_index` is counted over.
+YQ_MULTI=$(mktemp -t arb_yqmd_XXXXXX)
+cat >"$YQ_MULTI" <<'YAMLEOF'
+# first
+a: 1
+---
+# second
+b: 2
+---
+c:
+  - 3
+YAMLEOF
+yq_rt_probe "$YQ_MULTI" 'multi-document stream'
+yq_probe "$YQ_MULTI" 'document_index'
+yq_probe "$YQ_MULTI" 'di'
+rm -f "$YQ_MULTI"
+
 
 if ! command -v yq >/dev/null; then
     skip=$((skip + 1))
