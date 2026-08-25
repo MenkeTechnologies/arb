@@ -426,12 +426,16 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             QueryOp::Field(sel) => {
                 if let FieldSel::JqKey(segs) = sel {
                     for l in cur.iter_mut() {
-                        match jq_value(l) {
+                        // Through the jq value model, so an object this returns
+                        // keeps the document's KEY ORDER — `serde_json::Map` is a
+                        // `BTreeMap` and gave `.nested` back alphabetised, which
+                        // `yq -o=json` on the same YAML does not.
+                        match crate::jqlang::parse_json(l).ok() {
                             // A line that is not JSON at all has no jq TYPE to
                             // check, so it keeps the documented miss rendering.
                             None => *l = "null".to_string(),
-                            Some(v) => match crate::jqval::get_path(&v, segs) {
-                                Ok(r) => *l = jq_to_string(&r),
+                            Some(v) => match crate::jqlang::get_seg_path(&v, segs) {
+                                Ok(r) => *l = crate::jqlang::render_raw(&r),
                                 Err(e) => return QueryResult::Error(format!("jq: {e}")),
                             },
                         }
@@ -456,8 +460,11 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 for l in &cur {
                     match jq_value(l) {
                         Some(Value::Array(arr)) => out.extend(arr.iter().map(jq_to_string)),
-                        // jq `.[]` over an object iterates its VALUES.
-                        Some(Value::Object(m)) => out.extend(m.values().map(jq_to_string)),
+                        // jq `.[]` over an object iterates its VALUES, in the
+                        // object's own key order.
+                        Some(Value::Object(m)) => out.extend(
+                            jq_obj_entries(l, &m).iter().map(|(_, v)| jq_to_string(v)),
+                        ),
                         Some(v) => return QueryResult::Error(cannot_iterate(&v)),
                         None => out.push(l.clone()),
                     }
@@ -471,23 +478,21 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 };
                 let interp = crate::jqlang::Interp::default();
                 let mut out = Vec::with_capacity(cur.len());
-                for (i, l) in cur.iter().enumerate() {
-                    // A line that is not JSON is jq's STRING, the same reading
-                    // SPEC §8 gives an expression stage over a text line.
-                    let input = crate::jqlang::parse_json(l)
-                        .unwrap_or_else(|_| crate::jqlang::JqVal::str(l.as_str()));
-                    // `input`/`inputs` draw from the REST of the stream, which is
-                    // what they mean to jq reading a multi-document input.
-                    interp.set_inputs(
-                        cur[i + 1..]
-                            .iter()
-                            .map(|r| {
-                                crate::jqlang::parse_json(r)
-                                    .unwrap_or_else(|_| crate::jqlang::JqVal::str(r.as_str()))
-                            })
-                            .collect(),
-                    );
-                    interp.set_line(i + 1);
+                // ONE cursor over the stream, which is jq's model: the next
+                // document is `.`, and `input` takes the one after it — so a
+                // document `input` consumed is not replayed by this loop.
+                //
+                // The first shape of this was per-line: it handed every
+                // iteration a freshly parsed copy of the whole REMAINING stream
+                // so `inputs` would see it. That is O(n^2) parses, and it showed
+                // — `{n: .name, v: .v}` over 2,000 records took 9.7s against
+                // jq's 0.01s. Lines are moved in raw and parsed once, on the way
+                // out.
+                interp.set_input_lines(std::mem::take(&mut cur));
+                let mut lineno = 0usize;
+                while let Some(input) = interp.next_input() {
+                    lineno += 1;
+                    interp.set_line(lineno);
                     let r = prog.run_with(&interp, &input, &mut |v| {
                         out.push(crate::jqlang::render_raw(&v));
                         Ok(())
@@ -541,7 +546,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     // stringifying), and iterates an object's values.
                     let items: Vec<Value> = match jq_value(l) {
                         Some(Value::Array(a)) => a,
-                        Some(Value::Object(m)) => m.into_iter().map(|(_, v)| v).collect(),
+                        Some(Value::Object(m)) => {
+                            jq_obj_entries(l, &m).into_iter().map(|(_, v)| v).collect()
+                        }
                         Some(v) => return QueryResult::Error(cannot_iterate(&v)),
                         None => continue,
                     };
@@ -1009,7 +1016,7 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
                 for l in cur.iter_mut() {
                     let arr: Vec<Value> = match jq_value(l) {
-                        Some(Value::Object(m)) => m
+                        Some(Value::Object(m)) => jq_obj_entries(l, &m)
                             .into_iter()
                             .map(|(k, v)| entry(Value::String(k), v))
                             .collect(),
@@ -1089,7 +1096,9 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                     // iterates an OBJECT's values too and refuses a scalar.
                     let items: Vec<Value> = match jq_value(l) {
                         Some(Value::Array(a)) => a,
-                        Some(Value::Object(m)) => m.into_iter().map(|(_, v)| v).collect(),
+                        Some(Value::Object(m)) => {
+                            jq_obj_entries(l, &m).into_iter().map(|(_, v)| v).collect()
+                        }
                         Some(v) => return QueryResult::Error(cannot_iterate(&v)),
                         None => continue,
                     };
@@ -1857,6 +1866,28 @@ fn has_no_keys(v: &Value) -> String {
 /// Render a JSON value the way jq's `-r`/`-c` pair does: a string raw, a null as
 /// the literal `null`, everything else compact. `json_to_string` renders a null
 /// as "" instead, which is right for arb's native text verbs and wrong for jq.
+/// An object line's entries in jq's ITERATION ORDER.
+///
+/// jq iterates an object in INSERTION order and that order is observable:
+/// `{"b":1,"a":2} | to_entries` is `[{"key":"b",…},{"key":"a",…}]`, and `.[]`,
+/// `add` and `flatten` all walk the same sequence. `serde_json::Map` is a
+/// `BTreeMap`, so every one of those came back key-SORTED.
+///
+/// The order comes from [`crate::jqlang`], whose value model preserves it, while
+/// the VALUES stay `serde_json`'s — so the ops that already fold with
+/// `jqval::binop` or render through `jq_to_string` are unchanged apart from the
+/// sequence they see. A line that will not re-parse falls back to the map's own
+/// order rather than dropping entries.
+fn jq_obj_entries(line: &str, m: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
+    match crate::jqlang::parse_json(line) {
+        Ok(crate::jqlang::JqVal::Obj(ordered)) => ordered
+            .iter()
+            .filter_map(|(k, _)| m.get(&**k).map(|v| (k.to_string(), v.clone())))
+            .collect(),
+        _ => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    }
+}
+
 fn jq_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -1906,13 +1937,51 @@ fn yaml_to_json(lines: &[String]) -> Vec<String> {
     use serde::Deserialize;
     let doc = lines.join("\n");
     serde_yaml::Deserializer::from_str(&doc)
-        .filter_map(|de| Value::deserialize(de).ok())
+        .filter_map(|de| serde_yaml::Value::deserialize(de).ok())
         .filter(|v| !v.is_null())
         .map(|mut v| {
             apply_yaml_merge(&mut v);
-            v.to_string()
+            crate::jqlang::render(&yaml_to_jq(&v))
         })
         .collect()
+}
+
+/// `serde_yaml::Value` -> the jq value model.
+///
+/// Deserializing straight into `serde_json::Value` was one line shorter and
+/// dropped the document's KEY ORDER on the way — `serde_json::Map` is a
+/// `BTreeMap`. That order is the thing `yq` preserves, so a `.` over
+/// `name: …\ncount: …` came back alphabetised while `yq -o=json` kept the file's
+/// order. `serde_yaml::Mapping` is insertion-ordered, and so is `JqVal::Obj`.
+///
+/// A non-string mapping key (YAML allows `1: x`) is rendered as its scalar text,
+/// which is what a JSON object requires and what `yq -o=json` emits.
+fn yaml_to_jq(v: &serde_yaml::Value) -> crate::jqlang::JqVal {
+    use crate::jqlang::JqVal;
+    match v {
+        serde_yaml::Value::Null => JqVal::Null,
+        serde_yaml::Value::Bool(b) => JqVal::Bool(*b),
+        // Through the JSON reader so a literal that a double would not print back
+        // the same way (a large integer, a trailing zero) keeps its source text.
+        serde_yaml::Value::Number(n) => {
+            crate::jqlang::parse_json(&n.to_string()).unwrap_or(JqVal::Null)
+        }
+        serde_yaml::Value::String(s) => JqVal::str(s.as_str()),
+        serde_yaml::Value::Sequence(a) => JqVal::arr(a.iter().map(yaml_to_jq).collect()),
+        serde_yaml::Value::Mapping(m) => JqVal::obj(
+            m.iter()
+                .map(|(k, val)| {
+                    let key = match k {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        other => crate::jqlang::render_raw(&yaml_to_jq(other)),
+                    };
+                    (std::rc::Rc::from(key.as_str()), yaml_to_jq(val))
+                })
+                .collect(),
+        ),
+        // A `!Tag value` carries its payload; the tag itself has no JSON form.
+        serde_yaml::Value::Tagged(t) => yaml_to_jq(&t.value),
+    }
 }
 
 /// Apply YAML merge keys (`<<`). serde_yaml expands anchors/aliases but leaves the
@@ -1920,27 +1989,32 @@ fn yaml_to_json(lines: &[String]) -> Vec<String> {
 /// key and omit the merged fields. Merge each `<<` source into its parent object
 /// with correct precedence: an explicit key wins over any merged key, and among
 /// several merged sources (`<<: [*a, *b]`) an earlier source wins.
-fn apply_yaml_merge(v: &mut Value) {
-    if let Value::Object(map) = v {
-        if let Some(merge) = map.remove("<<") {
+fn apply_yaml_merge(v: &mut serde_yaml::Value) {
+    if let serde_yaml::Value::Mapping(map) = v {
+        let key = serde_yaml::Value::String("<<".to_string());
+        if let Some(merge) = map.remove(&key) {
             let sources = match merge {
-                Value::Array(a) => a,
+                serde_yaml::Value::Sequence(a) => a,
                 other => vec![other],
             };
             for src in sources {
-                if let Value::Object(m) = src {
+                if let serde_yaml::Value::Mapping(m) = src {
                     for (k, val) in m {
-                        // `or_insert` keeps an already-present key, so explicit
-                        // keys and earlier merge sources both take precedence.
-                        map.entry(k).or_insert(val);
+                        // A key already present wins, so explicit keys and
+                        // earlier merge sources both take precedence.
+                        if !map.contains_key(&k) {
+                            map.insert(k, val);
+                        }
                     }
                 }
             }
         }
     }
     match v {
-        Value::Object(map) => map.values_mut().for_each(apply_yaml_merge),
-        Value::Array(a) => a.iter_mut().for_each(apply_yaml_merge),
+        serde_yaml::Value::Mapping(map) => {
+            map.iter_mut().for_each(|(_, val)| apply_yaml_merge(val));
+        }
+        serde_yaml::Value::Sequence(a) => a.iter_mut().for_each(apply_yaml_merge),
         _ => {}
     }
 }
