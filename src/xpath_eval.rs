@@ -60,6 +60,18 @@ pub struct Doc {
     /// Nodes outside the XPath data model: the doctype, and an empty `<head>`
     /// html5ever synthesized that the reference parser would not have created.
     hidden: HashSet<NodeId>,
+    /// Every visible TREE node, in document order, built ONCE.
+    ///
+    /// `following`/`preceding` used to rebuild and re-sort this per context
+    /// node, which is quadratic in the document: over a table of 400 `td`s
+    /// `//td/following::td` took 0.17s and over 1600 it took 2.28s — 4x the
+    /// nodes for 13x the time.
+    ordered: Vec<XNode>,
+    /// For each visible node, one past the index of its last descendant. A
+    /// subtree is CONTIGUOUS in document order, so this turns both scanning
+    /// axes into a slice: everything at or after `end` is `following`, and an
+    /// ancestor of `n` is exactly a node before `n` whose `end` is past it.
+    end: HashMap<NodeId, usize>,
 }
 
 impl Doc {
@@ -107,10 +119,66 @@ impl Doc {
                 stack.push(k);
             }
         }
-        Doc {
+        let mut doc = Doc {
             html,
             order,
             hidden,
+            ordered: Vec::new(),
+            end: HashMap::new(),
+        };
+        doc.ordered = doc.build_ordered();
+        doc.end = doc.build_ends();
+        doc
+    }
+
+    /// Every visible tree node, sorted into document order. Called once.
+    fn build_ordered(&self) -> Vec<XNode> {
+        let mut v: Vec<XNode> = self
+            .order
+            .keys()
+            .filter(|id| self.visible(**id))
+            .map(|id| XNode::Tree(*id))
+            .collect();
+        v.sort_by_key(|m| self.key(*m));
+        v
+    }
+
+    /// One past the last descendant index, per node. A node's descendants are
+    /// the contiguous run that follows it, so the end is the first later index
+    /// whose node is NOT a descendant — computed here by walking the ordered
+    /// list once per node's own subtree rather than scanning the document.
+    fn build_ends(&self) -> HashMap<NodeId, usize> {
+        let mut end = HashMap::with_capacity(self.ordered.len());
+        // Walk backwards: a node's end is its own index + 1, extended by the
+        // end of its last visible child, which is already known.
+        for (i, n) in self.ordered.iter().enumerate().rev() {
+            let XNode::Tree(id) = *n else { continue };
+            let mut e = i + 1;
+            for c in self.children_of(*n) {
+                if let XNode::Tree(cid) = c {
+                    if let Some(ce) = end.get(&cid) {
+                        e = e.max(*ce);
+                    }
+                }
+            }
+            end.insert(id, e);
+        }
+        end
+    }
+
+    fn index_of(&self, n: XNode) -> usize {
+        match n {
+            XNode::Tree(id) => *self.order.get(&id).unwrap_or(&0),
+            XNode::Attr(id, _) => *self.order.get(&id).unwrap_or(&0),
+        }
+    }
+
+    fn end_of(&self, n: XNode) -> usize {
+        match n {
+            XNode::Tree(id) => *self.end.get(&id).unwrap_or(&0),
+            // An attribute has no descendants; `following` from it starts after
+            // its OWNING element's subtree (§2.2 counts document order).
+            XNode::Attr(id, _) => *self.end.get(&id).unwrap_or(&0),
         }
     }
 
@@ -384,29 +452,29 @@ impl Doc {
     /// §2.2: the `following` axis is every node after the context node in
     /// document order, EXCLUDING descendants, attributes and namespace nodes.
     fn following_of(&self, n: XNode) -> Vec<XNode> {
-        let key = self.key(n);
-        let exclude: HashSet<XNode> = self.descendants_of(n).into_iter().collect();
-        let mut out: Vec<XNode> = self
-            .document_nodes()
-            .into_iter()
-            .filter(|m| self.key(*m) > key && !exclude.contains(m))
-            .collect();
-        out.sort_by_key(|m| self.key(*m));
-        out
+        // A subtree is CONTIGUOUS in document order, so "after n and not a
+        // descendant of n" is exactly "at or after the end of n's subtree" —
+        // one slice, no filtering and no per-node sort.
+        self.ordered
+            .get(self.end_of(n).min(self.ordered.len())..)
+            .map(<[XNode]>::to_vec)
+            .unwrap_or_default()
     }
 
     /// §2.2: `preceding` is every node before the context node in document
     /// order, EXCLUDING ancestors, attributes and namespace nodes. Reverse axis,
     /// so nearest first.
     fn preceding_of(&self, n: XNode) -> Vec<XNode> {
-        let key = self.key(n);
-        let exclude: HashSet<XNode> = self.ancestors_of(n).into_iter().collect();
-        let mut out: Vec<XNode> = self
-            .document_nodes()
-            .into_iter()
-            .filter(|m| self.key(*m) < key && !exclude.contains(m))
+        // Everything before `n`, minus its ancestors — and an ancestor is
+        // exactly a node that starts before `n` and whose subtree END is past
+        // it, so no ancestor set has to be built. Reverse axis: nearest first.
+        let i = self.index_of(n);
+        let mut out: Vec<XNode> = self.ordered[..i.min(self.ordered.len())]
+            .iter()
+            .filter(|m| self.end_of(**m) <= i)
+            .copied()
             .collect();
-        out.sort_by_key(|m| std::cmp::Reverse(self.key(*m)));
+        out.reverse();
         out
     }
 
@@ -414,14 +482,7 @@ impl Doc {
     /// in document order. Public so the front-end can find a re-parsed
     /// fragment's first element.
     pub fn document_nodes(&self) -> Vec<XNode> {
-        let mut v: Vec<XNode> = self
-            .order
-            .keys()
-            .filter(|id| self.visible(**id))
-            .map(|id| XNode::Tree(*id))
-            .collect();
-        v.sort_by_key(|m| self.key(*m));
-        v
+        self.ordered.clone()
     }
 
     fn attributes_of(&self, n: XNode) -> Vec<XNode> {

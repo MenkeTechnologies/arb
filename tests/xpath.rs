@@ -264,3 +264,47 @@ fn arithmetic_and_comparison_operators() {
     // matches, which is why `!=` is not the negation of `=` here.
     assert_eq!(run("//a[@href!='/x']/@href"), vec!["/y"]);
 }
+
+/// The `following` and `preceding` axes over NESTED structure.
+///
+/// Both are computed from the fact that a subtree is CONTIGUOUS in document
+/// order: `following` is the slice at or after the end of the context node's
+/// subtree, and `preceding` is the slice before it minus the nodes whose
+/// subtree end is past it (its ancestors). That replaced a per-context-node
+/// rebuild-and-sort of the whole document, which was quadratic — over a table
+/// of 400 `td`s `//td/following::td` took 0.17s and over 1600 it took 2.28s,
+/// 4x the nodes for 13x the time; it is 0.03s and 0.47s now, same answers.
+///
+/// The assumption needs DEPTH to exercise, so this fixture nests. References,
+/// `xmllint --html --xpath` on it:
+///   `//i/following::p/text()`     -> 4, 5, 6
+///   `//i/preceding::p/text()`     -> 1
+///   `//span/following::p/text()`  -> 4, 5, 6
+///   `//span/preceding::p/text()`  -> 1   (its own descendants excluded)
+///   `//b/ancestor::div/@id`       -> a
+#[test]
+fn following_and_preceding_over_nested_structure() {
+    const NEST: &str = r#"<html><body><div id="a"><p>1</p><span><b>2</b><i>3</i></span><p>4</p></div><div id="b"><p>5</p></div><p>6</p></body></html>"#;
+    let run_on = |expr: &str| -> Vec<String> {
+        let src = format!("tail .x\nsource .x {{ in.html; {expr} }}");
+        let cmds = parse(&src).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let spec = arb::spec::build(&cmds).unwrap_or_else(|e| panic!("`{expr}`: {e}"));
+        let ops = spec.widgets[0]
+            .source
+            .as_ref()
+            .expect("source")
+            .pipeline
+            .clone();
+        match eval(&ops, &[NEST.to_string()], 0.0) {
+            QueryResult::Lines(l) => l,
+            other => panic!("`{expr}` -> {other:?}"),
+        }
+    };
+    assert_eq!(run_on("//i/following::p/text()"), vec!["4", "5", "6"]);
+    assert_eq!(run_on("//i/preceding::p/text()"), vec!["1"]);
+    // A context node's own DESCENDANTS are excluded from both axes, which is
+    // the half a flat fixture cannot catch.
+    assert_eq!(run_on("//span/following::p/text()"), vec!["4", "5", "6"]);
+    assert_eq!(run_on("//span/preceding::p/text()"), vec!["1"]);
+    assert_eq!(run_on("//b/ancestor::div/@id"), vec!["a"]);
+}
