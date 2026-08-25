@@ -1,38 +1,56 @@
-//! Native xpath-syntax front-end for `source { … }` / `out { … }` bodies. A body
-//! command whose first token starts with `/`, `//`, or `@` is an xpath literal,
-//! translated to a `Vec<QueryOp>` over arb's existing HTML ops (`Find`/`Attr`/
-//! `Text`) — no new op. This is the xpath twin of [`crate::jq`].
+//! Native XPath front-end for `source { … }` / `out { … }` bodies. A body
+//! command whose first token starts with `/`, `//`, or `@` is an XPath literal.
 //!
-//! PRACTICAL subset (maps onto scraper's CSS engine): descendant `//tag`, child
-//! `/a/b`, descendant chain `//a//b`; the `[@attr]` existence, `[@attr='v']`
-//! equality, and `[contains(@attr,'v')]` substring predicates; the trailing
-//! `/@attr` and `/text()` accessors; a standalone `@attr` step; and union
-//! `//a | //b` (→ a CSS selector list). Value predicates use SINGLE quotes — a
-//! double quote splits the token at command position in the lexer. Everything
-//! richer — axes (`..`, `ancestor::`, `following-sibling::`), positional/text
-//! predicates (`[1]`, `[last()]`, `[text()='x']`), other functions, `@*`,
-//! namespaced `ns:tag` — is a **hard error**, never a silent mis-translation.
+//! **This is a real XPath 1.0 engine**, not a translation layer:
+//! [`crate::xpath_syntax`] lexes and parses the full grammar of the W3C
+//! Recommendation (<https://www.w3.org/TR/1999/REC-xpath-19991116/>) and
+//! [`crate::xpath_eval`] evaluates it over the parsed document — all 13 axes,
+//! all four node tests, predicates with correct proximity positions, and the
+//! 27-function core library.
+//!
+//! It replaces a translator that compiled XPath-shaped syntax to a CSS selector.
+//! That approach could not carry an axis or a function at all, and it did worse
+//! than refuse them: it compiled a ROOTED path `/li/text()` to the CSS
+//! descendant selector `li`, so a path XPath says selects NOTHING answered with
+//! three nodes and exit 0. `[@a='x' or @a='y']` and a chained predicate
+//! `[@a='x'][@b='y']` went the other way, answering EMPTY where XPath selects
+//! nodes. A wrong answer under a success exit is the one outcome SPEC §8 rules
+//! out, and the four are pinned in `tests/xpath.rs` against `xmllint`.
+//!
+//! ## Where the expression is evaluated
+//!
+//! arb's pipeline is a LINE stream, and an XPath step can appear either as a
+//! whole query or as one stage of a chain (`//div[@class='card']` then `@href`).
+//! So the context follows the expression's own shape, which is XPath's rule
+//! already:
+//!
+//! * An ABSOLUTE expression (`/…`, `//…`) is evaluated ONCE over the whole
+//!   stream parsed as one document, because `/` means the document root.
+//! * A RELATIVE expression (`@href`, `text()`, `a/b`, `count(p)`) is evaluated
+//!   PER LINE with the context node set to that line's first element, so it
+//!   composes with whatever step produced those lines.
 
 use crate::query::QueryOp;
+use crate::xpath_syntax::{self, Expr, PathStart};
 
-/// Translate an xpath literal into arb query ops, or an `xpath: …` error for any
-/// construct outside the supported subset.
+/// Parse an XPath literal, or report why it is not one.
+///
+/// Parsing happens HERE, at spec-build time, so a malformed expression is a hard
+/// error before any input is read — never a silent empty node-set at run time.
 pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     let s = src.trim();
     if s.is_empty() {
         return Err("xpath: empty expression".into());
     }
-    // A standalone attribute step (`@href`): pulls the attribute off the current
-    // element fragments (the twin of the native `attr NAME`).
+    // A jq FORMAT STRING also starts with `@`, and the body dispatcher sends
+    // every leading-`@` command here. Read as an attribute step, `@base64`
+    // would select an attribute nobody has and yield an empty result with a
+    // ZERO exit — a jq construct silently answering "nothing" instead of
+    // erroring, which is precisely what SPEC §8 rules out. The format names are
+    // a closed set, so name them and refuse. (An element really carrying an
+    // attribute with one of these names is still reachable through the native
+    // `attr` verb, which is not `@`-dispatched.)
     if let Some(rest) = s.strip_prefix('@') {
-        // A jq FORMAT STRING also starts with `@`, and the body dispatcher sends
-        // every leading-`@` command here. Read as an attribute step, `@base64`
-        // selects an attribute nobody has and yields an empty result with a ZERO
-        // exit — a jq construct silently answering "nothing" instead of erroring,
-        // which is precisely what SPEC §8 rules out. The format names are a closed
-        // set, so name them and refuse. (An element really carrying an attribute
-        // with one of these names is still reachable through the native `attr`
-        // verb, which is not `@`-dispatched.)
         const JQ_FORMATS: [&str; 9] = [
             "text", "json", "html", "uri", "csv", "tsv", "sh", "base64", "base64d",
         ];
@@ -43,277 +61,95 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
                  use `attr {rest}` for a literal attribute of that name)"
             ));
         }
-        return Ok(vec![QueryOp::Attr(validate_name(rest, s)?)]);
     }
-    if !s.starts_with('/') {
-        return Err(format!(
-            "xpath: expression must start with `/`, `//`, or `@`: `{src}`"
-        ));
-    }
-    // Union `//a | //b` → a CSS selector list `a, b` in one `Find`. Each branch
-    // is a pure location path (no trailing `/@attr` or `/text()` accessor — a CSS
-    // list can't carry one; compose it as a following step instead).
-    if let Some(branches) = split_union(s) {
-        let mut sels = Vec::new();
-        for b in &branches {
-            let b = b.trim();
-            if !b.starts_with('/') {
-                return Err(format!("xpath: a union branch must start with `/`: `{b}`"));
-            }
-            if b.ends_with("/text()") || b.contains("/@") {
-                return Err(format!(
-                    "xpath: a union branch cannot carry an accessor: `{b}`"
-                ));
-            }
-            sels.push(path_to_css(b, s)?);
-        }
-        return Ok(vec![QueryOp::Find(sels.join(", "))]);
-    }
-    // Peel a trailing accessor (`/text()` or `/@attr`) off the location path.
-    let (path, trailer) = if let Some(p) = s.strip_suffix("/text()") {
-        (p, Some(Trailer::Text))
-    } else if let Some(idx) = s.rfind("/@") {
-        (
-            &s[..idx],
-            Some(Trailer::Attr(validate_name(&s[idx + 2..], s)?)),
-        )
-    } else {
-        (s, None)
-    };
-    let mut ops = vec![QueryOp::Find(path_to_css(path, s)?)];
-    match trailer {
-        Some(Trailer::Attr(a)) => ops.push(QueryOp::Attr(a)),
-        Some(Trailer::Text) => ops.push(QueryOp::Text),
-        None => {}
-    }
-    Ok(ops)
-}
-
-enum Trailer {
-    Attr(String),
-    Text,
-}
-
-/// Compile an xpath location path (already stripped of any trailing accessor)
-/// into a scraper CSS selector. Leading `//` is the descendant axis, leading `/`
-/// the child-from-root axis (approximated as a descendant match of the first
-/// step); interior `//` → CSS descendant (` `), interior `/` → CSS child (` > `).
-fn path_to_css(path: &str, whole: &str) -> Result<String, String> {
-    // Split into (combinator, step) pairs. A leading `/` or `//` sets the first
-    // step's combinator; both leading forms start the selector at the first tag.
-    let mut css: Vec<String> = Vec::new();
-    let mut rest = path;
-    let mut first = true;
-    while !rest.is_empty() {
-        // Consume the axis separator.
-        let descendant = if let Some(r) = rest.strip_prefix("//") {
-            rest = r;
-            true
-        } else if let Some(r) = rest.strip_prefix('/') {
-            rest = r;
-            false
-        } else {
-            // Interior text with no separator should not happen (steps are split
-            // on `/`), but guard against a malformed path.
-            return Err(format!("xpath: malformed path near `{rest}` in `{whole}`"));
-        };
-        // The step is everything up to the next `/`.
-        let end = rest.find('/').unwrap_or(rest.len());
-        let (step, tail) = rest.split_at(end);
-        rest = tail;
-        let sel = step_to_css(step, whole)?;
-        if first {
-            // A leading `/root` or `//root` both anchor at a descendant match of
-            // the first step (arb parses the whole stream as one document).
-            css.push(sel);
-            first = false;
-        } else if descendant {
-            css.push(format!(" {sel}"));
-        } else {
-            css.push(format!(" > {sel}"));
-        }
-    }
-    if css.is_empty() {
-        return Err(format!("xpath: empty location path in `{whole}`"));
-    }
-    Ok(css.concat())
-}
-
-/// One location step → a CSS type/universal selector, optionally with a single
-/// `[@attr]` existence predicate. Rejects every richer predicate/function/axis.
-fn step_to_css(step: &str, whole: &str) -> Result<String, String> {
-    if step.is_empty() {
-        return Err(format!("xpath: empty step in `{whole}` (a stray `/`?)"));
-    }
-    // Split off an optional `[…]` predicate.
-    let (tag, pred) = match step.find('[') {
-        Some(b) => {
-            if !step.ends_with(']') {
-                return Err(format!("xpath: malformed predicate in step `{step}`"));
-            }
-            (&step[..b], Some(&step[b + 1..step.len() - 1]))
-        }
-        None => (step, None),
-    };
-    // The tag: a bare name. No wildcard, no namespaces, no functions.
+    // A bare NCName is a legal XPath relative location path (`bogus` is
+    // `child::bogus`), and at COMMAND position that is a trap: a typo'd arb verb
+    // would parse, select nothing, and exit 0 — the silent answer this engine
+    // exists to remove, reintroduced through the front door. So an expression
+    // reaching arb's command position must carry a character only XPath uses.
     //
-    // `*` used to compile to the CSS universal selector and answer with a node
-    // set. It is not in SPEC §8's documented subset, and it does not agree with
-    // xmllint either: arb parses with html5ever, which SYNTHESIZES the `<head>`
-    // an HTML fragment omits, so `//*` returns one element libxml2's node set
-    // does not contain. Answering with a node set that differs from the
-    // reference is the silent reinterpretation the SPEC rules out, so the
-    // wildcard refuses instead.
-    let tag_css = if tag == "*" {
-        return Err(
-            "xpath: the `*` wildcard is not supported (subset: a named tag, `//`, `/`, `@`)".into(),
-        );
-    } else if is_ident(tag) {
-        tag.to_string()
-    } else if tag.contains("::") || tag == ".." || tag == "." {
+    // Nothing becomes unreachable: the same step is spelled `//bogus`,
+    // `./bogus` or `child::bogus`, any of which is unambiguous. This is the
+    // `keys`/`names` rule again — a language does not get to claim a spelling
+    // another meaning already owns.
+    if !s.contains(['/', '@', ':', '(', '[', '|']) {
         return Err(format!(
-            "xpath: axis `{tag}` is not supported (subset: `//`, `/`, `@`)"
+            "xpath: `{src}` has no xpath-only syntax, so it is read as a verb name              (spell the step `//{src}`, `./{src}` or `child::{src}` to force xpath)"
         ));
-    } else if tag.contains('(') {
-        return Err(format!("xpath: function `{tag}` is not supported"));
-    } else {
-        return Err(format!("xpath: unsupported step `{step}` in `{whole}`"));
-    };
-    match pred {
-        None => Ok(tag_css),
-        Some(p) => Ok(format!("{tag_css}{}", predicate_to_css(p, step)?)),
+    }
+    let expr = xpath_syntax::parse(s).map_err(|e| format!("xpath: {e} in `{src}`"))?;
+    // Only a RELATIVE LOCATION PATH composes with a previous pipeline step, and
+    // only it is evaluated per line. Everything else — an absolute path, a
+    // function call, a comparison, a union — is one question about the DOCUMENT
+    // and is answered once. Deciding this from the source text instead (a
+    // leading `/`) made `count(//p)` run once per input line and print eight
+    // separate counts.
+    let per_line = matches!(expr, Expr::Path(PathStart::Relative, _));
+    Ok(vec![QueryOp::XPath(Box::new(XPath {
+        src: s.to_string(),
+        expr,
+        per_line,
+    }))])
+}
+
+/// A compiled XPath expression, carried by the query op.
+#[derive(Debug, Clone)]
+pub struct XPath {
+    pub src: String,
+    pub expr: Expr,
+    /// Whether to evaluate once per input line (see the module docs).
+    pub per_line: bool,
+}
+
+impl XPath {
+    /// Evaluate over the current stream lines, returning the output lines.
+    pub fn run(&self, lines: &[String]) -> Result<Vec<String>, String> {
+        use crate::xpath_eval::{eval, render, Doc};
+        if !self.per_line {
+            let doc = Doc::parse(&lines.join("\n"));
+            let v = eval(&doc, &self.expr, doc.root())
+                .map_err(|e| format!("xpath: {e} in `{}`", self.src))?;
+            return Ok(render(&doc, &v));
+        }
+        // Relative: one evaluation per line, context = that line's first
+        // element, so a chain like `//a` then `@href` behaves as it reads.
+        let mut out = Vec::new();
+        for l in lines {
+            let doc = Doc::parse(l);
+            let ctx = first_element(&doc).unwrap_or_else(|| doc.root());
+            let v =
+                eval(&doc, &self.expr, ctx).map_err(|e| format!("xpath: {e} in `{}`", self.src))?;
+            out.extend(render(&doc, &v));
+        }
+        Ok(out)
     }
 }
 
-/// Translate a single step predicate into a CSS attribute selector:
-///   `[@attr]`               → `[attr]`      (attribute exists)
-///   `[@attr='v']`           → `[attr="v"]`  (equals — use single quotes; the
-///                             lexer splits a double quote at command position)
-///   `[contains(@attr,'v')]` → `[attr*="v"]` (substring)
-/// Positional (`[1]`), text (`[text()='x']`), and other functions stay errors.
-fn predicate_to_css(pred: &str, step: &str) -> Result<String, String> {
-    // contains(@attr, 'value') → substring match.
-    if let Some(inner) = pred
-        .strip_prefix("contains(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let (a, v) = inner
-            .split_once(',')
-            .ok_or_else(|| format!("xpath: `contains()` needs `(@attr, 'value')` in `[{pred}]`"))?;
-        let attr = a
-            .trim()
-            .strip_prefix('@')
-            .filter(|a| is_ident(a))
-            .ok_or_else(|| {
-                format!("xpath: `contains()` first arg must be `@attr` in `[{pred}]`")
-            })?;
-        let val = unquote(v.trim())
-            .ok_or_else(|| format!("xpath: `contains()` value must be quoted in `[{pred}]`"))?;
-        return Ok(format!("[{attr}*=\"{}\"]", css_escape(&val)));
-    }
-    // @attr  or  @attr='value'
-    let attr_part = pred.strip_prefix('@').ok_or_else(|| {
-        format!(
-            "xpath: unsupported predicate `[{pred}]` in step `{step}` \
-             (use `[@attr]`, `[@attr='v']`, or `[contains(@attr,'v')]`)"
-        )
-    })?;
-    match attr_part.split_once('=') {
-        None => {
-            if !is_ident(attr_part) {
-                return Err(format!("xpath: unsupported predicate `[{pred}]`"));
+/// The first element of a re-parsed fragment, skipping the `html`/`body`
+/// wrappers the parser inserts around one. That is the node a previous pipeline
+/// step actually produced.
+fn first_element(doc: &crate::xpath_eval::Doc) -> Option<crate::xpath_eval::XNode> {
+    use crate::xpath_eval::{Kind, XNode};
+    let mut best: Option<XNode> = None;
+    for n in doc.document_nodes() {
+        if doc.kind(n) == Kind::Element {
+            let name = doc.name(n).unwrap_or_default();
+            if name == "html" || name == "body" || name == "head" {
+                continue;
             }
-            Ok(format!("[{attr_part}]"))
-        }
-        Some((name, val)) => {
-            let name = name.trim();
-            if !is_ident(name) {
-                return Err(format!("xpath: unsupported attribute in `[{pred}]`"));
-            }
-            let val = unquote(val.trim()).ok_or_else(|| {
-                format!("xpath: value in `[{pred}]` must be quoted (`[@{name}='v']`)")
-            })?;
-            Ok(format!("[{name}=\"{}\"]", css_escape(&val)))
-        }
-    }
-}
-
-/// Split on a top-level `|` (not inside `[…]` or a quoted value). `None` when
-/// there is no top-level `|` (i.e. not a union).
-fn split_union(s: &str) -> Option<Vec<&str>> {
-    let (mut depth, mut quote) = (0i32, 0u8);
-    let mut parts = Vec::new();
-    let mut start = 0;
-    for (i, &c) in s.as_bytes().iter().enumerate() {
-        if quote != 0 {
-            if c == quote {
-                quote = 0;
-            }
-        } else {
-            match c {
-                b'\'' | b'"' => quote = c,
-                b'[' => depth += 1,
-                b']' => depth -= 1,
-                b'|' if depth == 0 => {
-                    parts.push(&s[start..i]);
-                    start = i + 1;
-                }
-                _ => {}
-            }
+            best = Some(n);
+            break;
         }
     }
-    if parts.is_empty() {
-        None
-    } else {
-        parts.push(&s[start..]);
-        Some(parts)
-    }
-}
-
-/// Strip matching single/double quotes; `None` if the string isn't quoted.
-fn unquote(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    if b.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[b.len() - 1] == b[0] {
-        Some(s[1..s.len() - 1].to_string())
-    } else {
-        None
-    }
-}
-
-/// Escape `\` and `"` for a CSS double-quoted attribute value.
-fn css_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// An attribute/tag name: a non-empty run of `[A-Za-z0-9_-]`, no namespace colon,
-/// no wildcard, no quotes.
-fn is_ident(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-/// Validate a trailing `@attr` name, erroring on `@*` / namespaced / empty.
-fn validate_name(name: &str, whole: &str) -> Result<String, String> {
-    if is_ident(name) {
-        Ok(name.to_string())
-    } else {
-        Err(format!(
-            "xpath: unsupported attribute name in `{whole}` (use `@name`)"
-        ))
-    }
+    best
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::{eval, QueryOp, QueryResult};
+    use crate::query::{eval, QueryResult};
 
-    fn ops(src: &str) -> Vec<QueryOp> {
-        translate(src).unwrap()
-    }
-
-    /// Render an xpath literal over one HTML document, returning the output lines.
+    /// Render an xpath literal over one HTML document, returning the lines.
     fn run(src: &str, html: &str) -> Vec<String> {
         match eval(&translate(src).unwrap(), &[html.to_string()], 0.0) {
             QueryResult::Lines(v) => v,
@@ -323,28 +159,14 @@ mod tests {
 
     #[test]
     fn descendant_and_child_paths() {
-        assert!(matches!(ops("//a").as_slice(), [QueryOp::Find(s)] if s == "a"));
-        assert!(matches!(ops("//div//span").as_slice(), [QueryOp::Find(s)] if s == "div span"));
-        assert!(matches!(ops("//div/span").as_slice(), [QueryOp::Find(s)] if s == "div > span"));
-        assert!(
-            matches!(ops("/html/body/p").as_slice(), [QueryOp::Find(s)] if s == "html > body > p")
-        );
+        let doc = "<html><body><div><span>A</span></div><span>B</span></body></html>";
+        assert_eq!(run("//span/text()", doc), vec!["A", "B"]);
+        assert_eq!(run("//div/span/text()", doc), vec!["A"]);
+        assert_eq!(run("/html/body/span/text()", doc), vec!["B"]);
     }
 
     #[test]
     fn attr_predicate_and_accessors() {
-        assert!(matches!(ops("//a[@href]").as_slice(), [QueryOp::Find(s)] if s == "a[href]"));
-        assert!(
-            matches!(ops("//a/@href").as_slice(), [QueryOp::Find(s), QueryOp::Attr(a)] if s == "a" && a == "href")
-        );
-        assert!(
-            matches!(ops("//a/text()").as_slice(), [QueryOp::Find(s), QueryOp::Text] if s == "a")
-        );
-        assert!(matches!(ops("@href").as_slice(), [QueryOp::Attr(a)] if a == "href"));
-    }
-
-    #[test]
-    fn end_to_end_over_html() {
         let doc = "<div><a href=\"x\">1</a><a href=\"y\">2</a></div>";
         assert_eq!(run("//a/@href", doc), vec!["x", "y"]);
         assert_eq!(run("//a/text()", doc), vec!["1", "2"]);
@@ -357,65 +179,20 @@ mod tests {
     }
 
     #[test]
-    fn union_value_predicate_and_contains() {
-        // Union → a CSS selector list in one Find.
-        assert!(matches!(ops("//a|//b").as_slice(), [QueryOp::Find(s)] if s == "a, b"));
-        assert!(
-            matches!(ops("//div//span | //p").as_slice(), [QueryOp::Find(s)] if s == "div span, p")
-        );
-        // Value predicate (single-quoted) → a CSS `[attr="v"]`.
-        assert!(
-            matches!(ops("//a[@class='btn']").as_slice(), [QueryOp::Find(s)] if s == "a[class=\"btn\"]")
-        );
-        assert!(
-            matches!(ops("//input[@type='text']").as_slice(), [QueryOp::Find(s)] if s == "input[type=\"text\"]")
-        );
-        // contains() → CSS substring `[attr*="v"]`.
-        assert!(
-            matches!(ops("//a[contains(@href,'x')]").as_slice(), [QueryOp::Find(s)] if s == "a[href*=\"x\"]")
-        );
-        // Existence predicate still works.
-        assert!(matches!(ops("//a[@href]").as_slice(), [QueryOp::Find(s)] if s == "a[href]"));
-        // A `|` inside a predicate value is NOT a union split.
-        assert!(
-            matches!(ops("//a[@class='x|y']").as_slice(), [QueryOp::Find(s)] if s == "a[class=\"x|y\"]")
-        );
-        // e2e: value predicate + contains select the right elements.
-        assert_eq!(
-            run(
-                "//a[@class='x']/text()",
-                "<a class='x'>1</a><a class='y'>2</a>"
-            ),
-            vec!["1"]
-        );
-    }
-
-    #[test]
-    fn unsupported_constructs_error_not_mishandle() {
+    fn a_malformed_expression_is_a_parse_error_not_an_empty_answer() {
         for bad in [
-            "//a[1]",                 // positional predicate
-            "//a[last()]",            // function predicate
-            "//a[text()='x']",        // text predicate
-            "//a[@class=btn]",        // unquoted value
-            "//following-sibling::b", // axis
-            "//..",                   // parent axis
-            ".",                      // relative/context (jq territory, not xpath here)
-            "//a/@href|//b",          // union branch with an accessor
-            "count(//a)",             // function
-            "//ns:a",                 // namespace
-            "@*",                     // wildcard attribute
-            "foo",                    // not an xpath literal at all
-            // The `*` step used to COMPILE, to the CSS universal selector. It is
-            // not in SPEC §8's subset and it does not agree with the reference
-            // either: arb parses with html5ever, which synthesizes the `<head>`
-            // an HTML fragment omits, so `//*` returned one element xmllint's
-            // node set does not contain. Answering with a node set that differs
-            // from the reference is the silent reinterpretation §8 rules out.
-            "//*",
-            "//*/text()",
-            "/html/*",
+            "//a[",            // unclosed predicate
+            "//a[@href",       // unclosed predicate
+            "count(",          // unclosed call
+            "//a[@class=btn",  // unterminated
+            "'unterminated",   // unterminated literal
+            "//a!",            // stray `!`
+            "//a/@href extra", // trailing junk
+            "//nosuchfn()",    // not a node type
+            "//bogus-axis::a", // not an axis
+            "",                // empty
         ] {
-            assert!(translate(bad).is_err(), "expected `{bad}` to error");
+            assert!(translate(bad).is_err(), "expected `{bad}` to be refused");
         }
     }
 }

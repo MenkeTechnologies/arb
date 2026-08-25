@@ -1899,6 +1899,12 @@ fn block_text(cmds: &[Command]) -> String {
             std::iter::once(c.name.clone())
                 .chain(c.args.iter().map(|a| match a {
                     Arg::Block(inner) => format!("{{{}}}", block_text(inner)),
+                    // A QUOTED arg keeps its quotes. Dropping them turned
+                    // `sel { a[href="/x"] }` into `a[href=/x]`, which is not a
+                    // legal CSS selector — and the parse failure then read as
+                    // "no matches", so a selector the docs advertise silently
+                    // selected nothing.
+                    Arg::Str(v) => quote_arg(v),
                     other => other.as_str().unwrap_or_default().to_string(),
                 }))
                 .collect::<Vec<_>>()
@@ -1964,15 +1970,6 @@ fn pipeline_from_body(
                     // valid jq EITHER keeps the original refusal.
                     Err(sub_err) => match crate::query::jq_program(&src) {
                         Ok(_) => ops.push(QueryOp::JqProgram(src)),
-                        // A name arb DOES define, called at the wrong ARITY, is
-                        // an arity error and not an unknown verb. Both
-                        // references say so for their own (`jq 'ltrimstr'` ->
-                        // "ltrimstr/0 is not defined", `yq -n 'ref'` -> "'ref'
-                        // expects 2 args"), and reporting "unknown verb" for a
-                        // name that exists points at the wrong mistake.
-                        Err(jq_err) if crate::jqlang::defines_name(&src) => {
-                            return Err(jq_err.into())
-                        }
                         Err(_) => return Err(sub_err.into()),
                     },
                 }
@@ -2065,6 +2062,14 @@ fn pipeline_from_body(
                     if css.trim().is_empty() {
                         return Err("sel: expected a CSS selector".into());
                     }
+                    // A MALFORMED selector is a hard error here, before any input
+                    // is read. The evaluator used to map a parse failure to an
+                    // EMPTY result, which made `sel { a[href=/x] }` — a selector
+                    // no CSS engine accepts — indistinguishable from one that
+                    // legitimately matches nothing. That is the silent
+                    // reinterpretation SPEC §8 rules out, and it is the same
+                    // failure the xpath leg had.
+                    check_css(&css, "sel")?;
                     ops.push(QueryOp::Sel { css, attr });
                 }
                 "find" => {
@@ -2077,6 +2082,7 @@ fn pipeline_from_body(
                     if css.trim().is_empty() {
                         return Err("find: expected a tag/selector".into());
                     }
+                    check_css(&css, "find")?;
                     ops.push(QueryOp::Find(css));
                 }
                 "attr" => {
@@ -2544,24 +2550,43 @@ fn pipeline_from_body(
                     let mut parts = vec![other.to_string()];
                     parts.extend(c.args.iter().map(|a| match a {
                         Arg::Block(inner) => format!("{{{}}}", block_text(inner)),
+                        // A QUOTED arg must be handed on still quoted. `as_str`
+                        // flattens `Arg::Str` and `Arg::Word` to the same text,
+                        // so `string-length("abcd")` was reconstructed as
+                        // `string-length(abcd)` — where `abcd` reads as a
+                        // location path, and the answer came back 0 instead of
+                        // 4. The same loss reaches jq, where `select(.a == "x")`
+                        // became `select(.a == x)`.
+                        Arg::Str(v) => quote_arg(v),
                         x => x.as_str().unwrap_or_default().to_string(),
                     }));
                     let src = parts.join(" ");
                     match crate::query::jq_program(&src) {
                         Ok(_) => ops.push(QueryOp::JqProgram(src)),
-                        // A name arb DOES define, called at the wrong ARITY, is
-                        // an arity error and not an unknown verb. Both
-                        // references say so for their own (`jq 'ltrimstr'` ->
-                        // "ltrimstr/0 is not defined", `yq -n 'ref'` -> "'ref'
-                        // expects 2 args"), and reporting "unknown verb" for a
-                        // name that exists points at the wrong mistake.
-                        Err(jq_err) if crate::jqlang::defines_name(&src) => {
-                            return Err(jq_err.into())
-                        }
-                        // Report arb's own diagnostic, not jq's parse error: a
-                        // typo'd arb verb is far likelier than a jq program, and
-                        // "unknown verb" is what points at the real mistake.
-                        Err(_) => return Err(format!("source: unknown verb `{other}`").into()),
+                        // Not a native verb and not a jq program: try XPath, but
+                        // only HERE, as the LAST resort.
+                        //
+                        // XPath's core library shares spellings with jq and with
+                        // arb's own verbs, and a language matched BEFORE another
+                        // does not merely win a word — it SHADOWS it. That is
+                        // what made a native verb named `keys` break the jq
+                        // superset, and the fix is not to repeat it. Being last
+                        // means XPath can never take a spelling another engine
+                        // answers: `contains("a","b")` stays jq's, and XPath's
+                        // two-argument `contains` is still reachable where it is
+                        // actually used, inside an expression
+                        // (`//p[contains(@class,'a')]`).
+                        //
+                        // Measured on this corpus: of the 27 core functions,
+                        // `contains` is the only spelling jq claims.
+                        Err(_) => match crate::xpath::translate(&src) {
+                            Ok(xops) => ops.extend(xops),
+                            // Report arb's own diagnostic, not a parse error from
+                            // either guest language: a typo'd arb verb is far
+                            // likelier, and "unknown verb" points at the real
+                            // mistake.
+                            Err(_) => return Err(format!("source: unknown verb `{other}`").into()),
+                        },
                     }
                 }
             }
@@ -2585,6 +2610,33 @@ fn compile_regex(raw: &str) -> Result<Regex, String> {
         .and_then(|s| s.strip_suffix('/'))
         .unwrap_or(raw);
     Regex::new(pat).map_err(|e| format!("bad regex: {e}"))
+}
+
+/// Refuse a CSS selector `scraper` cannot parse.
+///
+/// Reported at BUILD time so it can never be mistaken for an empty match at run
+/// time — the message names the verb and the selector, which is what points at
+/// the mistake in a spec file.
+fn check_css(css: &str, verb: &str) -> Result<(), crate::err::SpecError> {
+    match scraper::Selector::parse(css) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{verb}: `{css}` is not a valid CSS selector ({e})").into()),
+    }
+}
+
+/// Re-quote a string argument for a reconstructed command.
+///
+/// Double quotes are the default because that is what jq needs; a value that
+/// itself contains one is wrapped in single quotes instead, which both jq and
+/// XPath accept. A value containing BOTH has no quoting that is literal in
+/// XPath 1.0 (its Literal production has no escape sequence at all), so it is
+/// escaped for jq and that limitation is stated rather than papered over.
+fn quote_arg(v: &str) -> String {
+    if v.contains('"') && !v.contains('\'') {
+        format!("'{v}'")
+    } else {
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 /// Reconstruct a shell string from a `{ … }` block body: each top-level command

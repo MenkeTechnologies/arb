@@ -1658,14 +1658,42 @@ fn jq_xpath_and_native_verbs_coexist_in_one_body() {
     );
 }
 
+/// What must fail the build is MALFORMED xpath, not rich xpath.
+///
+/// This test used to assert the opposite for `//a[1]` and `//a[text()='d']`,
+/// which was true only while the front-end compiled xpath to a CSS selector and
+/// so had no way to express a positional or text predicate. arb runs a real
+/// XPath 1.0 engine now, so both ANSWER, and the assertion moved to the
+/// stronger claim: they answer what `xmllint --html --xpath` answers.
+/// `//a[1]` on this input is `<a href="x">1</a>`, and `//a[text()='2']` is the
+/// second anchor.
 #[test]
 fn unsupported_xpath_errors_at_build_not_silently() {
-    // A positional / text predicate is out of subset — it must fail the build,
-    // never silently mis-handle (the `|`-swallow bug class).
-    assert!(build(&parse("tail .x\nsource .x { in.html; //a[1] }").unwrap()).is_err());
-    assert!(build(&parse("tail .x\nsource .x { in.html; //a[text()='d'] }").unwrap()).is_err());
-    // A value predicate now BUILDS (single-quoted equality → CSS attr selector).
+    let doc = lines(&["<div><a href=\"x\">1</a><a href=\"y\">2</a></div>"]);
+    let ops = pipeline("tail .x\nsource .x { in.html; //a[1]/@href }");
+    assert_eq!(eval(&ops, &doc, 1.0), QueryResult::Lines(lines(&["x"])));
+    let ops = pipeline("tail .x\nsource .x { in.html; //a[text()='2']/@href }");
+    assert_eq!(eval(&ops, &doc, 1.0), QueryResult::Lines(lines(&["y"])));
+    let ops = pipeline("tail .x\nsource .x { in.html; //a[last()]/@href }");
+    assert_eq!(eval(&ops, &doc, 1.0), QueryResult::Lines(lines(&["y"])));
+    // A value predicate still builds.
     assert!(build(&parse("tail .x\nsource .x { in.html; //a[@c='d'] }").unwrap()).is_ok());
+    // MALFORMED xpath is what must fail the build, before any input is read —
+    // an unclosed predicate, an unclosed call, a name that is not an axis, and
+    // trailing junk after a complete expression.
+    for bad in [
+        "//a[",
+        "//a[@href",
+        "count(//a",
+        "//bogus-axis::a",
+        "//a/@href extra",
+        "//a[@class=]",
+    ] {
+        assert!(
+            build(&parse(&format!("tail .x\nsource .x {{ in.html; {bad} }}")).unwrap()).is_err(),
+            "`{bad}` must fail the build"
+        );
+    }
 }
 
 // Adversarial-audit regression: fmt_num used `v as i64`, which SATURATES for
@@ -1974,14 +2002,26 @@ fn toml_datetime_is_a_clean_scalar_not_a_private_marker() {
     }
 }
 
+/// `//a/text()` selects a's direct text NODES — two of them here, not one
+/// concatenated string, and the `<b>X</b>` child's text is excluded either way.
+///
+/// The expectation used to be the single line `12`. That was the CSS
+/// translator's approximation: it had no node-set, so it folded an element's
+/// direct text children into one string. A real engine returns the node-set, and
+/// the reference agrees — `xmllint --xpath '//a/text()'` on this document prints
+/// `1` then `2`, and `count(//a/text())` is `2`.
 #[test]
 fn xpath_text_is_direct_children_not_descendant_concat() {
-    // `//a/text()` selects a's direct text nodes; the <b>X</b> child's text is
-    // excluded (real xpath), so `<a>1<b>X</b>2</a>` -> "12", not "1X2".
     let ops = pipeline("tail .x\nsource .x { in.xml; //a/text() }");
     assert_eq!(
         eval(&ops, &lines(&["<r><a>1<b>X</b>2</a></r>"]), 1.0),
-        QueryResult::Lines(lines(&["12"]))
+        QueryResult::Lines(lines(&["1", "2"]))
+    );
+    // The descendant's text is still excluded: `string(//a)` would be `1X2`.
+    let ops = pipeline("tail .x\nsource .x { in.xml; count(//a/text()) }");
+    assert_eq!(
+        eval(&ops, &lines(&["<r><a>1<b>X</b>2</a></r>"]), 1.0),
+        QueryResult::Lines(lines(&["2"]))
     );
 }
 

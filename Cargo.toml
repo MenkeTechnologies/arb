@@ -57,7 +57,14 @@ time = "0.3"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1"
 serde_json = "1"
-scraper = "0.20"
+# `deterministic` swaps scraper's attribute map for an `indexmap`, so an
+# element's attributes keep SOURCE order. XPath 1.0 §5.3 leaves the relative
+# order of attribute nodes implementation-dependent, but `xmllint` reports `@*`
+# in source order and this is what lets arb match it byte for byte.
+scraper = { version = "0.20", features = ["deterministic"] }
+# The tree behind `scraper`, needed directly for `NodeId` in the XPath data
+# model (`scraper` does not re-export it).
+ego-tree = "0.6"
 base64 = "0.22"
 percent-encoding = "2.3"
 

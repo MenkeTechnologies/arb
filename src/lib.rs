@@ -44,6 +44,8 @@ pub mod tiers;
 pub mod tui;
 pub mod web;
 pub mod xpath;
+pub mod xpath_eval;
+pub mod xpath_syntax;
 pub mod yaml;
 pub mod ynode;
 pub mod yqfmt;

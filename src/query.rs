@@ -50,6 +50,10 @@ pub enum OutFmt {
 
 #[derive(Debug, Clone)]
 pub enum QueryOp {
+    /// A compiled XPath 1.0 expression (`crate::xpath`). The expression is
+    /// parsed at spec-build time, so this op always holds a well-formed one and
+    /// a malformed path is refused before any input is read.
+    XPath(Box<crate::xpath::XPath>),
     /// Re-serialize the whole stream in another format (`out.yaml 4`). The
     /// number is the indent, `yq`'s `-I`.
     Emit(OutFmt, usize),
@@ -913,14 +917,39 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                             None => Some(el.text().collect::<String>().trim().to_string()),
                         })
                         .collect(),
-                    Err(_) => Vec::new(),
+                    // A selector no CSS engine accepts is an ERROR, not "no
+                    // matches" — `spec::check_css` refuses it at build time, and
+                    // this is the second line of defence for a selector that
+                    // reached here another way (an `input` value substituted by
+                    // `resolve_pipeline`).
+                    Err(e) => {
+                        return QueryResult::Error(format!(
+                            "sel: `{css}` is not a valid CSS selector ({e})"
+                        ))
+                    }
                 };
+            }
+            QueryOp::XPath(xp) => {
+                // An expression that is a RELATIVE location path is evaluated
+                // per line, so it composes with the step that produced those
+                // lines; anything else is one question about the DOCUMENT and is
+                // answered once. See `crate::xpath`'s module docs.
+                match xp.run(&cur) {
+                    Ok(lines) => cur = lines,
+                    // SPEC §8: a construct outside the subset is a hard error,
+                    // never a silent empty node-set.
+                    Err(e) => return QueryResult::Error(e),
+                }
             }
             QueryOp::Find(css) => {
                 let doc = Html::parse_document(&cur.join("\n"));
                 cur = match Selector::parse(css) {
                     Ok(sel) => doc.select(&sel).map(|el| el.html()).collect(),
-                    Err(_) => Vec::new(),
+                    Err(e) => {
+                        return QueryResult::Error(format!(
+                            "find: `{css}` is not a valid CSS selector ({e})"
+                        ))
+                    }
                 };
             }
             QueryOp::Attr(name) => {
