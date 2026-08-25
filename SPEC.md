@@ -1,6 +1,6 @@
 # arb — SPEC
 
-**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **machine-checked jq superset** that also reads **XPath/CSS/yq** filters (containment per leg is measured in §8 — the xpath and yq legs are NOT supersets), an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Akka-style actors ship: `actor NAME(state) { on MSG { … } }` + a `via NAME * N` pipeline op that fans the stream across a supervised worker pool in parallel — see §15.)
+**arb** is a standalone, original language on **fusevm/JIT** for **visualizing and modifying Unix pipelines**: drop it in a pipe and it spawns a **dynamic TUI (ratatui) or served web page (zgui components)** built from a declarative spec. It is a **jq/xpath/css/yq superset** — every leg machine-checked against its own reference tool, with the per-leg containment measured in §8 — an interactive **megafilter/map** over the live passthrough, its own **Tcl/Tk-flavored DSL**, and a **preset library / package manager** so users share dashboards — *a TUI for every pipeline*. (LSP/DAP stdio frontends ship. Akka-style actors ship: `actor NAME(state) { on MSG { … } }` + a `via NAME * N` pipeline op that fans the stream across a supervised worker pool in parallel — see §15.)
 
 Original language (stryke's class), **not a port**. MIT, standalone crate, lean (rubyrs-scale, not stryke-scale).
 
@@ -213,7 +213,7 @@ Expect-style automation, e.g. `expect { /password:/ send "hunter2\n" }`. The
 `sel` selection widget (§9) exposes a widget's highlighted row as `.<path>.sel`
 for a `send`/`where`/`tell` to consume.
 
-## 8. Query — one engine over jq/xpath/css/yq (uniform over all formats)
+## 8. Query — jq/xpath/css/yq superset (uniform over all formats)
 
 ```
 field NAME        key (jq .name); field a b c = a.b.c; field N = Nth ws column
@@ -338,54 +338,78 @@ input, and a construct applied to the WRONG TYPE must be refused by both engines
 — with jq's refusal checked, so a refusal arb invented alone is never scored as
 parity.
 
-### Containment is measured per leg, and only jq's is a superset
+### Containment is measured per leg
 
-The same probe now runs for the other two named references, and the answer is
-not the same on every leg. Current run: 686 probes, 676 pass, 10 diverged, no
-allowlist.
+One containment probe per reference, each enumerating that reference's own
+surface and reporting what arb is missing. Current run: **798 probes, 798 pass,
+0 diverged, no allowlist.**
 
 | leg | reference | containment | status |
 |---|---|---|---|
-| jq | `jq` 1.8.2 `builtins` | every name present | **superset**, zero divergences |
-| css | Selectors 3/4 via `scraper` | selects what the equivalent XPath selects | close; two gaps below |
-| xpath | XPath 1.0 (W3C REC) via `xmllint` | **46 of 48 constructs missing** | **not a superset** |
-| yq | mikefarah/yq v4.53.6 | **61 operators missing** | **not a superset** |
+| jq | `jq` 1.8.2 `builtins` | every name present | **superset** |
+| xpath | XPath 1.0 (W3C REC) via `xmllint` | **48 of 48 enumerated constructs present** | **superset** of the enumerated surface |
+| css | Selectors 3/4 via `scraper` | 24 selection probes match the equivalent XPath | matches the reference on every probe |
+| yq | mikefarah/yq v4.53.6 | every enumerated operator present | **superset** of the enumerated surface |
 
-**XPath.** What this section documents above — `//`, `/`, `@`, `[@a]`,
-`[@a='v']`, `[contains(@a,'v')]` — is an XPath-shaped syntax compiled to a CSS
-selector (`src/xpath.rs`), not an XPath engine. Absent: all 13 axes in explicit
-`axis::test` syntax, all 27 core functions, `*`, `@*`, `..`, `node()`/`text()`
-as a STEP, `comment()`, positional predicates, `!=`, and the comparison and
-arithmetic operators.
+**XPath.** The subset this section used to document — `//`, `/`, `@`, `[@a]`,
+`[@a='v']`, `[contains(@a,'v')]` — was XPath-SHAPED syntax compiled to a CSS
+selector, and the probe found 46 of 48 constructs missing. `src/xpath.rs` is a
+real engine now: `xpath_syntax.rs` lexes and parses the grammar of the W3C
+Recommendation, `xpath_eval.rs` evaluates it over the parsed document. All 13
+axes in explicit `axis::test` syntax, the node tests `node()`/`text()`/
+`comment()`/`processing-instruction()` plus name and `*` wildcard tests,
+predicates with correct proximity positions (§2.4 — and a predicate on a REVERSE
+axis counts along that axis, so `preceding-sibling::p[1]` is the NEAREST
+preceding sibling), the 27-function core library (§4), and the comparison,
+arithmetic and union operators with §3.4's existential node-set semantics.
+**59 `xp_probe`s** byte-diff the engine against `xmllint --html --xpath`.
 
-Four cases are worse than absent, and **the claim two paragraphs down — that
-anything outside the subset is a hard error, "never silently reinterpreted" —
-does not hold for them**: `[@a='x' or @a='y']` and a chained predicate
-`[@a='x'][@b='y']` both exit 0 with an EMPTY selection where XPath selects
-nodes, and a ROOTED path (`/li/text()`, `/div/h2/text()`) exits 0 with a
-non-empty node set where XPath selects nothing, because a leading `/step` is
-compiled as a descendant match. A wrong answer that looks like an answer is the
-one failure this whole section exists to rule out. All four are probed and
-reported every run rather than allowlisted.
+**The four silent wrong answers are gone.** They were the reason this leg was
+the priority: the promise below — that anything outside the subset is a hard
+error, "never silently reinterpreted" — did not hold for them.
+`[@a='x' or @a='y']` and a chained predicate `[@a='x'][@b='y']` both exited 0
+with an EMPTY selection where XPath selects nodes, and a ROOTED path
+(`/li/text()`, `/div/h2/text()`) exited 0 with a NON-EMPTY node set where XPath
+selects nothing, because a leading `/step` was compiled as a descendant match.
+A real engine removes the whole class by construction; `tests/xpath.rs` pins
+each of the four against xmllint's own answer.
 
-**yq.** Every yq name that passes is one arb already had from jq. Absent is
-every operator that reads YAML NODE METADATA — `anchor`, `alias`, `tag`,
-`style`, `kind`, `line`, `column`, the three comment accessors, `key`, `parent`,
-`documentIndex`, `splitDoc` — plus the encode/decode family and the file/env
-family. That class is out of reach BY CONSTRUCTION, not merely unimplemented:
-arb's value model is jq's (§8's value semantics above), and a jq value has no
-slot for a comment, an anchor name, a tag or a quoting style. YAML is read into
-that model and the metadata is gone at the parser. Round-tripping it is the
-reason yq exists over jq, so closing this leg means a node-preserving value
-model, not 61 more builtins.
+**The data model (§5) is reconciled with html5ever explicitly.** A doctype is
+not one of §5's seven node types, so `count(//node())` must not see it. And
+html5ever implements the HTML5 tree-construction algorithm, which ALWAYS creates
+a `head` and a table `tbody`, where libxml2 creates each only when the source
+has one — measured: `xmllint --html --xpath 'count(//head)'` answers 0 for
+`<a>X</a><p>P</p>` and 1 for markup with a real `<head>`, and `count(//tbody)`
+answers 0 for `<table><tr>…` and 1 when `<tbody>` is written. Both are hidden
+from the data model AND from the serialization, so `//*`, `//node()` and every
+positional predicate over them agree with the reference.
 
-**CSS.** The strongest leg, because `sel` hands its selector to `scraper`.
-Two gaps, neither yet probed: a `Selector::parse` failure maps to "no matches",
-so a MALFORMED selector is indistinguishable from one that legitimately selects
-nothing — the same silent-answer failure ruled out above — and an attribute
-value in DOUBLE quotes (`a[href="/x"]`) is unquoted before the selector is
-built, so it selects nothing whenever the value is not a bare CSS identifier
-(a URL, a digit, anything with a space).
+**Two stated boundaries, neither silent.** At arb's COMMAND position an
+expression must carry a character only XPath uses (`/`, `@`, `::`, `(`, `[`,
+`|`): a bare NCName is a legal relative location path, so `bogus` would parse as
+`child::bogus`, select nothing and exit 0 — the silent answer this engine exists
+to remove, reintroduced through the front door. It stays an `unknown verb`
+diagnostic, and the step is spelled `//bogus`, `./bogus` or `child::bogus`.
+And `contains` is the one core-function spelling jq already answers, so at
+command position it stays jq's; XPath's two-argument form is reachable inside a
+predicate, where it is probed. Both are the `keys`/`names` rule again — a
+language does not get to claim a spelling another meaning already owns.
+
+**CSS.** `sel` hands its selector to `scraper`. Both gaps this section used to
+list are closed and probed. A `Selector::parse` failure is a hard error at BUILD
+time naming the selector, where it used to map to "no matches" — so a MALFORMED
+selector was indistinguishable from one that legitimately selects nothing, the
+same silent-answer failure ruled out above (5 `css_bad` probes). And an
+attribute value may be written with either quote: arb's command lexer turns
+`"…"` into a string argument, and the reconstruction re-quotes it, so
+`a[href="/x"]` no longer reaches the parser as `a[href=/x]`.
+
+**yq.** The `yq_superset_probe` reports every enumerated yq operator present,
+including the node-metadata family; that leg has its own section.
+
+**What the numbers do not claim.** Containment is measured over the surface each
+probe ENUMERATES — for xpath, the 13 axes, 27 core functions and node tests of
+the 1999 Recommendation, not XPath 2.0+.
 
 Two engines sit behind that. A jq literal that maps onto arb's line-stream ops
 (a path, an iterate, a `select`, a `map`) is translated to them, which is what
@@ -401,14 +425,17 @@ a jq builtin is still arb's `unknown verb`, not a jq runtime failure — a typo'
 arb verb is far likelier than a jq program, and that diagnostic is what points at
 the real mistake.
 
-Supported xpath: descendant `//tag`, child `/a/b`, chain `//a//b`, the
-`[@attr]` existence, `[@attr='v']`/`[@attr="v"]` equality (either quote) and
-`[contains(@attr,'v')]` substring predicates, union `//a|//b`, and the `/@attr` /
-`/text()` accessors, plus a standalone `@attr` step, which is arb's line-stream
+Supported xpath: **XPath 1.0**, as a real engine rather than a subset — all 13
+axes, the four node tests plus name and `*` wildcard tests, predicates with
+correct proximity positions, the 27-function core library, and the comparison,
+arithmetic and union operators. A standalone `@attr` step is arb's line-stream
 continuation (`//a; @href`) rather than XPath's `attribute::` axis from the
-document node. **Anything outside the documented xpath subset is a hard error**
-(`xpath: …`) anchored to the offending verb — never silently reinterpreted (no
-positional/text predicates, no axes, no `*` wildcard step).
+document node, which is the one place the pipeline shape shows through: an
+expression that is a RELATIVE location path is evaluated per line so it composes
+with the step before it, and every other expression is one question about the
+document, answered once. **Anything that is not well-formed XPath is a hard
+error** (`xpath: …`) anchored to the offending verb, raised at BUILD time before
+any input is read — never silently reinterpreted.
 
 Where a jq builtin shares a spelling with an arb NATIVE verb (`sort`, `min`,
 `max`, `floor`, `abs`, `length`, `add`, `flatten`, `first`, `last`, `split`,

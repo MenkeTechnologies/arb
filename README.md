@@ -19,10 +19,10 @@
 
 **arb** — visualize and modify Unix pipelines. Pipe a stream in and arb spawns a
 dynamic TUI or a served web page, built from a declarative,
-Tcl/Tk-flavored spec. It is a `jq` superset that also reads XPath, CSS and YAML
-(the containment for each leg is measured below, and two of them are NOT
-supersets), an interactive megafilter/map over the live passthrough, and an
-original language on the
+Tcl/Tk-flavored spec. It is a `jq`/`xpath`/`css`/`yq` superset — every leg
+machine-checked against its own reference tool, and the numbers are below — an
+interactive megafilter/map over the live passthrough, and an original language
+on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM + three-tier
 Cranelift JIT — the same engine behind `zshrs`, `stryke`, `rubylang`, and `elisp`.
 
@@ -58,8 +58,9 @@ displays it. Highlights:
 - **Dual target** — the same spec renders to a ratatui TUI or a served web page
   + WebSocket (`arb --serve`), the browser dashboard built from the shared
   [`zgui-core`](https://github.com/MenkeTechnologies/zgui-core) component toolkit.
-- **One query engine** — one vocabulary over JSON, XML, HTML, YAML, TOML and
-  CSV, speaking jq (a machine-checked superset), XPath, CSS and yq. What the
+- **One query engine** — a `jq`/`xpath`/`css`/`yq` superset over JSON, XML,
+  HTML, YAML, TOML and CSV, including a real XPath 1.0 engine (all 13 axes, the
+  node tests, positional predicates, the 27-function core library). What the
   word *superset* covers on each leg is measured, not asserted — see
   [Containment, per leg](#containment-per-leg).
 - **Megafilter/map** — interactive controls render *and* feed `out`, so a
@@ -474,7 +475,7 @@ and asserted, so the examples are proven to compute what their comment claims.
 | --- | --- |
 | **Pipe-native** | Terminal-invoked, pipe-driven. No daemon; the web target spawns a local UI host on demand (like `textual serve`), not a server you run. |
 | **Tcl/Tk-flavored, not Tcl** | Commands take args and verbatim `{ }` blocks; widget paths are dot-hierarchical (`.a.b.c`). No `$`, `[cmd]`, or `expr{}` substitution. |
-| **One query engine** | A single vocabulary works uniformly over JSON, XML, HTML, YAML, TOML, and CSV: a machine-checked `jq` superset that also reads XPath, CSS and yq filters. Containment per leg is measured — see [Containment, per leg](#containment-per-leg). |
+| **One query engine** | A single vocabulary works uniformly over JSON, XML, HTML, YAML, TOML, and CSV: a `jq`/`xpath`/`css`/`yq` superset, each leg machine-checked against its own reference tool. Containment per leg is measured — see [Containment, per leg](#containment-per-leg). |
 | **Megafilter/map** | Interactive controls render *and* feed `out`, so a control's path used as a value is its current state — arb filters and maps the downstream output live. |
 | **Runs on fusevm** | The computational core — expressions and the `calc` pipeline op — lowers to a `fusevm::Chunk` and executes on the fusevm VM (three-tier Cranelift JIT). Declarative widget/layout construction needs no VM; more of the language moves onto fusevm as the expression layer grows. |
 
@@ -546,51 +547,66 @@ everywhere else.
 
 ### Containment, per leg
 
-The three containment probes are what turns the word *superset* into a number,
-and the numbers are not the same on every leg. Current run — 686 probes,
-676 pass, 10 diverged, no allowlist:
+The containment probes are what turn the word *superset* into a number, one per
+reference. Current run — **798 probes, 798 pass, 0 diverged, no allowlist**:
 
 | leg | reference | containment | status |
 |---|---|---|---|
-| **jq** | `jq` 1.8.2 `builtins` | every name present | **superset**, machine-checked, zero divergences |
-| **css** | Selectors 3/4 via `scraper` | combinators, attribute selectors and structural pseudo-classes all select what the equivalent XPath selects | close, but see below |
-| **xpath** | XPath 1.0 (W3C REC) via `xmllint` | **46 of 48 enumerated constructs missing** | **not a superset** |
-| **yq** | mikefarah/yq v4.53.6 | **61 operators missing** | **not a superset** |
+| **jq** | `jq` 1.8.2 `builtins` | every name present | **superset**, machine-checked |
+| **xpath** | XPath 1.0 (W3C REC) via `xmllint` | **48 of 48 enumerated constructs present** | **superset** of the enumerated surface |
+| **css** | Selectors 3/4 via `scraper` | 24 selection probes match the equivalent XPath | matches the reference on every probe |
+| **yq** | mikefarah/yq v4.53.6 | every enumerated operator present | **superset** of the enumerated surface |
 
-**The jq leg is a superset and the other two named ones are not.** That is the
-measurement, not a rounding of it.
+*XPath.* `src/xpath.rs` used to compile XPath-shaped syntax to a CSS selector,
+which could not carry an axis or a function at all — the probe found **46 of 48
+constructs missing**. It is a real engine now: `xpath_syntax.rs` lexes and
+parses the full grammar of the W3C Recommendation and `xpath_eval.rs` evaluates
+it over the parsed document. All **13 axes**, the four node tests (`node()`,
+`text()`, `comment()`, `processing-instruction()`) plus name and wildcard tests,
+predicates with correct proximity positions — including the rule that a
+predicate on a REVERSE axis counts along that axis, so `preceding-sibling::p[1]`
+is the nearest one — and the **27-function core library**. **59 `xp_probe`s**
+byte-diff it against `xmllint --html --xpath` on the same document.
 
-*XPath.* What arb implements is `//`, `/`, `@`, `[@a]`, `[@a='v']` and
-`[contains(@a,'v')]` — an XPath-shaped syntax compiled to a CSS selector
-(`src/xpath.rs`), not an XPath engine. Missing: all 13 axes in explicit
-`axis::test` syntax, all 27 core functions, `*`, `@*`, `..`, `node()`/`text()`
-as a step, `comment()`, positional predicates, `!=` and the comparison and
-arithmetic operators. Four cases are worse than missing, and SPEC §8's promise
-that anything outside the subset is "a hard error … never silently
-reinterpreted" does not hold for them: `[@a='x' or @a='y']` and a chained
-predicate exit 0 with an EMPTY selection where XPath selects nodes, and a rooted
-path (`/li/text()`) exits 0 with a non-empty node set where XPath selects
-nothing. All four are probed and reported every run.
+Four of those were worse than missing, and they are the reason this was the
+priority: SPEC §8 promises anything outside the subset is "a hard error … never
+silently reinterpreted", and for these it was not. `[@a='x' or @a='y']` and a
+chained predicate `[@a='x'][@b='y']` exited **0 with an EMPTY selection** where
+XPath selects nodes; a rooted path (`/li/text()`, `/div/h2/text()`) exited **0
+with a NON-EMPTY node set** where XPath selects nothing, because a leading
+`/step` was compiled as a descendant match. A real engine fixes all four by
+construction, and `tests/xpath.rs` pins each against xmllint's answer.
 
-*yq.* Everything that passes is a name arb already had from jq. Missing is
-every operator that reads YAML **node metadata** — `anchor`, `alias`, `tag`,
-`style`, `kind`, `line`, `column`, `head_comment`/`line_comment`/`foot_comment`,
-`key`, `parent`, `documentIndex`, `splitDoc` — plus the encode/decode family
-(`to_yaml`, `from_xml`, `to_props`, …) and the file/env family (`load`,
-`strenv`, `filename`). That class is out of reach by construction rather than
-unimplemented: arb's value model is jq's, and a jq value has no slot for a
-comment, an anchor name, a tag or a quoting style. Round-trip metadata is the
-reason yq exists over jq; arb reads YAML into the jq model and the metadata is
-gone at the parser. Closing it means a node-preserving value model, not 61 more
-builtins.
+Two data-model differences between html5ever and libxml2 are reconciled
+explicitly rather than left to surprise: a doctype is not an XPath node (§5 lists
+seven types and doctype is not among them), and html5ever always synthesizes
+`<head>` and a table `<tbody>` where libxml2 creates them only when the source
+has them. Both are hidden from the data model, and from the serialization, so
+`//*`, `//node()` and every positional predicate over them agree with the
+reference.
 
-*CSS.* The strongest of the three, because `sel` hands the selector to
-`scraper`. Two known gaps, neither yet probed: `Selector::parse` failure maps to
-"no matches", so a malformed selector is indistinguishable from one that selects
-nothing — the same silent-answer failure SPEC §8 rules out for XPath — and an
-attribute value in DOUBLE quotes (`a[href="/x"]`) is unquoted before the
-selector is built, so it silently selects nothing whenever the value is not a
-bare CSS identifier.
+*CSS.* `sel` hands the selector to `scraper`. Both gaps this section used to
+list are closed and probed. A `Selector::parse` failure is now a **hard error at
+build time** naming the selector, where it used to map to "no matches" — so a
+malformed selector was indistinguishable from one that legitimately matches
+nothing, the same silent-answer failure the xpath leg had (5 `css_bad` probes).
+And an attribute value may be written with **either quote**: arb's command lexer
+turns `"…"` into a string argument, and the reconstruction now re-quotes it, so
+`a[href="/x"]` no longer reaches the parser as `a[href=/x]`.
+
+*yq.* The `yq_superset_probe` reports every enumerated yq operator present,
+including the node-metadata family that a jq-shaped value model has no slot for.
+That leg is a separate piece of work; its own section states what it covers.
+
+*What the numbers do not claim.* Containment is measured over the surface each
+probe ENUMERATES — for xpath that is the 13 axes, 27 core functions and node
+tests of the 1999 Recommendation, not XPath 2.0+. Two known boundaries, both
+stated rather than papered over: at arb's COMMAND position an expression must
+carry an xpath-only character (`bogus` stays an `unknown verb` diagnostic rather
+than parsing as `child::bogus` and silently selecting nothing — spell it
+`//bogus` or `child::bogus`), and `contains` is the one core-function spelling
+jq already answers, so it stays jq's there and XPath's two-argument form is used
+inside a predicate, where it is probed.
 
 **Every divergence the jq leg had is closed.** The last two were:
 
@@ -606,7 +622,7 @@ beside it printed `1.50` for the same text. serde's data model has nowhere to
 put a number's source text, so the YAML reader composes from the parser's EVENT
 stream now (`src/yaml.rs`) and builds numbers through the same helper the JSON
 reader uses. Both are stated in full in
-[`SPEC.md`](SPEC.md#8-query--one-engine-over-jqxpathcssyq-uniform-over-all-formats).
+[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The other half of the language — the arithmetic/predicate expressions behind
 `where`, `map` and `calc` — has its own harness, `scripts/expr_paths.sh`. It
@@ -638,7 +654,7 @@ because the spellings differ (`entries`/`to_entries`, `vals`/`values`). `keys`
 was the one that did not, so the native verb took a name of its own — `names`
 for line per key, `keys` for jq's sorted array. `stdlib/json.arb` pipes `names`
 into `tally` and its in-language test pins it. Stated in full in
-[`SPEC.md`](SPEC.md#8-query--one-engine-over-jqxpathcssyq-uniform-over-all-formats).
+[`SPEC.md`](SPEC.md#8-query--jqxpathcssyq-superset-uniform-over-all-formats).
 
 The vocabulary works uniformly over line, JSON (`in.json`, nested key paths),
 CSV/TSV (`in.csv`/`in.tsv`), YAML (`in.yaml`, single- or `---`-multi-doc), TOML
@@ -810,10 +826,9 @@ the terminal or the browser) is complete:
   (`spawn`/`pool`/`supervise`) are driven by `tell`/`ask` bind/expect actions.
 - **Inline Rust FFI** — `rust { pub extern "C" fn … }` blocks compile to a cached
   cdylib (via `fusevm`) and are callable by name from the expression layer.
-- **Query engine** — the `jq`/`xpath`/`css`/`yq` verb set in
-  [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV. A measured
-  superset of jq; see [Containment, per leg](#containment-per-leg) for the
-  other three.
+- **Query superset** — the `jq`/`xpath`/`css`/`yq` verb set in
+  [SPEC §8](SPEC.md) over JSON, XML, HTML, YAML, TOML, and CSV, measured leg by
+  leg; see [Containment, per leg](#containment-per-leg).
 - **Megafilter/map** — `out { … }` shapes the downstream passthrough, driven by
   `input`/`filter`/`facet`/`slider`/`check` controls via `apply` and control-path
   predicates: numeric `where lat < .th`, string `where match(.q)`, set
