@@ -11,6 +11,7 @@
 //! boolean; `eval_pred` reads the result via `Value::is_truthy` for `where`.
 
 use fusevm::vm::{VMResult, VM};
+use std::cell::RefCell;
 use fusevm::{ChunkBuilder, Op, Value};
 
 #[derive(Debug, Clone, Copy)]
@@ -271,13 +272,39 @@ fn arm_tiers(vm: &mut VM) {
 pub fn eval_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<f64, String> {
     let mut b = ChunkBuilder::new();
     emit(e, x, resolve, &mut b);
-    let mut vm = VM::new(b.build());
-    arm_tiers(&mut vm);
-    match vm.run() {
+    with_pooled_vm(b.build(), |vm| match vm.run() {
         VMResult::Ok(v) => Ok(v.to_float()),
         VMResult::Halted => Ok(vm.peek().to_float()),
         VMResult::Error(err) => Err(err),
-    }
+    })
+}
+
+thread_local! {
+    /// Recycled VMs for the per-record expression path.
+    ///
+    /// `where`/`map` lower a chunk PER LINE — the chunk is a function of `x` and
+    /// the resolved fields, both baked in as constants — so a stream of N records
+    /// ran `VM::new` N times, and each of those rebuilds the VM's builtin table
+    /// and its stack/frame/global vectors from scratch. `VMPool::acquire` keeps
+    /// those allocations and only clears state, which is exactly what a
+    /// per-record caller needs.
+    ///
+    /// Measured over 50,000 records, release build, against `jq 1.8.2` on the
+    /// same data: `field v; where x > 500` was 1.174s before this (jq: 0.141s).
+    static VM_POOL: RefCell<fusevm::vm::VMPool> = RefCell::new(fusevm::vm::VMPool::new());
+}
+
+/// Run `f` against a VM from this thread's pool, returning it afterwards.
+fn with_pooled_vm<T>(chunk: fusevm::Chunk, f: impl FnOnce(&mut VM) -> T) -> T {
+    VM_POOL.with(|p| {
+        // The pool is borrowed only to check a VM out and back in, never across
+        // `f` — a nested expression evaluation (an FFI argument) re-enters here.
+        let mut vm = p.borrow_mut().acquire(chunk);
+        arm_tiers(&mut vm);
+        let r = f(&mut vm);
+        p.borrow_mut().release(vm);
+        r
+    })
 }
 
 /// Lower `e` to the fusevm chunk [`eval_ctx`] would run, without running it.
@@ -302,13 +329,11 @@ pub fn eval_pred(e: &Expr, x: f64) -> Result<bool, String> {
 pub fn eval_pred_ctx(e: &Expr, x: f64, resolve: &dyn Fn(&str) -> f64) -> Result<bool, String> {
     let mut b = ChunkBuilder::new();
     emit(e, x, resolve, &mut b);
-    let mut vm = VM::new(b.build());
-    arm_tiers(&mut vm);
-    match vm.run() {
+    with_pooled_vm(b.build(), |vm| match vm.run() {
         VMResult::Ok(v) => Ok(v.is_truthy()),
         VMResult::Halted => Ok(vm.peek().is_truthy()),
         VMResult::Error(err) => Err(err),
-    }
+    })
 }
 
 /// Evaluate a `name(args)` inline-Rust FFI call at lowering time: resolve each
