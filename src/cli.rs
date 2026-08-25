@@ -1557,6 +1557,78 @@ fn read_producer_sync(producer: &str, state: &Arc<Mutex<StreamState>>) -> io::Re
     Ok(())
 }
 
+/// A stdout writer for a line stream that must be fast on a BULK pipe and prompt
+/// on a LIVE one.
+///
+/// `io::stdout().lock()` is a `LineWriter`: every `\n` costs a `write(2)`. On a
+/// 2.4M-line stream that was 756 of 2434 profile samples — the single largest
+/// cost in the run, and why `jq` (stdio, which block-buffers when stdout is
+/// redirected) was ahead on every filter measured. A plain `BufWriter` fixes the
+/// bulk case and breaks the live one: `tail -f … | arb | consumer` would stall
+/// until 256KB accumulated.
+///
+/// So the flush is decided per line by the READER, not by a timer and not by an
+/// `is_terminal()` guess. If the reader still holds buffered bytes, the next
+/// lines are already in hand — a bulk stream — so hold the output. If its buffer
+/// is empty the next read will block (a live stream, or EOF), so flush now.
+/// Bulk piping costs one syscall per 256KB; a live tail still gets one per line,
+/// because each line arrives as its own read.
+struct LineOut(io::BufWriter<io::StdoutLock<'static>>);
+
+impl LineOut {
+    fn new() -> Self {
+        LineOut(io::BufWriter::with_capacity(
+            256 * 1024,
+            io::stdout().lock(),
+        ))
+    }
+
+    fn line(&mut self, l: &str) -> io::Result<()> {
+        writeln!(self.0, "{l}")
+    }
+
+    /// Flush unless `more` says the reader has further input already buffered.
+    fn sync(&mut self, more: bool) -> io::Result<()> {
+        if more {
+            Ok(())
+        } else {
+            self.0.flush()
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Read one `\n`-terminated line into `buf`, appending its text to `line` with
+/// the terminator stripped the way `BufRead::lines` strips it (`\r\n` too).
+/// Returns `false` at EOF or on input that is not UTF-8, which is where
+/// `lines()` yields an `Err` and every caller here stops.
+///
+/// This exists so the loops below can own their `BufReader` — `lines()` hides it,
+/// and `LineOut::sync` needs to ask it whether more input is already buffered.
+/// Reusing one buffer also drops the `String` `lines()` allocates per line.
+fn read_line_into<R: BufRead>(r: &mut R, buf: &mut Vec<u8>, line: &mut String) -> bool {
+    buf.clear();
+    match r.read_until(b'\n', buf) {
+        Ok(0) | Err(_) => return false,
+        Ok(_) => {}
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    }
+    let Ok(text) = std::str::from_utf8(buf) else {
+        return false;
+    };
+    line.clear();
+    line.push_str(text);
+    true
+}
+
 /// Run `producer` (`sh -c`) and copy its stdout to arb's stdout line by line,
 /// flushing per line. Used for a headless `spawn CMD` with no `out { … }` — arb
 /// forwards the spawned stream to the downstream consumer.
@@ -1567,17 +1639,16 @@ fn stream_producer(producer: &str) -> io::Result<()> {
         .stdout(Stdio::piped())
         .spawn()?;
     if let Some(out) = child.stdout.take() {
-        let mut w = io::stdout().lock();
-        for line in BufReader::new(out).lines() {
-            match line {
-                Ok(l) => {
-                    if writeln!(w, "{l}").and_then(|()| w.flush()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        let mut w = LineOut::new();
+        let mut r = BufReader::with_capacity(256 * 1024, out);
+        let (mut buf, mut line) = (Vec::new(), String::new());
+        while read_line_into(&mut r, &mut buf, &mut line) {
+            let more = !r.buffer().is_empty();
+            if w.line(&line).and_then(|()| w.sync(more)).is_err() {
+                break;
             }
         }
+        let _ = w.finish();
     }
     let _ = child.wait();
     Ok(())
@@ -1587,24 +1658,24 @@ fn stream_producer(producer: &str) -> io::Result<()> {
 /// per line so a live upstream (`tail -f`) reaches the downstream consumer
 /// promptly. Used when a dashboard spec is piped onward with no `out { … }`.
 fn passthrough(prelude: &[String]) -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut out = io::stdout().lock();
-    // Replay any sniff-peeked lines first, then the rest of stdin.
-    let feed = prelude
-        .iter()
-        .cloned()
-        .map(Ok::<_, io::Error>)
-        .chain(stdin.lock().lines());
-    for line in feed {
-        let l = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        if let Err(e) = writeln!(out, "{l}").and_then(|()| out.flush()) {
+    let mut out = LineOut::new();
+    let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
+    // Replay any sniff-peeked lines first, then the rest of stdin. A peeked line
+    // is already in hand, so it never forces a flush of its own.
+    for (i, l) in prelude.iter().enumerate() {
+        let more = i + 1 < prelude.len();
+        if let Err(e) = out.line(l).and_then(|()| out.sync(more)) {
             return ok_on_broken_pipe(Err(e));
         }
     }
-    Ok(())
+    let (mut buf, mut line) = (Vec::new(), String::new());
+    while read_line_into(&mut r, &mut buf, &mut line) {
+        let more = !r.buffer().is_empty();
+        if let Err(e) = out.line(&line).and_then(|()| out.sync(more)) {
+            return ok_on_broken_pipe(Err(e));
+        }
+    }
+    ok_on_broken_pipe(out.finish())
 }
 
 /// Treat a closed downstream pipe (the consumer exited — `| head`, `| stryke`
@@ -1621,36 +1692,34 @@ fn ok_on_broken_pipe(r: io::Result<()>) -> io::Result<()> {
 /// Stream a per-line `out` pipeline: apply it to each line as it arrives and
 /// emit results immediately with a flush, so live pipes work without buffering.
 fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut out = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let mut out = LineOut::new();
+    let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
+    let (mut buf, mut line) = (Vec::new(), String::new());
+    while read_line_into(&mut r, &mut buf, &mut line) {
         match query::eval(ops, std::slice::from_ref(&line), 0.0) {
             QueryResult::Lines(ls) => {
                 for l in ls {
-                    if let Err(e) = writeln!(out, "{l}") {
+                    if let Err(e) = out.line(&l) {
                         return ok_on_broken_pipe(Err(e));
                     }
                 }
             }
             // SPEC §8: a construct outside the documented subset is a hard error,
             // never a silent reinterpretation. `5` is jq's own status for a
-            // filter that raised.
+            // filter that raised. Flush first so the lines already produced reach
+            // the consumer before the diagnostic.
             QueryResult::Error(msg) => {
-                let _ = out.flush();
+                let _ = out.finish();
                 eprintln!("arb: {msg}");
                 crate::hosted::exit(5);
             }
             _ => {}
         }
-        if let Err(e) = out.flush() {
+        if let Err(e) = out.sync(!r.buffer().is_empty()) {
             return ok_on_broken_pipe(Err(e));
         }
     }
-    Ok(())
+    ok_on_broken_pipe(out.finish())
 }
 
 fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
