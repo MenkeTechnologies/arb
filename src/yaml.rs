@@ -81,11 +81,15 @@ pub fn documents_from(src: &str, file: &str, idx: u32) -> Vec<JqVal> {
             Err(_) => break,
         }
     }
-    let comments = CommentMap::build(src, &evs);
+    let bytes = ByteMap::new(src);
+    let lines = LineIndex::new(src);
+    let comments = CommentMap::build(src, &evs, &bytes);
     Composer {
         evs: &evs,
         i: 0,
         src,
+        bytes,
+        lines,
         comments,
         anchors: HashMap::new(),
         doc: 0,
@@ -127,13 +131,13 @@ struct CommentMap {
 }
 
 impl CommentMap {
-    fn build(src: &str, evs: &[(Event<'_>, Span)]) -> CommentMap {
+    fn build(src: &str, evs: &[(Event<'_>, Span)], bytes: &ByteMap) -> CommentMap {
         // Byte ranges that are scalar content. A `#` inside one is data — a
         // `"pass#word"`, or a comment-looking line inside a `|` block.
         let mut masked: Vec<(usize, usize)> = evs
             .iter()
             .filter(|(e, _)| matches!(e, Event::Scalar(..)))
-            .map(|(_, sp)| (sp.start.index(), sp.end.index()))
+            .map(|(_, sp)| (bytes.at(sp.start.index()), bytes.at(sp.end.index())))
             .filter(|(a, b)| b > a)
             .collect();
         masked.sort_unstable();
@@ -258,10 +262,56 @@ fn find_comment(raw: &str, base: usize, masked: &[(usize, usize)]) -> Option<(us
 // Composition
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Char offset -> byte offset for the source.
+///
+/// saphyr's `Marker::index` counts CHARACTERS — its scanner bumps the index once
+/// per `skip()` — while `str` slicing takes BYTES. The two agree only on ASCII,
+/// so `emoji: 🚀` sliced three bytes short and the reader read the wrong text for
+/// every node after it. This translates once, up front, and every span lookup
+/// goes through it.
+struct ByteMap(Vec<usize>);
+
+/// Byte offset -> the 1-based line and 0-based column it falls on.
+///
+/// Needed because two node kinds report a position the parser's span does not
+/// carry: an ANCHORED collection is at its `&name`, and a BLOCK scalar is at its
+/// `|`/`>` indicator, both of which sit before the span starts.
+struct LineIndex(Vec<usize>);
+
+impl LineIndex {
+    fn new(src: &str) -> LineIndex {
+        let mut v = vec![0usize];
+        for (i, b) in src.bytes().enumerate() {
+            if b == b'\n' {
+                v.push(i + 1);
+            }
+        }
+        LineIndex(v)
+    }
+    fn at(&self, byte: usize) -> (usize, usize) {
+        let line = self.0.partition_point(|&s| s <= byte).max(1);
+        (line, byte - self.0[line - 1])
+    }
+}
+
+impl ByteMap {
+    fn new(src: &str) -> ByteMap {
+        let mut v: Vec<usize> = src.char_indices().map(|(b, _)| b).collect();
+        v.push(src.len());
+        ByteMap(v)
+    }
+    /// The byte offset of char `i`, clamped to the end of the source.
+    fn at(&self, i: usize) -> usize {
+        *self.0.get(i).unwrap_or(self.0.last().unwrap_or(&0))
+    }
+}
+
 struct Composer<'a, 'input> {
     evs: &'a [(Event<'input>, Span)],
     i: usize,
     src: &'a str,
+    bytes: ByteMap,
+    lines: LineIndex,
     comments: CommentMap,
     /// Anchor id -> the value it names. YAML scopes anchors to a DOCUMENT, so
     /// this is cleared at each document start; an alias to an anchor from an
@@ -332,6 +382,27 @@ impl Composer<'_, '_> {
         docs
     }
 
+    /// The 1-based column of the `|`/`>` on source line `line`.
+    fn indicator_col(&self, line: usize) -> u32 {
+        let start = self.lines.0.get(line.saturating_sub(1)).copied().unwrap_or(0);
+        let end = self.src[start..]
+            .find('\n')
+            .map_or(self.src.len(), |n| start + n);
+        match self.src[start..end].find(['|', '>']) {
+            Some(at) => self.src[start..start + at].chars().count() as u32 + 1,
+            None => 1,
+        }
+    }
+
+    /// The source text a span covers, translated from char offsets to bytes.
+    fn span_text(&self, sp: &Span) -> &str {
+        let (a, b) = (
+            self.bytes.at(sp.start.index()),
+            self.bytes.at(sp.end.index()),
+        );
+        self.src.get(a..b).unwrap_or("")
+    }
+
     /// The 1-based line `yq` reports for a span, rebased past the leading
     /// comment block.
     fn line_of(&self, sp: &Span) -> u32 {
@@ -370,13 +441,20 @@ impl Composer<'_, '_> {
                 let v = scalar(&text, style, tref);
                 meta.style = scalar_style(style);
                 meta.tag = tag_name(tref);
-                meta.anchor = self.anchor_of(aid, sp.start.index());
+                meta.anchor = self.anchor_of(aid, self.bytes.at(sp.start.index()));
+                self.anchor_pos(aid, self.bytes.at(sp.start.index()), &mut meta);
                 self.anchor(aid, &v);
                 // A block scalar spans several lines; its trailing comment, if
                 // any, sits on the line the indicator is on, which is the line
                 // BEFORE the span starts.
+                // A block scalar's POSITION is its `|`/`>` indicator, which is on
+                // the line above the content the span starts at; so is the
+                // trailing comment that can follow the indicator.
                 let line = if style == ScalarStyle::Literal || style == ScalarStyle::Folded {
-                    sp.start.line().saturating_sub(1)
+                    let l = sp.start.line().saturating_sub(1);
+                    meta.line_no = (l as u32).saturating_sub(self.line_base).max(1);
+                    meta.col_no = self.indicator_col(l);
+                    l
                 } else {
                     sp.start.line()
                 };
@@ -392,7 +470,7 @@ impl Composer<'_, '_> {
                 // The SPAN text, not the event's: saphyr normalises a value-less
                 // key to the text `~`, and writing that back would put a `~` on
                 // a line the file left blank.
-                let src_text = self.src.get(sp.start.index()..sp.end.index()).unwrap_or("");
+                let src_text = self.span_text(&sp);
                 meta.blank = style == ScalarStyle::Plain && src_text.is_empty();
                 meta.raw = raw_if_needed(src_text, style, &v);
                 JqVal::wrap(v, meta)
@@ -402,12 +480,7 @@ impl Composer<'_, '_> {
                 // An alias keeps ITS OWN box, not the anchor's: `use: *anc` must
                 // re-emit as `*anc`, and must not inherit the anchored node's
                 // `&anc` and re-declare it.
-                meta.alias = Rc::from(
-                    self.src
-                        .get(sp.start.index()..sp.end.index())
-                        .unwrap_or("")
-                        .trim_start_matches('*'),
-                );
+                meta.alias = Rc::from(self.span_text(&sp).trim_start_matches('*'));
                 self.last_line = self.last_line.max(sp.end.line());
                 if !as_key {
                     meta.line = Rc::from(self.comments.take_line(sp.start.line()).as_str());
@@ -415,10 +488,10 @@ impl Composer<'_, '_> {
                 JqVal::wrap(v.bare().clone(), meta)
             }
             Event::SequenceStart(aid, tag) => {
-                let flow = self.src.as_bytes().get(sp.start.index()) == Some(&b'[');
+                let flow = self.src.as_bytes().get(self.bytes.at(sp.start.index())) == Some(&b'[');
                 meta.style = if flow { Style::Flow } else { Style::Block };
                 meta.tag = tag_name(tag.as_ref().map(|t| t.as_ref()));
-                meta.anchor = self.anchor_of(aid, sp.start.index());
+                meta.anchor = self.anchor_of(aid, self.bytes.at(sp.start.index()));
                 let mut items = Vec::new();
                 let icol = sp.start.col();
                 while !matches!(
@@ -449,16 +522,18 @@ impl Composer<'_, '_> {
                 }
                 self.i += 1; // SequenceEnd
                 let v = JqVal::arr(items);
+                self.anchor_pos(aid, self.bytes.at(sp.start.index()), &mut meta);
                 self.anchor(aid, &v);
                 JqVal::wrap(v, meta)
             }
             Event::MappingStart(aid, tag) => {
-                let flow = self.src.as_bytes().get(sp.start.index()) == Some(&b'{');
+                let flow = self.src.as_bytes().get(self.bytes.at(sp.start.index())) == Some(&b'{');
                 meta.style = if flow { Style::Flow } else { Style::Block };
                 meta.tag = tag_name(tag.as_ref().map(|t| t.as_ref()));
-                meta.anchor = self.anchor_of(aid, sp.start.index());
+                meta.anchor = self.anchor_of(aid, self.bytes.at(sp.start.index()));
                 let (v, written) = self.mapping(path);
                 meta.written = written;
+                self.anchor_pos(aid, self.bytes.at(sp.start.index()), &mut meta);
                 self.anchor(aid, &v);
                 JqVal::wrap(v, meta)
             }
@@ -615,7 +690,23 @@ impl Composer<'_, '_> {
         if aid == 0 {
             return Rc::from("");
         }
-        Rc::from(self.anchor_name(at).as_str())
+        Rc::from(self.anchor_name(at).0.as_str())
+    }
+
+    /// Move `meta` onto the node's ANCHOR, when it has one.
+    ///
+    /// `base: &anc` followed by an indented mapping has its `MappingStart` at the
+    /// first KEY, a line below the `&anc`. `yq` reports the anchor's position, so
+    /// an anchored node's line and column are taken from there.
+    fn anchor_pos(&self, aid: usize, at: usize, meta: &mut NodeMeta) {
+        if aid == 0 {
+            return;
+        }
+        let (_, off) = self.anchor_name(at);
+        let Some(off) = off else { return };
+        let (line, col) = self.lines.at(off);
+        meta.line_no = (line as u32).saturating_sub(self.line_base).max(1);
+        meta.col_no = col as u32 + 1;
     }
 
     /// The anchor NAME written just before the node that starts at `at`.
@@ -624,7 +715,7 @@ impl Composer<'_, '_> {
     /// the node: over whitespace, over an optional `!tag` (which may be written
     /// on either side of the anchor), and then over the `&name` itself. Called
     /// only for a node the parser already reported as anchored.
-    fn anchor_name(&self, at: usize) -> String {
+    fn anchor_name(&self, at: usize) -> (String, Option<usize>) {
         let b = self.src.as_bytes();
         let mut i = at;
         for _ in 0..2 {
@@ -637,15 +728,15 @@ impl Composer<'_, '_> {
             }
             match b.get(i) {
                 Some(b'&') => {
-                    return String::from_utf8_lossy(&b[i + 1..end]).into_owned();
+                    return (String::from_utf8_lossy(&b[i + 1..end]).into_owned(), Some(i));
                 }
                 // A tag may sit between the anchor and the node; step over it and
                 // look once more.
                 Some(b'!') => continue,
-                _ => return String::new(),
+                _ => return (String::new(), None),
             }
         }
-        String::new()
+        (String::new(), None)
     }
 }
 

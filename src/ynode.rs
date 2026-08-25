@@ -522,7 +522,15 @@ fn pad(out: &mut String, n: usize) {
 fn scalar_key(k: &str, node: Option<&JqVal>) -> String {
     let style = node.and_then(JqVal::meta).map_or(Style::Plain, |m| m.style);
     let deco = node.map(decorations).unwrap_or_default();
-    format!("{deco}{}", quote_scalar(k, style))
+    // A KEY is quoted only when the SYNTAX needs it. The type rule that applies
+    // to a value does not apply here: `false: false` keeps its key bare, because
+    // a mapping key is read as a key whatever it looks like, and quoting it would
+    // not round-trip.
+    let body = match style {
+        Style::Plain | Style::Block if !needs_single_quote(k) && !k.is_empty() => k.to_string(),
+        _ => quote_scalar(k, style),
+    };
+    format!("{deco}{body}")
 }
 
 /// Render a node on ONE line: a scalar, an alias, or a flow collection.

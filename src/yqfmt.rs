@@ -45,10 +45,16 @@ fn push_props_comment(out: &mut String, text: &str) {
 /// LEADING space is escaped, a null writes nothing, and a scalar whose SOURCE
 /// text the reader kept (`0x10`) is written as it was written.
 fn props_leaf(v: &JqVal) -> String {
+    // A node written with no text at all writes none here either; one written
+    // `null` or `~` keeps that spelling, which is what `yq -o=props` emits for
+    // the three of them.
+    if v.meta().is_some_and(|m| m.blank) {
+        return String::new();
+    }
     let text = match v.meta().filter(|m| !m.raw.is_empty()) {
         Some(m) => m.raw.to_string(),
         None => match v.bare() {
-            JqVal::Null => return String::new(),
+            JqVal::Null => "null".to_string(),
             other => render_raw(other),
         },
     };

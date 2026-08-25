@@ -3685,11 +3685,11 @@ fn eval_assign(
     env: &Env,
     out: Sink,
 ) -> R<()> {
-    // yq's metadata assignment. Its own spelling is a postfix on a path
-    // (`.a anchor = "x"`); arb's grammar is jq's, so the same edit is written
-    // `.a | anchor = "x"`, and a bare `anchor = "x"` sets it on `.`. Both are
-    // recognised here because `anchor` is a VALUE filter, not a path, and
-    // `eval_paths` would otherwise refuse the left-hand side outright.
+    // yq's metadata assignment, recognised here because `anchor` and friends are
+    // VALUE filters rather than paths — `eval_paths` would refuse them as a
+    // left-hand side outright. `anchor = "x"` sets it on `.`; the whole-document
+    // edit yq spells `.a anchor = "x"` is `.a |= (anchor = "x")`, which reaches
+    // this with `.` bound to the node at the path.
     if op == AssignOp::Set {
         if let Some((path, name)) = meta_assign_target(lhs) {
             return eval(it, rhs, input, env, &mut |rv| match path {
@@ -5456,9 +5456,12 @@ fn meta_assign_target(lhs: &Filter) -> Option<(Option<&Filter>, &str)> {
 
 /// The metadata accessors that may stand on the LEFT of `=`.
 ///
-/// yq spells the assignment as a postfix on a path (`.a anchor = "x"`); arb's
-/// grammar is jq's, so the same edit is written `.a |= (anchor = "x")` or
-/// `(.a | anchor) = "x"`. Both reach here through [`eval_assign`].
+/// yq spells the assignment as a postfix on a path (`.a anchor = "x"`). arb's
+/// grammar is jq's, where `|` binds loosest, so the DOCUMENT-preserving spelling
+/// is `.a |= (anchor = "x")`: the update operator applies the edit at the path
+/// and hands the whole document back, which is what yq's postfix does. A bare
+/// `anchor = "x"` sets it on `.` and yields that node alone. Both reach here
+/// through [`eval_assign`].
 fn is_meta_setter(name: &str) -> bool {
     matches!(
         name,
@@ -5820,7 +5823,14 @@ fn yq_builtin(
         ("upcase", 0) => out(JqVal::str(
             want_str(input, "upcased")?.to_uppercase().as_str(),
         )),
-        ("to_string", 0) => out(JqVal::str(render_raw(input))),
+        // The SOURCE spelling where the reader kept one: `padded: 007` is the
+        // string `007`, not `7`, which is what yq answers.
+        ("to_string", 0) => out(JqVal::str(
+            match input.meta().filter(|m| !m.raw.is_empty()) {
+                Some(m) => m.raw.to_string(),
+                None => render_raw(input),
+            },
+        )),
         ("to_number", 0) => match input.bare() {
             JqVal::Num(..) => out(input.bare().clone()),
             JqVal::Str(s) => match s.trim().parse::<f64>() {
