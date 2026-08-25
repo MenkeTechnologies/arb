@@ -297,6 +297,11 @@ const JQ_CALLS: &[&str] = &[
     "truncate_stream", "IN", "INDEX", "isempty", "pick", "todate", "strftime", "strptime",
     "ascii", "implode", "debug", "halt_error", "pow", "atan2", "ltrim", "isvalid", "env",
     "not", "abs", "toarray", "tojson", "getpath", "objects", "arrays", "values",
+    // jq's two- and three-argument libm surface, plus the remaining call-form
+    // builtins. None is an arb verb.
+    "drem", "fdim", "fmod", "hypot", "ldexp", "scalb", "scalbln", "nextafter",
+    "nexttoward", "jn", "yn", "fma", "copysign", "remainder", "format", "bsearch",
+    "skip", "JOIN", "trimstr", "modulemeta", "toboolean",
 ];
 
 /// jq builtins in their BARE spelling that arb has no verb for. A bare word is
@@ -318,7 +323,10 @@ const JQ_BARE: &[&str] = &[
     "stderr", "debug", "mktime", "gmtime", "localtime", "reverse", "date", "finites",
     "normals", "ltrim", "rtrim", "sqrt", "log", "log2", "log10", "exp", "exp2", "exp10",
     "cbrt", "trunc", "nearbyint", "fabs", "significand", "logb", "sin", "cos", "tan",
-    "asin", "acos", "atan", "sinh", "cosh", "tanh",
+    "asin", "acos", "atan", "sinh", "cosh", "tanh", "acosh", "asinh", "atanh", "expm1",
+    "log1p", "rint", "gamma", "lgamma", "tgamma", "erf", "erfc", "j0", "j1", "y0", "y1",
+    "frexp", "modf", "lgamma_r", "isfinite", "toboolean", "get_jq_origin",
+    "get_prog_origin", "get_search_list", "modulemeta",
 ];
 
 /// jq's `@format` strings. A leading `@` is otherwise an XPATH attribute step,

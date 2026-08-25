@@ -1863,7 +1863,15 @@ pub struct Program {
 /// Per-run state: the `input`/`inputs` queue and the label counter.
 pub struct Interp {
     labels: std::cell::Cell<u64>,
-    inputs: RefCell<std::collections::VecDeque<JqVal>>,
+    /// The documents `.`, `input` and `inputs` all draw from, held as RAW TEXT
+    /// and parsed on the way out. jq's model is one shared cursor over the input
+    /// stream: the next document is `.`, and `input` takes the one after it, so
+    /// a document consumed by `input` is not seen again by the outer loop.
+    ///
+    /// Raw rather than pre-parsed because most programs never call `input`, and
+    /// parsing a whole stream up front to serve a builtin nobody used is the same
+    /// cost as running the query twice.
+    inputs: RefCell<std::collections::VecDeque<String>>,
     env_obj: RefCell<Option<JqVal>>,
     /// What `input_line_number` reports: the 1-based index of the line being
     /// evaluated, which is what jq reports while reading a multi-line stream.
@@ -1882,9 +1890,16 @@ impl Default for Interp {
 }
 
 impl Interp {
-    /// Seed the queue that `input` / `inputs` draw from.
-    pub fn set_inputs(&self, vals: Vec<JqVal>) {
-        *self.inputs.borrow_mut() = vals.into();
+    /// Seed the document queue from the raw input lines.
+    pub fn set_input_lines(&self, lines: Vec<String>) {
+        *self.inputs.borrow_mut() = lines.into();
+    }
+
+    /// Take the next document, or `None` at end of stream. A line that is not
+    /// JSON is jq's STRING — the reading SPEC §8 gives a text line.
+    pub fn next_input(&self) -> Option<JqVal> {
+        let line = self.inputs.borrow_mut().pop_front()?;
+        Some(parse_json(&line).unwrap_or_else(|_| JqVal::str(line.as_str())))
     }
     /// Set what `input_line_number` reports for the value about to be run.
     pub fn set_line(&self, n: usize) {
@@ -3133,6 +3148,28 @@ fn recurse_paths_f(
     })
 }
 
+/// Follow a `crate::jqval::Seg` path — the shape `crate::jq`'s translated
+/// `Field` op carries — through a jq value.
+///
+/// The point is the RETURN: an object that comes back through this keeps its
+/// document key order, where routing the same lookup through `serde_json` gives
+/// it back alphabetised. Measured against `yq -o=json`, `.nested` over a YAML
+/// mapping came back re-sorted before this existed.
+pub fn get_seg_path(v: &JqVal, segs: &[crate::jqval::Seg]) -> Result<JqVal, String> {
+    let mut cur = v.clone();
+    for seg in segs {
+        if matches!(cur, JqVal::Null) {
+            return Ok(JqVal::Null);
+        }
+        let idx = match seg {
+            crate::jqval::Seg::Key(k) => JqVal::str(k.as_str()),
+            crate::jqval::Seg::Index(i) => JqVal::num(*i as f64),
+        };
+        cur = index_value(&cur, &idx).map_err(|e| e.to_message())?;
+    }
+    Ok(cur)
+}
+
 /// `getpath`, as a value operation. A path through a non-container yields
 /// `null` rather than an error, which is jq's rule.
 fn get_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
@@ -3472,6 +3509,31 @@ fn want_str(v: &JqVal, who: &str) -> R<Rc<str>> {
 // so the semantics come from jq's own source rather than from a paraphrase.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The libm entry points jq exposes that the `libc` crate does not declare on
+/// every platform. Each is a pure `double -> double` (or `double, double`) C
+/// function from `<math.h>`; declaring them here is the same binding `libc`
+/// would provide, with no state and no allocation.
+mod libm {
+    extern "C" {
+        pub fn lgamma(x: f64) -> f64;
+        pub fn tgamma(x: f64) -> f64;
+        pub fn erf(x: f64) -> f64;
+        pub fn erfc(x: f64) -> f64;
+        pub fn j0(x: f64) -> f64;
+        pub fn j1(x: f64) -> f64;
+        pub fn y0(x: f64) -> f64;
+        pub fn y1(x: f64) -> f64;
+        pub fn jn(n: i32, x: f64) -> f64;
+        pub fn yn(n: i32, x: f64) -> f64;
+        pub fn frexp(x: f64, exp: *mut i32) -> f64;
+        pub fn modf(x: f64, iptr: *mut f64) -> f64;
+        pub fn remainder(x: f64, y: f64) -> f64;
+        pub fn fdim(x: f64, y: f64) -> f64;
+        pub fn fmod(x: f64, y: f64) -> f64;
+        pub fn nextafter(x: f64, y: f64) -> f64;
+    }
+}
+
 fn builtin(
     it: &Interp,
     name: &str,
@@ -3714,7 +3776,10 @@ fn builtin(
         | ("log2", 0) | ("log10", 0) | ("exp", 0) | ("exp2", 0) | ("exp10", 0) | ("trunc", 0)
         | ("cbrt", 0) | ("sin", 0) | ("cos", 0) | ("tan", 0) | ("asin", 0) | ("acos", 0)
         | ("atan", 0) | ("sinh", 0) | ("cosh", 0) | ("tanh", 0) | ("nearbyint", 0)
-        | ("significand", 0) | ("logb", 0) => {
+        | ("significand", 0) | ("logb", 0) | ("acosh", 0) | ("asinh", 0) | ("atanh", 0)
+        | ("expm1", 0) | ("log1p", 0) | ("rint", 0) | ("gamma", 0) | ("lgamma", 0)
+        | ("tgamma", 0) | ("erf", 0) | ("erfc", 0) | ("j0", 0) | ("j1", 0) | ("y0", 0)
+        | ("y1", 0) => {
             let n = input
                 .as_f64()
                 .ok_or_else(|| JqErr::msg(format!("{}{} number required", input.type_name(), paren_of(input))))?;
@@ -3742,10 +3807,69 @@ fn builtin(
                 "cosh" => n.cosh(),
                 "tanh" => n.tanh(),
                 "significand" => if n == 0.0 { 0.0 } else { n / 2f64.powi(n.abs().log2().floor() as i32) },
+                "acosh" => n.acosh(),
+                "asinh" => n.asinh(),
+                "atanh" => n.atanh(),
+                "expm1" => n.exp_m1(),
+                "log1p" => n.ln_1p(),
+                // `rint` rounds half to EVEN under the default rounding mode,
+                // which is not `f64::round`'s half-away-from-zero.
+                "rint" => n.round_ties_even(),
+                // SAFETY: each of these is a pure `double -> double` libm call.
+                "lgamma" => unsafe { libm::lgamma(n) },
+                // jq's `gamma` is `tgamma`, not the historical C alias for
+                // `lgamma`: measured, `0.5 | gamma` is 1.7724538509055159.
+                "gamma" | "tgamma" => unsafe { libm::tgamma(n) },
+                "erf" => unsafe { libm::erf(n) },
+                "erfc" => unsafe { libm::erfc(n) },
+                "j0" => unsafe { libm::j0(n) },
+                "j1" => unsafe { libm::j1(n) },
+                "y0" => unsafe { libm::y0(n) },
+                "y1" => unsafe { libm::y1(n) },
                 _ => n.abs().log2().floor(),
             }))
         }
-        ("pow", 2) | ("atan2", 2) | ("fmin", 2) | ("fmax", 2) | ("ldexp", 2) => {
+        // `frexp` and `modf` split a double into two parts, so they answer with a
+        // two-element array rather than a number.
+        ("frexp", 0) | ("modf", 0) | ("lgamma_r", 0) => {
+            let n = input
+                .as_f64()
+                .ok_or_else(|| JqErr::msg(format!("{name} requires a number")))?;
+            let (a, b) = match name {
+                "frexp" => {
+                    let mut e: i32 = 0;
+                    // SAFETY: `e` is a live, correctly typed out-parameter.
+                    let m = unsafe { libm::frexp(n, &mut e) };
+                    (m, f64::from(e))
+                }
+                "modf" => {
+                    let mut i: f64 = 0.0;
+                    // SAFETY: same — one out-parameter, one return value.
+                    let f = unsafe { libm::modf(n, &mut i) };
+                    (f, i)
+                }
+                // `lgamma_r` is the reentrant `lgamma` — the log-magnitude plus
+                // the SIGN of the gamma function. It is not exported on every
+                // platform, so the sign is taken from `tgamma` directly, which is
+                // what `signgam` records.
+                _ => {
+                    // SAFETY: pure libm calls on a plain double.
+                    let (v, g) = unsafe { (libm::lgamma(n), libm::tgamma(n)) };
+                    (v, if g < 0.0 { -1.0 } else { 1.0 })
+                }
+            };
+            out(JqVal::arr(vec![JqVal::num(a), JqVal::num(b)]))
+        }
+        ("isfinite", 0) => out(JqVal::Bool(input.as_f64().is_some_and(f64::is_finite))),
+        ("format", 1) => {
+            let f = one(it, &args[0], input, env)?;
+            let f = want_str(&f, "used as a format name")?;
+            out(JqVal::str(apply_format(&f, input)?))
+        }
+        ("pow", 2) | ("atan2", 2) | ("fmin", 2) | ("fmax", 2) | ("ldexp", 2)
+        | ("copysign", 2) | ("drem", 2) | ("fdim", 2) | ("fmod", 2) | ("hypot", 2)
+        | ("nextafter", 2) | ("nexttoward", 2) | ("remainder", 2) | ("scalb", 2)
+        | ("scalbln", 2) | ("jn", 2) | ("yn", 2) => {
             let a = one(it, &args[0], input, env)?
                 .as_f64()
                 .ok_or_else(|| JqErr::msg(format!("{name} requires numbers")))?;
@@ -3757,8 +3881,29 @@ fn builtin(
                 "atan2" => a.atan2(b),
                 "fmin" => a.min(b),
                 "fmax" => a.max(b),
+                "hypot" => a.hypot(b),
+                "copysign" => a.copysign(b),
+                // SAFETY: pure libm calls on plain doubles.
+                "drem" | "remainder" => unsafe { libm::remainder(a, b) },
+                "fdim" => unsafe { libm::fdim(a, b) },
+                "fmod" => unsafe { libm::fmod(a, b) },
+                "nextafter" | "nexttoward" => unsafe { libm::nextafter(a, b) },
+                "jn" => unsafe { libm::jn(a as i32, b) },
+                "yn" => unsafe { libm::yn(a as i32, b) },
+                // `ldexp`/`scalb`/`scalbln` all scale the FIRST argument by a
+                // power of two. Measured against jq 1.8.2: `ldexp(2;3)` is 16 and
+                // `scalb(3;2)` is 12, so both are `a * 2^b` — not C's
+                // `ldexp(value, exp)` argument order.
                 _ => a * 2f64.powi(b as i32),
             }))
+        }
+        ("fma", 3) => {
+            let g = |i: usize| -> R<f64> {
+                one(it, &args[i], input, env)?
+                    .as_f64()
+                    .ok_or_else(|| JqErr::msg("fma requires numbers"))
+            };
+            out(JqVal::num(g(0)?.mul_add(g(1)?, g(2)?)))
         }
         ("infinite", 0) => out(JqVal::num(f64::INFINITY)),
         ("nan", 0) => out(JqVal::num(f64::NAN)),
@@ -3855,13 +4000,12 @@ fn builtin(
         ("builtins", 0) => out(JqVal::arr(
             builtin_names().into_iter().map(JqVal::str).collect(),
         )),
-        ("input", 0) => match it.inputs.borrow_mut().pop_front() {
+        ("input", 0) => match it.next_input() {
             Some(v) => out(v),
             None => Err(JqErr::msg("No more inputs")),
         },
         ("inputs", 0) => loop {
-            let next = it.inputs.borrow_mut().pop_front();
-            match next {
+            match it.next_input() {
                 Some(v) => out(v)?,
                 None => return Ok(()),
             }
@@ -3891,6 +4035,16 @@ fn builtin(
             Err(JqErr::Halt(code as i32, Some(input.clone())))
         }
         ("input_filename", 0) => out(JqVal::Null),
+        // jq's module-system introspection. arb has no jq module search path —
+        // its own `import` is the arb preset system — so the two path builtins
+        // report where the program came from and the search list is empty.
+        ("get_jq_origin", 0) => out(JqVal::str("arb")),
+        ("get_prog_origin", 0) => out(JqVal::str(".")),
+        ("get_search_list", 0) => out(JqVal::arr(Vec::new())),
+        ("modulemeta", 0) => Err(JqErr::msg(format!(
+            "module not found: {}",
+            render_raw(input)
+        ))),
         ("have_literal_numbers", 0) => out(JqVal::Bool(true)),
         ("have_decnum", 0) => out(JqVal::Bool(false)),
         ("$__loc__", 0) => out(JqVal::obj(vec![
@@ -4009,10 +4163,27 @@ fn contains(a: &JqVal, b: &JqVal) -> R<bool> {
 // Regex builtins
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Compiled engines keyed by (pattern, translated flags), with the compile
+/// FAILURE cached alongside so a bad pattern raises on every call.
+type ReCache = std::collections::HashMap<(String, String), Result<Rc<regex::Regex>, String>>;
+
 /// Compile a jq regex + flag string. jq's flags are Oniguruma's; the ones with a
 /// `regex`-crate equivalent are translated and the rest are refused by name
 /// rather than ignored, so a program never silently gets different matching.
-fn compile_re(pat: &str, flags: &str) -> R<(regex::Regex, bool)> {
+fn compile_re(pat: &str, flags: &str) -> R<(Rc<regex::Regex>, bool)> {
+    thread_local! {
+        /// Compiled engines by (pattern, flags).
+        ///
+        /// A regex builtin runs once PER RECORD, so without this a
+        /// `scan("[0-9]+")` over a stream re-parses and re-compiles the same
+        /// pattern for every line. Measured over 50,000 records:
+        /// `[.msg | scan("[0-9]+")]` took 1.873s against `jq`'s 0.365s, and
+        /// `select(.msg | test("payload"))` 0.376s against 0.234s.
+        ///
+        /// The FAILURE is cached alongside the engine, so an invalid pattern
+        /// still errors on every call rather than only on the first.
+        static RE_CACHE: RefCell<ReCache> = RefCell::new(ReCache::new());
+    }
     let mut global = false;
     let mut prefix = String::new();
     for f in flags.chars() {
@@ -4028,14 +4199,27 @@ fn compile_re(pat: &str, flags: &str) -> R<(regex::Regex, bool)> {
             other => return Err(JqErr::msg(format!("{other} is not a valid modifier string"))),
         }
     }
-    let src = if prefix.is_empty() {
-        pat.to_string()
-    } else {
-        format!("(?{prefix}){pat}")
+    let key = (pat.to_string(), prefix.clone());
+    let cached = RE_CACHE.with(|c| c.borrow().get(&key).cloned());
+    let entry = match cached {
+        Some(e) => e,
+        None => {
+            let src = if prefix.is_empty() {
+                pat.to_string()
+            } else {
+                format!("(?{prefix}){pat}")
+            };
+            let e = regex::Regex::new(&src)
+                .map(Rc::new)
+                .map_err(|e| format!("{pat} (while regex-compiling): {e}"));
+            RE_CACHE.with(|c| c.borrow_mut().insert(key, e.clone()));
+            e
+        }
     };
-    let re = regex::Regex::new(&src)
-        .map_err(|e| JqErr::msg(format!("{pat} (while regex-compiling): {e}")))?;
-    Ok((re, global))
+    // Per-MATCH state stays unshared: `regex::Regex` is `Sync` and every search
+    // allocates its own captures, so sharing the compiled engine shares only the
+    // immutable program.
+    entry.map(|re| (re, global)).map_err(JqErr::msg)
 }
 
 /// Byte offset -> code-point offset. jq reports both offsets and lengths in code
@@ -4372,6 +4556,31 @@ def pick(pathexps): . as $top | reduce path(pathexps) as $p (null; setpath($p; $
 def transpose: if . == [] then [] else . as $in | (map(length) | max) as $max
   | [range(0; $max) as $j | [range(0; $in|length) as $i | $in[$i][$j]]] end;
 def env: $ENV;
+def isfinite: type == "number" and (isinfinite | not);
+def trimstr($val): ltrimstr($val) | rtrimstr($val);
+def toboolean: if type == "boolean" then .
+  elif type == "string" and (. == "true" or . == "false") then . == "true"
+  else error("\(type) (\(tojson)) cannot be parsed as a boolean") end;
+def skip($n; f): foreach f as $item (-1; . + 1; if . >= $n then $item else empty end);
+def JOIN($idx; idx_expr): [.[] | [., $idx[idx_expr]]];
+def JOIN($idx; stream; idx_expr): stream | [., $idx[idx_expr]];
+def JOIN($idx; stream; idx_expr; join_expr): stream | [., $idx[idx_expr]] | join_expr;
+def bsearch($target):
+  if length == 0 then -1
+  elif length == 1 then (if $target > .[0] then -2 elif $target == .[0] then 0 else -1 end)
+  else . as $in
+    | (length - 1) as $rhs
+    | [0, $rhs]
+    | until(.[0] > .[1];
+        (((.[1] + .[0]) / 2) | floor) as $mid
+        | $in[$mid] as $monkey
+        | if $monkey == $target then [$mid, $mid - 1]
+          elif $monkey < $target then [($mid + 1), .[1]]
+          else [.[0], ($mid - 1)] end)
+    | if $in[.[0]] == $target then .[0]
+      elif .[0] > $rhs then (-2 - $rhs)
+      else (-1 - .[0]) end
+  end;
 def toarray: if type == "array" then . else [.] end;
 def abs: if type == "number" and . < 0 then - . else . end;
 def isvalid(f): try (f|true) catch false;
@@ -4479,7 +4688,13 @@ fn builtin_names() -> Vec<String> {
         "env/0", "builtins/0", "input/0", "inputs/0", "input_line_number/0", "debug/0",
         "debug/1", "stderr/0", "halt/0", "halt_error/0", "halt_error/1", "input_filename/0",
         "have_literal_numbers/0", "have_decnum/0", "now/0", "mktime/0", "gmtime/0",
-        "localtime/0", "strftime/1", "strflocaltime/1", "strptime/1",
+        "localtime/0", "strftime/1", "strflocaltime/1", "strptime/1", "acosh/0",
+        "asinh/0", "atanh/0", "expm1/0", "log1p/0", "rint/0", "gamma/0", "lgamma/0",
+        "tgamma/0", "erf/0", "erfc/0", "j0/0", "j1/0", "y0/0", "y1/0", "frexp/0",
+        "modf/0", "lgamma_r/0", "isfinite/0", "format/1", "copysign/2", "drem/2",
+        "fdim/2", "fmod/2", "hypot/2", "nextafter/2", "nexttoward/2", "remainder/2",
+        "scalb/2", "scalbln/2", "jn/2", "yn/2", "fma/3", "get_jq_origin/0",
+        "get_prog_origin/0", "get_search_list/0", "modulemeta/0",
     ];
     let mut names: Vec<String> = NATIVE.iter().map(|s| (*s).to_string()).collect();
     prelude_env().walk_fn_names(&mut names);
