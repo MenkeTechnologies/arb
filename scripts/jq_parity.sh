@@ -245,6 +245,17 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 ARB=./target/debug/arb
+# The reference's merge-key mode. `<<` has TWO readings and yq ships both: its
+# default lets a merged key override an explicit one, and
+# `--yaml-fix-merge-anchor-to-spec` follows the YAML spec instead. yq's own
+# warning calls the default "isn't to the yaml spec" and says the flag will
+# become the default.
+#
+# arb implements the SPEC rule (`src/yaml.rs` documents it, SPEC §8 states it), so
+# the reference is asked in that mode. Asking it in the other one would report a
+# divergence that says arb is right, which is not what a divergence should mean.
+# The two modes differ ONLY on merge keys — every other probe is unaffected.
+YQ_MERGE=--yaml-fix-merge-anchor-to-spec
 QUIET=0
 [ "${1:-}" = "-q" ] && QUIET=1
 
@@ -257,7 +268,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=814
+MIN_PROBES=825
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -598,7 +609,7 @@ yq_probe() {
     local file="$1" filter="$2" a b
     command -v yq >/dev/null || { skip=$((skip + 1)); return; }
     a=$("$ARB" -e "out { in.yaml; $filter }" <"$file" 2>&1)
-    b=$(yq -o=json -I=0 "$filter" "$file" 2>/dev/null)
+    b=$(yq $YQ_MERGE -o=json -I=0 "$filter" "$file" 2>/dev/null)
     # Unwrap a reference that is a bare JSON string.
     case "$b" in
         '"'*'"') b=$(printf '%s' "$b" | "$JQ" -r . 2>/dev/null || printf '%s' "$b") ;;
@@ -661,7 +672,7 @@ yq_fmt_probe() {
     local file="$1" fmt="$2" a b
     command -v yq >/dev/null || { skip=$((skip + 1)); return; }
     a=$("$ARB" -e "out { in.yaml; out.$fmt }" <"$file" 2>&1)
-    b=$(yq -o="$fmt" '.' "$file" 2>/dev/null)
+    b=$(yq $YQ_MERGE -o="$fmt" '.' "$file" 2>/dev/null)
     if [ "$a" = "$b" ]; then
         pass=$((pass + 1))
         [ "$QUIET" = 1 ] || printf 'ok   fmt  %-6s %s\n' "$fmt" "$file"
@@ -2115,7 +2126,7 @@ yq_write_probe() {
     local file="$1" arb_f="$2" yq_f="$3" a b
     command -v yq >/dev/null || { skip=$((skip + 1)); return; }
     a=$("$ARB" -e "out { in.yaml; $arb_f; out.yaml }" <"$file" 2>&1)
-    b=$(yq "$yq_f" "$file" 2>/dev/null)
+    b=$(yq $YQ_MERGE "$yq_f" "$file" 2>/dev/null)
     if [ "$a" = "$b" ]; then
         pass=$((pass + 1))
         [ "$QUIET" = 1 ] || printf 'ok   yqw  %s\n' "$arb_f"
@@ -2254,6 +2265,121 @@ YAMLEOF
 
 # Multi-document streams get their own probe: `---` separation is what
 # `splitDoc` relies on and what a per-document `document_index` is counted over.
+yq_rt_case 'deeply nested anchors' <<'YAMLEOF'
+outer: &o
+  inner: &i
+    deep: &d
+      leaf: 1
+    other: *d
+  second: *i
+top: *o
+YAMLEOF
+
+yq_rt_case 'aliases inside merge keys' <<'YAMLEOF'
+base: &b
+  a: 1
+extra: &e
+  b: 2
+both:
+  <<: [*b, *e]
+  c: 3
+single:
+  <<: *b
+  a: 9
+YAMLEOF
+
+yq_rt_case 'comments on sequence items versus mappings' <<'YAMLEOF'
+# doc
+seq:
+  # head of item 0
+  - one # line of item 0
+  # head of item 1
+  - two
+  # foot of the seq
+
+map:
+  # head of key a
+  a: 1 # line of a
+  # foot of a
+
+  b: 2
+nested:
+  - # head inside item
+    k: v # line of k
+YAMLEOF
+
+yq_rt_case 'an explicit leading document marker' <<'YAMLEOF'
+---
+a: 1
+---
+b: 2
+YAMLEOF
+
+# ── shapes where the REFERENCE is not idempotent either ─────────────────────
+#
+# `yq_rt_probe` asks for the source file back, which is the property the claim
+# names and is stricter than matching yq. Three shapes cannot be asked that,
+# because `yq '.'` does not return them either — it collapses a multi-line flow
+# collection onto one line, reorders `!!tag &anchor` to `&anchor !!tag`, and
+# drops a trailing `...`.
+#
+# They are not dropped from the corpus for that. They are asserted against the
+# REFERENCE instead, byte for byte and nothing normalized, so arb has to
+# normalize the same way yq does rather than merely being allowed to differ from
+# the source. A shape nobody checks is the only bad outcome here; asserting the
+# weaker of two true properties is not.
+yq_norm_probe() {
+    local label="$1" f a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    f=$(mktemp -t arb_yqn_XXXXXX)
+    cat >"$f"
+    a=$("$ARB" -e 'out { in.yaml; out.yaml }' <"$f" 2>&1)
+    b=$(yq '.' "$f" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   norm %s\n' "$label"
+    else
+        fail=$((fail + 1))
+        fails+=("norm $label — arb normalizes differently from yq"$'\n'"       arb: $(printf %s "$a" | tr '\n' '|')"$'\n'"       yq : $(printf %s "$b" | tr '\n' '|')")
+        [ "$QUIET" = 1 ] || printf 'DIFF norm %s\n       arb: %s\n       yq : %s\n' \
+            "$label" "$(printf %s "$a" | tr '\n' '|')" "$(printf %s "$b" | tr '\n' '|')"
+    fi
+    rm -f "$f"
+}
+
+yq_norm_probe 'multi-line flow collections' <<'YAMLEOF'
+wide: [
+    1,
+    2,
+    3
+  ]
+obj: {
+    a: 1,
+    b: 2
+  }
+YAMLEOF
+
+yq_norm_probe 'tags on collections rather than scalars' <<'YAMLEOF'
+seq: !!seq
+  - 1
+  - 2
+map: !!map
+  a: 1
+custom: !mytype
+  k: v
+anchored: !!map &am
+  z: 9
+YAMLEOF
+
+yq_norm_probe 'a trailing document-end marker' <<'YAMLEOF'
+---
+a: 1
+...
+---
+b: 2
+...
+YAMLEOF
+
 YQ_MULTI=$(mktemp -t arb_yqmd_XXXXXX)
 cat >"$YQ_MULTI" <<'YAMLEOF'
 # first
