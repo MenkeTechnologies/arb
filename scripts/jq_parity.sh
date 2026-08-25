@@ -268,7 +268,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=825
+MIN_PROBES=834
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -1998,6 +1998,35 @@ yq_probe "$YQ_FIXTURE" '.nested.deep'
 yq_probe "$YQ_FIXTURE" '.items[] | {"id": .id}'
 yq_superset_probe
 rm -f "$YQ_FIXTURE"
+
+# yq's postfix `ireduce`, in yq's own spelling. `yq_probe` runs the SAME text
+# through both engines, so this asserts the grammar extension end to end.
+YQ_RED=$(mktemp -t arb_yqr_XXXXXX)
+printf 'nums: [1, 2, 3]\n' >"$YQ_RED"
+yq_probe "$YQ_RED" '.nums | .[] as $item ireduce (0; . + $item)'
+yq_probe "$YQ_RED" '.nums | .[] as $item ireduce (1; . * $item)'
+rm -f "$YQ_RED"
+
+# `filename` answers the PATH when the spec names one with `< FILE`, and `-` for
+# a pipe. `yq_probe` always pipes, so the named-file reading needs its own probe.
+yq_filename_probe() {
+    local f a b
+    command -v yq >/dev/null || { skip=$((skip + 1)); return; }
+    f=$(mktemp -t arb_yqf_XXXXXX)
+    printf 'a: 1\n' >"$f"
+    a=$("$ARB" -e "< \"$f\"; out { in.yaml; filename }" 2>&1)
+    b=$(yq 'filename' "$f" 2>/dev/null)
+    if [ "$a" = "$b" ]; then
+        pass=$((pass + 1))
+        [ "$QUIET" = 1 ] || printf 'ok   yqf  filename names the file the spec read\n'
+    else
+        fail=$((fail + 1))
+        fails+=("yqf  filename on a named file"$'\n'"       arb: $a"$'\n'"       yq : $b")
+        [ "$QUIET" = 1 ] || printf 'DIFF yqf  filename\n       arb: %s\n       yq : %s\n' "$a" "$b"
+    fi
+    rm -f "$f"
+}
+yq_filename_probe
 # ── the yq NODE-METADATA leg ────────────────────────────────────────────────
 #
 # Everything above this point compares filters jq could also spell. What follows
@@ -2147,6 +2176,15 @@ yq_write_probe "$YQ_SMALL" '.b |= (style = "literal")'   '.b style = "literal"'
 yq_write_probe "$YQ_SMALL" '.a |= (line_comment = "hi")' '.a line_comment = "hi"'
 yq_write_probe "$YQ_SMALL" '.a |= (lineComment = "hi")'  '.a lineComment = "hi"'
 yq_write_probe "$YQ_SMALL" '.a |= (foot_comment = "f")'  '.a foot_comment = "f"'
+# yq's OWN spelling, which the grammar accepts now: a metadata postfix on a path.
+# Both columns are the same text, so these assert that arb answers yq's syntax
+# with yq's answer rather than merely having an equivalent of its own.
+yq_write_probe "$YQ_SMALL" '.a anchor = "x"'             '.a anchor = "x"'
+yq_write_probe "$YQ_SMALL" '.a tag = "!!str"'            '.a tag = "!!str"'
+yq_write_probe "$YQ_SMALL" '.b style = "double"'         '.b style = "double"'
+yq_write_probe "$YQ_SMALL" '.b style = "single"'         '.b style = "single"'
+yq_write_probe "$YQ_SMALL" '.a line_comment = "hi"'      '.a line_comment = "hi"'
+yq_write_probe "$YQ_SMALL" '.a head_comment = "top"'     '.a head_comment = "top"'
 rm -f "$YQ_SMALL"
 
 # ── the round trip ──────────────────────────────────────────────────────────
