@@ -594,9 +594,75 @@ And an attribute value may be written with **either quote**: arb's command lexer
 turns `"…"` into a string argument, and the reconstruction now re-quotes it, so
 `a[href="/x"]` no longer reaches the parser as `a[href=/x]`.
 
-*yq.* The `yq_superset_probe` reports every enumerated yq operator present,
-including the node-metadata family that a jq-shaped value model has no slot for.
-That leg is a separate piece of work; its own section states what it covers.
+*yq.* `src/xpath.rs`'s problem was a missing engine; this leg's was a missing
+VALUE MODEL. `yq_superset_probe` found **61 operators missing**, and among them
+every node-metadata accessor — `anchor`, `alias`, `tag`, `style`, the three
+comment positions, `key`, `is_key`, `path`, `parent`, `line`, `column`, `kind`.
+Those are not builtins anyone forgot. They read metadata a YAML node carries and
+a jq value has no slot for, which is the reason yq exists over jq at all, and
+they cannot be added one at a time.
+
+So the metadata rides ALONGSIDE the value, in the shape `JqVal::Num(f64,
+Option<literal>)` already used for a number's source text — same problem, same
+answer, already in the tree. `JqVal::Node` boxes a value with its
+`crate::ynode::NodeMeta`, `bare()` unwraps at every operation whose answer is
+about the value, and a node with nothing to record is not boxed at all. The
+load-bearing property is that the JSON reader cannot construct the variant: only
+`crate::yaml` can, so a JSON program reaches every answer through exactly the
+arms it reached them through before, and **the jq leg is untouched by
+construction rather than by inspection**.
+
+Two things the parser does not hand over are recovered from the SPANS it does. A
+`#` inside a scalar's span is content (`pw: "a#b"`, a comment-looking line inside
+a `|` block) and one outside every span opens a comment; an anchor NAME is read
+backwards from its node, over the whitespace and optional tag between them, and
+only for a node the parser already reported as anchored. Comment ATTACHMENT
+follows six rules measured against `yq v4.53.6` rather than taken from its
+documentation — the head comment lands on the KEY node, the line comment on the
+VALUE node, and a block followed by a blank line becomes the PREVIOUS entry's
+foot.
+
+What the probes check, all byte-diffed and none normalized:
+
+| probe | what it asserts |
+|---|---|
+| `yq_superset_probe` | every enumerated yq operator exists — **61 missing before, 0 now** |
+| `yq_probe` (111) | each operator's ANSWER equals `yq -o=json -I=0`'s on the same node |
+| `yq_rt_probe` (10) | `in.yaml; out.yaml` returns the SOURCE FILE byte for byte |
+| `yq_write_probe` (8) | a metadata assignment produces the document yq produces |
+| `yq_fmt_probe` (8) | `out.props` is byte-identical to `yq -o=props` |
+
+The round trip is the strongest of the five, and it is asserted against the
+source file rather than against yq's output — which is stricter, not looser.
+`yq '.'` is not idempotent on two of the fixtures: it re-folds a `>` block onto
+one line and escapes a non-BMP character as a `"\U0001F680"` sequence, so
+requiring arb to match yq there would require arb to reproduce yq's own
+infidelities. "The file comes back" is the property the claim names, and it
+implies matching yq everywhere yq does return the file. The fixtures are one per
+feature the model has to carry — comments in every position, anchors with
+aliases and merge keys, all six scalar styles, flow versus block, tags, empty
+values and nulls, non-ASCII, number spellings, and a multi-document stream — so a
+failure names which one broke.
+
+`out.FORMAT [INDENT]` is yq's `-o=`/`-I` in arb's spelling (`out.yaml`,
+`out.json`, `out.props`, `out.xml`, `out.csv`, `out.tsv`). The DEFAULT rendering
+is unchanged: one compact JSON line per document, which is what every existing
+pipeline expects.
+
+*What the yq leg does not claim.* Three spellings differ, because yq's grammar is
+not jq's, and each is stated rather than papered over. yq writes a metadata
+assignment as a postfix on a path (`.a anchor = "x"`); arb's `|` binds loosest,
+so the document-preserving spelling is `.a |= (anchor = "x")`. yq's `ireduce` is
+a postfix on `.[] as $item`; arb's takes the input's own elements with `$item`
+bound. yq's `ref` binds a mutable handle to a node, which a model without mutable
+handles spells `p |= f` — exactly what `with` is, so both are that. Two behaviours
+also differ by construction: `filename` answers `-` because arb reads standard
+input, and a node's `path`/`key`/`parent` are recorded at READ time, so a node
+relocated by `map`/`pick`/`+` reports where it was read from where yq's real
+parent pointers would follow it. Four YAML inputs are answered where yq ERRORS
+rather than matched — `.inf`, `-.inf`, `.nan` and an integer past `i64` — which
+is the same direction as the >2^53 deviation above: arb answers, the reference
+refuses.
 
 *What the numbers do not claim.* Containment is measured over the surface each
 probe ENUMERATES — for xpath that is the 13 axes, 27 core functions and node

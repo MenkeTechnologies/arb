@@ -427,6 +427,13 @@ const CORPUS: &[(&str, &str, &str, &str)] = &[
     ("in.yaml", "Input", "Begin the pipeline parsing stdin as YAML (--- multi-doc), emitting each document as a JSON line.", "source .s { in.yaml; field status; tally }"),
     ("in.yml", "Input", "Alias of in.yaml: parse stdin as YAML into JSON lines.", "source .s { in.yml; field status; tally }"),
     ("in.toml", "Input", "Begin the pipeline parsing stdin as one TOML document, emitted as a JSON object line.", "source .cfg { in.toml; field version }"),
+    ("out.yaml", "Output", "Re-serialize the stream as YAML, keeping every node's comments, anchors, tags and quoting (yq's -o=yaml). Optional INDENT is yq's -I.", "out { in.yaml; .a = 1; out.yaml }"),
+    ("out.yml", "Output", "Alias of out.yaml.", "out { in.yaml; out.yml }"),
+    ("out.json", "Output", "Re-serialize the stream as indented JSON (yq's -o=json); INDENT 0 is the compact line arb emits by default.", "out { in.yaml; out.json 2 }"),
+    ("out.props", "Output", "Re-serialize the stream as java .properties lines (yq's -o=props).", "out { in.yaml; out.props }"),
+    ("out.xml", "Output", "Re-serialize the stream as XML (yq's -o=xml).", "out { in.yaml; out.xml }"),
+    ("out.csv", "Output", "Re-serialize the stream as CSV (yq's -o=csv).", "out { in.json; out.csv }"),
+    ("out.tsv", "Output", "Re-serialize the stream as TSV (yq's -o=tsv).", "out { in.json; out.tsv }"),
     // ── Query ──
     ("find", "Query", "Parse stream as HTML, emit the outer HTML of each element matching the selector.", "in.html; find a; attr href"),
     ("attr", "Query", "From element fragments, emit each element's named attribute; drop those lacking it.", "in.html; find a; attr href"),
