@@ -417,7 +417,12 @@ impl Composer<'_, '_> {
             return String::new();
         }
         let prev = line - 1;
-        let start = self.lines.0.get(prev.saturating_sub(1)).copied().unwrap_or(0);
+        let start = self
+            .lines
+            .0
+            .get(prev.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
         let end = self.src[start..]
             .find('\n')
             .map_or(self.src.len(), |n| start + n);
@@ -430,7 +435,12 @@ impl Composer<'_, '_> {
 
     /// The 1-based column of the `|`/`>` on source line `line`.
     fn indicator_col(&self, line: usize) -> u32 {
-        let start = self.lines.0.get(line.saturating_sub(1)).copied().unwrap_or(0);
+        let start = self
+            .lines
+            .0
+            .get(line.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
         let end = self.src[start..]
             .find('\n')
             .map_or(self.src.len(), |n| start + n);
@@ -561,21 +571,19 @@ impl Composer<'_, '_> {
                     let item = self.node(&p, None, false);
                     self.pending_head = None;
                     let foot = self.comments.take_foot(self.last_line, icol);
-                    items.push(
-                        if head.is_empty() && foot.is_empty() && marker.is_empty() {
-                            item
-                        } else {
-                            item.with_meta(|m| {
-                                if !head.is_empty() {
-                                    m.head = Rc::from(head.as_str());
-                                }
-                                if !foot.is_empty() {
-                                    m.foot = Rc::from(foot.as_str());
-                                }
-                                m.marker = !marker.is_empty();
-                            })
-                        },
-                    );
+                    items.push(if head.is_empty() && foot.is_empty() && marker.is_empty() {
+                        item
+                    } else {
+                        item.with_meta(|m| {
+                            if !head.is_empty() {
+                                m.head = Rc::from(head.as_str());
+                            }
+                            if !foot.is_empty() {
+                                m.foot = Rc::from(foot.as_str());
+                            }
+                            m.marker = !marker.is_empty();
+                        })
+                    });
                 }
                 self.i += 1; // SequenceEnd
                 let v = JqVal::arr(items);
@@ -788,7 +796,10 @@ impl Composer<'_, '_> {
             }
             match b.get(i) {
                 Some(b'&') => {
-                    return (String::from_utf8_lossy(&b[i + 1..end]).into_owned(), Some(i));
+                    return (
+                        String::from_utf8_lossy(&b[i + 1..end]).into_owned(),
+                        Some(i),
+                    );
                 }
                 // A tag may sit between the anchor and the node; step over it and
                 // look once more.

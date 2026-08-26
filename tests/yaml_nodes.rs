@@ -211,7 +211,10 @@ fn a_boxed_value_equals_its_bare_twin() {
     let boxed = JqVal::wrap(JqVal::num(1.0), meta);
     let bare = JqVal::num(1.0);
 
-    assert!(matches!(boxed, JqVal::Node(_)), "the box was optimised away");
+    assert!(
+        matches!(boxed, JqVal::Node(_)),
+        "the box was optimised away"
+    );
     assert!(jqlang::eq_vals(&boxed, &bare), "a comment changed equality");
     assert_eq!(jqlang::render(&boxed), jqlang::render(&bare));
     assert_eq!(boxed.type_name(), "number");
@@ -335,7 +338,10 @@ fn the_reader_records_what_yq_reports() {
     // comment block is not counted, which is what `yq '.name | line'` reports.
     assert_eq!(nm.line_no, 1);
     assert_eq!(nm.col_no, 7);
-    assert_eq!(nm.key.as_deref().map(jqlang::render_raw).as_deref(), Some("name"));
+    assert_eq!(
+        nm.key.as_deref().map(jqlang::render_raw).as_deref(),
+        Some("name")
+    );
 
     // An anchored collection is positioned at its `&anc`, a line above the
     // mapping's first key.
@@ -360,8 +366,14 @@ fn the_reader_records_what_yq_reports() {
         "the pre-merge entry list was not kept, so `<<` cannot round-trip"
     );
 
-    assert_eq!(at(&["quoted"]).meta().map(|m| m.style.name()), Some("double"));
-    assert_eq!(at(&["single"]).meta().map(|m| m.style.name()), Some("single"));
+    assert_eq!(
+        at(&["quoted"]).meta().map(|m| m.style.name()),
+        Some("double")
+    );
+    assert_eq!(
+        at(&["single"]).meta().map(|m| m.style.name()),
+        Some("single")
+    );
     assert_eq!(at(&["lit"]).meta().map(|m| m.style.name()), Some("literal"));
     assert_eq!(at(&["flow"]).meta().map(|m| m.style.name()), Some("flow"));
     assert_eq!(at(&["name"]).meta().map(|m| m.style.name()), Some(""));
@@ -424,7 +436,9 @@ fn yq_native_spellings_parse_and_answer() {
         let prog = jqlang::Program::compile(src).unwrap_or_else(|e| panic!("compile `{src}`: {e}"));
         let interp = jqlang::Interp::default();
         interp.set_doc(doc);
-        let out = prog.run(&interp, doc).unwrap_or_else(|e| panic!("run `{src}`: {}", e.to_message()));
+        let out = prog
+            .run(&interp, doc)
+            .unwrap_or_else(|e| panic!("run `{src}`: {}", e.to_message()));
         ynode::emit_docs(&out, Emit::default())
     };
     // The metadata postfix, in yq's spelling and in arb's, must agree.

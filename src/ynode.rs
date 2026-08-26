@@ -589,7 +589,10 @@ fn push_value(out: &mut String, v: &JqVal, ind: usize, o: Emit) {
             // has already lost the line breaks folding replaced. The CHOMPING
             // indicator still comes from the value — it is the value's trailing
             // newlines that `-`/`+` encode, not the body's.
-            let raw = v.meta().map(|m| m.raw.to_string()).filter(|r| !r.is_empty());
+            let raw = v
+                .meta()
+                .map(|m| m.raw.to_string())
+                .filter(|r| !r.is_empty());
             // A block scalar's trailing comment belongs on the INDICATOR line,
             // which is the line the reader took it from.
             let note = v.meta().map_or(Rc::from(""), |m| m.line.clone());
@@ -663,7 +666,11 @@ fn push_block_scalar(
             continue;
         }
         pad(out, ind);
-        out.push_str(if i == 0 { line } else { &line[strip.min(line.len())..] });
+        out.push_str(if i == 0 {
+            line
+        } else {
+            &line[strip.min(line.len())..]
+        });
         out.push('\n');
     }
     for _ in 1..trailing {

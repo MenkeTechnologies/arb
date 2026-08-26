@@ -5580,14 +5580,20 @@ fn set_meta(node: &JqVal, name: &str, val: &JqVal) -> JqVal {
 fn coerce_to_tag(v: &JqVal, tag: &str) -> Option<JqVal> {
     match tag {
         "!!str" => Some(JqVal::str(render_raw(v))),
-        "!!int" => v.as_f64().or_else(|| match v {
-            JqVal::Str(s) => s.trim().parse().ok(),
-            _ => None,
-        }).map(|n| JqVal::num(n.trunc())),
-        "!!float" => v.as_f64().or_else(|| match v {
-            JqVal::Str(s) => s.trim().parse().ok(),
-            _ => None,
-        }).map(JqVal::num),
+        "!!int" => v
+            .as_f64()
+            .or_else(|| match v {
+                JqVal::Str(s) => s.trim().parse().ok(),
+                _ => None,
+            })
+            .map(|n| JqVal::num(n.trunc())),
+        "!!float" => v
+            .as_f64()
+            .or_else(|| match v {
+                JqVal::Str(s) => s.trim().parse().ok(),
+                _ => None,
+            })
+            .map(JqVal::num),
         "!!bool" => match v {
             JqVal::Bool(_) => Some(v.clone()),
             JqVal::Str(s) => match &**s {
