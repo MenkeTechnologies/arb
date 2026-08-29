@@ -3,7 +3,7 @@
 # stays `arb`.
 [package]
 name = "arblang"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 license = "MIT"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
@@ -49,7 +49,7 @@ path = "src/bin/gen_docs.rs"
 # (zshrs/stryke/rubyrs/…): `jit` for the Cranelift tiers, `jit-disk-cache` for
 # the persistent on-disk cache of the native code they emit, `aot` for the
 # ahead-of-time object emitter, `ffi` for the inline-Rust bridge.
-fusevm = { version = "0.25.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.26.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 # `widget-calendar` enables the ratatui `Monthly` calendar widget (pulls `time`).
 ratatui = { version = "0.30", features = ["widget-calendar"] }
 # Date construction for the `calendar` widget (current month + ISO-date events).
