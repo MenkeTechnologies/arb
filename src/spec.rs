@@ -1944,19 +1944,7 @@ fn pipeline_from_body(
                 // A jq `@format` string. A leading `@` otherwise means an XPATH
                 // attribute step, so only the nine format NAMES are claimed —
                 // `@href` still selects an attribute.
-                || matches!(
-                    c.name.as_str(),
-                    "@base64" | "@base64d" | "@csv" | "@tsv" | "@json" | "@text" | "@html"
-                        | "@uri" | "@sh"
-                )
-                || c.name.starts_with("@base64 ")
-                || c.name.starts_with("@csv ")
-                || c.name.starts_with("@tsv ")
-                || c.name.starts_with("@json ")
-                || c.name.starts_with("@text ")
-                || c.name.starts_with("@html ")
-                || c.name.starts_with("@uri ")
-                || c.name.starts_with("@sh ")
+                || opens_jq_format(&c.name)
             {
                 let mut parts = vec![c.name.clone()];
                 parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
@@ -2750,4 +2738,32 @@ fn set_grid(
         }
     }
     Err(format!("grid: no widget named `{path}`"))
+}
+
+/// Whether a command's first token opens a jq `@format`.
+///
+/// A leading `@` otherwise means an XPATH attribute step, so only the nine
+/// format names are claimed and `@href` still selects an attribute. What decides
+/// is where the NAME ends — any character that could not continue an identifier
+/// — not whether a space follows it.
+///
+/// That distinction is the bug this replaced. The test used to be
+/// `starts_with("@base64 ")`, so `@base64|length` matched nothing here and fell
+/// through to the xpath front-end below, where `@base64` is an attribute step
+/// and `|` is the union operator. It parsed, ran against JSON, and printed
+/// NOTHING — and `@base64|.` printed the input unencoded. A jq program silently
+/// answering as xpath is the worst shape of divergence, because both engines are
+/// real and neither reports a problem. `@base64d ` was also absent from that
+/// list, so the trailing-space form of it had the same fate.
+fn opens_jq_format(name: &str) -> bool {
+    const FORMATS: [&str; 9] = [
+        "base64d", "base64", "csv", "tsv", "json", "text", "html", "uri", "sh",
+    ];
+    let Some(rest) = name.strip_prefix('@') else {
+        return false;
+    };
+    FORMATS.iter().any(|f| {
+        rest.strip_prefix(f)
+            .is_some_and(|tail| !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+    })
 }
