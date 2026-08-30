@@ -51,6 +51,11 @@ _arb() {
     '--disasm[Print a disassembly of the compiled pipelines and exit]' \
     '--json[With an out { } pipeline, emit JSON instead of plain lines]' \
     '--fzf[fzf mode: filter + select one line, printed to stdout on Enter]' \
+    '--filter=[fzf: print ranked matches for STR and exit (no UI)]:query' \
+    '--theme=[Color theme (one of 31, e.g. neon-noir); overrides the spec]:theme' \
+    '(- *)--list-themes[List the 31 built-in color themes and exit]' \
+    '(- *)--set-theme=[Save NAME as the default theme in ~/.arb/config.toml, then exit]:theme' \
+    '--tiers=[Evaluate EXPR, then report which fusevm tiers took it]:expression' \
     '--run=[Run '\''PROD | _ | CONS'\'': arb spawns them, stderr -> pane]:pipeline:' \
     '--preview=[fzf preview: run CMD on the cursor line ({}), output in a pane]:command:' \
     '--prompt=[fzf prompt string (default '\''> '\'')]:prompt:' \
