@@ -268,7 +268,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=834
+MIN_PROBES=848
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -1285,6 +1285,32 @@ jq_probe    '{"a":1,"b":2,"foo":null}'   '@base64'
 type_probe  '{"a":1,"b":2,"foo":null}'   '@csv'
 type_probe  '{"a":1,"b":2,"foo":null}'   '@tsv'
 jq_probe    '{"a":1,"b":2,"foo":null}'   '@json'
+
+# A `@format` whose name is followed immediately by an operator, with no space.
+# The body dispatcher used to claim a format only as an exact word or with a
+# TRAILING SPACE, so every one of these fell through to the xpath front-end —
+# where `@base64` is an attribute step and `|` is the union operator, so they
+# parsed, ran against JSON, and answered nothing. `@base64|.` printed the input
+# unencoded. Nothing in this corpus wrote a format without a space after it,
+# which is why a jq program silently answering as xpath survived it.
+jq_probe    '"hello"'                    '@base64|@base64d'
+jq_probe    '"hello"'                    '@base64|.'
+jq_probe    '"hello"'                    '@base64|length'
+jq_probe    '"aGVsbG8="'                 '@base64d|length'
+jq_probe    '"hello"'                    '@text|length'
+jq_probe    '"hi"'                       '@uri|ascii_upcase'
+jq_probe    '["a","b"]'                  '@csv|length'
+jq_probe    '["a","b"]'                  '@tsv|length'
+jq_probe    '"<p>"'                      '@html|length'
+jq_probe    '"a b"'                      '@sh|length'
+jq_probe    '{"a":1}'                    '@json|length'
+# The same name inside a parenthesised position, the other boundary character
+# a format can end on.
+jq_probe    '"hello"'                    '[@base64]|length'
+jq_probe    '"hello"'                    '(@base64)|length'
+# A `@` that is NOT one of the nine names still selects an xpath attribute, and
+# a name that merely STARTS with one is not claimed either.
+jq_probe    '"hello"'                    '@base64 |length'
 jq_probe    '{"a":1,"b":2,"foo":null}'   'first(.[])'
 jq_probe    '{"a":1,"b":2,"foo":null}'   'limit(2;.[])'
 jq_probe    '{"a":1,"b":2,"foo":null}'   '.[] | not'
