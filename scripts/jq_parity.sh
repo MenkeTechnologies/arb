@@ -268,7 +268,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=848
+MIN_PROBES=857
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -1311,6 +1311,21 @@ jq_probe    '"hello"'                    '(@base64)|length'
 # A `@` that is NOT one of the nine names still selects an xpath attribute, and
 # a name that merely STARTS with one is not claimed either.
 jq_probe    '"hello"'                    '@base64 |length'
+
+# `@base64d` on input that is not a whole number of base64 groups. A group is
+# 2, 3 or 4 characters; ONE leftover character encodes no byte, and the
+# reference rejects exactly that case — every other length decodes with its
+# spare bits discarded. arb used to decode the rejected case to garbage rather
+# than refuse it, so these pin both sides of the boundary.
+type_probe  '"a"'                        '@base64d'
+type_probe  '"abcde"'                    '@base64d'
+type_probe  '"hello"'                    '@base64d'
+jq_probe    '"ab"'                       '@base64d|length'
+jq_probe    '"abc"'                      '@base64d|length'
+jq_probe    '"abcd"'                     '@base64d|length'
+jq_probe    '"abcdef"'                   '@base64d|length'
+jq_probe    '"YQ=="'                     '@base64d'
+jq_probe    '"aGVsbG8="'                 '@base64d'
 jq_probe    '{"a":1,"b":2,"foo":null}'   'first(.[])'
 jq_probe    '{"a":1,"b":2,"foo":null}'   'limit(2;.[])'
 jq_probe    '{"a":1,"b":2,"foo":null}'   '.[] | not'
