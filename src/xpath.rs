@@ -148,6 +148,21 @@ fn first_element(doc: &crate::xpath_eval::Doc) -> Option<crate::xpath_eval::XNod
     best
 }
 
+/// Whether `e` is a relative location path — including a union of them.
+///
+/// A union is only document-scoped when a branch is: `//@href|//@id` asks about
+/// the document, while `@href|@id` is two relative steps and has to be evaluated
+/// against each line's context node like any other relative path. A MIXED union
+/// stays document-scoped, which is the conservative reading — there is one
+/// context and the absolute branch does not want it.
+fn is_relative_location(e: &Expr) -> bool {
+    match e {
+        Expr::Path(PathStart::Relative, _) => true,
+        Expr::Union(a, b) => is_relative_location(a) && is_relative_location(b),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,20 +213,5 @@ mod tests {
         ] {
             assert!(translate(bad).is_err(), "expected `{bad}` to be refused");
         }
-    }
-}
-
-/// Whether `e` is a relative location path — including a union of them.
-///
-/// A union is only document-scoped when a branch is: `//@href|//@id` asks about
-/// the document, while `@href|@id` is two relative steps and has to be evaluated
-/// against each line's context node like any other relative path. A MIXED union
-/// stays document-scoped, which is the conservative reading — there is one
-/// context and the absolute branch does not want it.
-fn is_relative_location(e: &Expr) -> bool {
-    match e {
-        Expr::Path(PathStart::Relative, _) => true,
-        Expr::Union(a, b) => is_relative_location(a) && is_relative_location(b),
-        _ => false,
     }
 }
