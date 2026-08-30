@@ -268,7 +268,7 @@ JQ=${JQ:-jq}
 # The floor the probe count must clear. `xp_probe`/`css_probe` SKIP silently when
 # xmllint is missing, so without this a machine with no xmllint drops 46 probes
 # and still reports a clean run. Raise it when the corpus grows; never lower it.
-MIN_PROBES=857
+MIN_PROBES=860
 
 [ -x "$ARB" ] || { echo "jq_parity: $ARB not built — run 'cargo build'" >&2; exit 2; }
 command -v "$JQ" >/dev/null || {
@@ -1718,6 +1718,15 @@ xp_probe "$XPF" '//a/following-sibling::span'
 xp_probe "$XPF" '//a[contains(text(),"X")]'
 xp_probe "$XPF" '//a[not(@rel)]'
 xp_probe "$XPF" 'normalize-space(//a)'
+
+# A UNION of RELATIVE steps. Every union probed above is absolute, and that is
+# what let a wrong answer sit here: a union used to be treated as one question
+# about the whole document, so both branches of `@href|@rel` lost their context
+# node and it selected NOTHING while either branch alone selected. A union of
+# absolute branches was unaffected, which is why nothing above it noticed.
+xp_probe "$XPF" '//a/@href|//a/@rel'
+xp_probe "$XPF" '//h2/text()|//li/text()'
+xp_probe "$XPF" '//h2|//li'
 
 # ── css leg: `sel { CSS }` ──────────────────────────────────────────────────
 # The README's headline claim is a jq/xpath/CSS/yq superset, and the css leg had
