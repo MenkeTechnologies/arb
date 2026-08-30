@@ -171,6 +171,68 @@ fn the_four_silent_wrong_answers_are_gone() {
     assert_eq!(run("/html/body/div/h2/text()"), vec!["Title"]);
 }
 
+/// Whether an expression is evaluated PER LINE or once over the whole document
+/// follows the union's branches, not the fact that it is a union.
+///
+/// Only a relative location path composes with the previous pipeline step. A
+/// union was classified as one document question outright, so `@href|@id` — two
+/// relative steps — lost its context node and selected NOTHING while either
+/// branch alone selected.
+///
+/// Asserted on the classification rather than end to end, because
+/// `scripts/jq_parity.sh` cannot reach it: every xpath probe there is compared
+/// against `xmllint --xpath`, which evaluates from the DOCUMENT root and so
+/// cannot express a relative context. Every union probed there is absolute for
+/// that reason — which is why this went unnoticed.
+#[test]
+fn per_line_follows_a_unions_branches() {
+    let per_line = |src: &str| -> bool {
+        match arb::xpath::translate(src)
+            .unwrap_or_else(|e| panic!("`{src}` did not translate: {e}"))
+            .first()
+        {
+            Some(arb::query::QueryOp::XPath(x)) => x.per_line,
+            other => panic!("`{src}` -> {other:?}"),
+        }
+    };
+
+    // A relative path composes per line; so does a union of relative paths.
+    assert!(per_line("@href"));
+    assert!(per_line("@href|@id"));
+    assert!(per_line("h2/text()|p/text()"));
+
+    // An absolute path is one question about the document, and so is a union of
+    // them — this is the case that was already right.
+    assert!(!per_line("//a/@href"));
+    assert!(!per_line("//a/@href|//a/@rel"));
+    assert!(!per_line("/html/body/div/h2/text()"));
+
+    // A MIXED union stays document-scoped: there is one context and the
+    // absolute branch does not want it.
+    assert!(!per_line("@href|//a/@rel"));
+    assert!(!per_line("//a/@rel|@href"));
+
+    // And the rule this classification exists for is untouched: a function call
+    // is answered once, not once per input line.
+    assert!(!per_line("count(//p)"));
+    assert!(!per_line("normalize-space(//a)"));
+}
+
+/// A union still selects both branches end to end, and a branch that selects
+/// nothing contributes nothing rather than emptying the result.
+#[test]
+fn a_union_selects_every_branch() {
+    assert_eq!(run("//a/@href"), vec!["/x", "/y"]);
+    assert_eq!(run("//a/@rel"), vec!["nf"]);
+    assert_eq!(
+        run("//h2/text()|//p/text()"),
+        vec!["Title", "alpha", "beta", "gamma"]
+    );
+    assert_eq!(run("//h2/text()|//nosuch/text()"), vec!["Title"]);
+    // The per-line rule still answers a document question once.
+    assert_eq!(run("count(//p)"), vec!["3"]);
+}
+
 /// A predicate on a REVERSE axis counts proximity along THAT axis (§2.4), so
 /// `preceding-sibling::p[1]` is the NEAREST preceding sibling, not the first in
 /// document order. Getting this backwards is the classic XPath engine bug and it

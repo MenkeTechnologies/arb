@@ -80,11 +80,15 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     let expr = xpath_syntax::parse(s).map_err(|e| format!("xpath: {e} in `{src}`"))?;
     // Only a RELATIVE LOCATION PATH composes with a previous pipeline step, and
     // only it is evaluated per line. Everything else — an absolute path, a
-    // function call, a comparison, a union — is one question about the DOCUMENT
-    // and is answered once. Deciding this from the source text instead (a
-    // leading `/`) made `count(//p)` run once per input line and print eight
-    // separate counts.
-    let per_line = matches!(expr, Expr::Path(PathStart::Relative, _));
+    // function call, a comparison — is one question about the DOCUMENT and is
+    // answered once. Deciding this from the source text instead (a leading `/`)
+    // made `count(//p)` run once per input line and print eight separate counts.
+    //
+    // A UNION follows its branches rather than being document-scoped outright:
+    // `@href|@id` is two relative paths and composes exactly as `@href` does,
+    // and treating it as one document question left both branches with no
+    // context node, so it answered NOTHING while either branch alone answered.
+    let per_line = is_relative_location(&expr);
     Ok(vec![QueryOp::XPath(Box::new(XPath {
         src: s.to_string(),
         expr,
@@ -194,5 +198,20 @@ mod tests {
         ] {
             assert!(translate(bad).is_err(), "expected `{bad}` to be refused");
         }
+    }
+}
+
+/// Whether `e` is a relative location path — including a union of them.
+///
+/// A union is only document-scoped when a branch is: `//@href|//@id` asks about
+/// the document, while `@href|@id` is two relative steps and has to be evaluated
+/// against each line's context node like any other relative path. A MIXED union
+/// stays document-scoped, which is the conservative reading — there is one
+/// context and the absolute branch does not want it.
+fn is_relative_location(e: &Expr) -> bool {
+    match e {
+        Expr::Path(PathStart::Relative, _) => true,
+        Expr::Union(a, b) => is_relative_location(a) && is_relative_location(b),
+        _ => false,
     }
 }
