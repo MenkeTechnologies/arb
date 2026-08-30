@@ -2983,6 +2983,19 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
     let mut acc = 0u32;
     let mut bits = 0u32;
     let mut out = Vec::new();
+    // A base64 group is 2, 3 or 4 characters; ONE leftover character encodes no
+    // byte at all, and the reference rejects exactly that — `@base64d` on
+    // "hello" (5 significant characters) is
+    // `string ("hello") trailing base64 byte found`, while 2, 3, 6 and 7 all
+    // decode with their spare bits discarded. Counted before decoding because
+    // the loop cannot tell a short final group from a complete one.
+    let significant = s
+        .bytes()
+        .filter(|c| !matches!(c, b'=' | b'\n' | b'\r'))
+        .count();
+    if significant % 4 == 1 {
+        return None;
+    }
     for c in s.bytes() {
         if c == b'=' || c == b'\n' || c == b'\r' {
             continue;
