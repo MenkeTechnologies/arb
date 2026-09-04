@@ -254,13 +254,57 @@ ls *.log | arb --fzf                        # type to fuzzy-filter, Enter picks
   `--no-extended` turns the whole query back into a single literal fuzzy term;
   `-x` / `--extended` is the default.
 - **`-f`/`--filter STR`** — the matcher without the UI: print the ranked matches
-  and exit. Scored across cores, so a million-line corpus filters in a fraction
-  of a second (`find / | arb --fzf --filter conf`).
+  and exit (`find / | arb --fzf --filter conf`). The whole stream is read, split
+  in one pass, then scored with `rayon` and ordered with a parallel sort
+  (`src/cli.rs` `run_filter`, `src/tui.rs` `rank`), so the ranking runs across
+  every core — 1.26M lines in 123 ms, measured below.
 - **Navigate** — `↑`/`↓`, `Ctrl-J`/`Ctrl-N` down, `Ctrl-K`/`Ctrl-P` up.
 - **Multi-select** — with `-m`/`--multi`, `Tab` marks lines (`┃` in the mark
   column) and moves down; Enter emits all marked.
 - Matched chars highlight; keeps the entire stream (no line drop), so marks
   persist and a huge `find /` stays fully selectable.
+
+#### Parity and throughput vs `fzf` and `skim`
+
+The superset claim is a contract, so it is checked the way the jq/xpath/yq claim
+is: `scripts/fzf_bench.sh` runs one corpus of probes through all three engines
+and diffs stdout, then times the same invocations. arb is compared **byte-exact**
+against `fzf --filter` — output ORDER is part of parity, not just the match set —
+and set-exact against `sk --filter`, whose own scorer orders ties differently.
+A probe whose reference REFUSES the invocation (a flag it does not define) skips
+with the reason printed; there is no allowlist, and the exit status is the number
+of divergences.
+
+Recorded run — corpus of 1,259,869 real filesystem paths (127,414,004 bytes),
+arb 0.1.16 / fzf 0.74.3 / sk 4.6.0, Apple M5 Max (12P+6E), hyperfine 1.20.0:
+
+**Parity — 39 pass / 1 diverged / 2 skipped.** Every fuzzy, exact, prefix,
+suffix, negated, OR-set and multi-term query matched fzf byte-for-byte, as did
+`--exact`, `--no-sort`, `--tac`, `--algo=v1`, `--tiebreak=length|end`,
+`--scheme=path`, `--ignore-case` and smart-case. The two skips are skim flags
+that do not exist (`--algo=v1`, `--ignore-case`). The one divergence is skim's
+own defect, not arb's: `sk --filter cargo --tac` emits duplicates (8,103 lines,
+2,123 unique, where its non-`--tac` run answers 8,053 distinct) — arb and fzf
+agree on that probe.
+
+**Throughput** (hyperfine, mean ± σ; 8 runs per corpus query, 30 for startup):
+
+| query | arb | fzf | skim | vs fzf | vs skim |
+| --- | --- | --- | --- | --- | --- |
+| `cargo` (dense hit rate) | **123.1 ± 2.0 ms** | 409.3 ± 19.8 ms | 232.2 ± 11.2 ms | 3.33× | 1.89× |
+| `libcore` | **96.4 ± 1.0 ms** | 256.9 ± 4.4 ms | 177.8 ± 4.8 ms | 2.66× | 1.84× |
+| `'cargo` (exact) | **70.2 ± 0.7 ms** | 200.3 ± 1.5 ms | 88.0 ± 3.8 ms | 2.85× | 1.25× |
+| `^/opt .rs$ !zsh` | **49.4 ± 0.8 ms** | 78.2 ± 1.0 ms | 70.4 ± 2.5 ms | 1.58× | 1.42× |
+| `zqxjvw` (no match) | **48.8 ± 0.6 ms** | 67.3 ± 0.7 ms | 61.8 ± 12.4 ms | 1.38× | 1.26× |
+| startup, empty stdin | 4.1 ± 0.4 ms | **3.2 ± 0.4 ms** | 5.3 ± 0.9 ms | 0.78× | 1.29× |
+
+That is ~1.0 GB/s of candidates on the `cargo` row, against ~0.31 GB/s for fzf
+and ~0.55 GB/s for skim. The spread is the matcher, not I/O: with a query that
+matches nothing, every engine is mostly reading stdin and the gap narrows to
+1.38×. Startup is the one axis arb loses — fzf's static Go binary costs ~1 ms
+less to launch. arb is ahead again by the time there is a corpus to score: on a
+10,000-line slice of the same paths, `cargo` takes 6.1 ± 0.5 ms in arb against
+7.9 ± 0.4 ms in fzf and 10.3 ± 0.6 ms in skim.
 
 **Drop-in for `fzf`.** `arb --fzf` reads your fzf configuration the way the `fzf`
 binary does — `$FZF_DEFAULT_OPTS_FILE`, then `$FZF_DEFAULT_OPTS`, then the
