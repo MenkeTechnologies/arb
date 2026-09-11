@@ -1258,7 +1258,13 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             None
         } else if needs_stdin {
             let controls = Arc::new(Mutex::new(tui::Controls::default()));
-            Some(spawn_reader(state.clone(), false, controls, None, prelude.clone()))
+            Some(spawn_reader(
+                state.clone(),
+                false,
+                controls,
+                None,
+                prelude.clone(),
+            ))
         } else {
             None
         };
@@ -2834,8 +2840,12 @@ mod tests {
         let (rfd, wfd) = (fds[0], fds[1]);
         set_nonblocking(rfd).expect("a pipe goes non-blocking");
         // SAFETY: both fds are fresh from pipe(2) and each is owned exactly once.
-        let (read_end, mut writer) =
-            unsafe { (std::fs::File::from_raw_fd(rfd), std::fs::File::from_raw_fd(wfd)) };
+        let (read_end, mut writer) = unsafe {
+            (
+                std::fs::File::from_raw_fd(rfd),
+                std::fs::File::from_raw_fd(wfd),
+            )
+        };
 
         let stop = Arc::new(AtomicBool::new(false));
         let reader = Interruptible {
