@@ -11,7 +11,9 @@
 //! manager are later milestones (see SPEC.md) and are not faked here.
 
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::os::unix::io::RawFd;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -1244,17 +1246,22 @@ fn run(full_argv: &[String]) -> io::Result<()> {
     // `--serve`: the same spec as a live browser dashboard. Feed the stream in the
     // background (spawned producer or stdin) and run the HTTP server (blocks).
     if cli.serve {
-        if let Some(prod) = &producer {
+        // A stdin feed is held until the server returns, then stopped.
+        let _feed = if let Some(prod) = &producer {
             if let Err(e) = spawn_producer(prod, state.clone()) {
                 eprintln!("arb: run: {e}");
                 crate::hosted::exit(1);
             }
+            None
         } else if let Some((cmd, dur)) = &poll {
             poll_producer(cmd, *dur, state.clone());
+            None
         } else if needs_stdin {
             let controls = Arc::new(Mutex::new(tui::Controls::default()));
-            spawn_reader(state.clone(), false, controls, None, prelude.clone());
-        }
+            Some(spawn_reader(state.clone(), false, controls, None, prelude.clone()))
+        } else {
+            None
+        };
         return crate::serve::serve(spec, state, cli.port);
     }
 
@@ -1279,7 +1286,9 @@ fn run(full_argv: &[String]) -> io::Result<()> {
         let controls = Arc::new(Mutex::new(tui::Controls::default()));
 
         // Feed the stream: a spawned producer (`--run`/`spawn`/`< file`), a
-        // `! CMD every Ns` poll loop, or stdin.
+        // `! CMD every Ns` poll loop, or stdin. A stdin feed lives exactly as
+        // long as the TUI session.
+        let mut feed: Option<StdinFeed> = None;
         let err_pane = if spec.spawn_pty && run_pipeline.is_none() && producer.is_some() {
             // `spawn -pty CMD`: run on a PTY so the child acts interactive, and
             // keep the stdin writer so `send "…"` can drive it (Expect). The PTY
@@ -1317,13 +1326,13 @@ fn run(full_argv: &[String]) -> io::Result<()> {
                 // resolving `apply .name` against live `input` values — so typing
                 // in a control reshapes the downstream pipe in real time.
                 let tee = !fzf_mode && !io::stdout().is_terminal();
-                spawn_reader(
+                feed = Some(spawn_reader(
                     state.clone(),
                     tee,
                     controls.clone(),
                     spec.out.clone(),
                     prelude.clone(),
-                );
+                ));
             }
             None
         };
@@ -1466,6 +1475,9 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             fzf_mode,
             cli.height.clone(),
         );
+        // The session is over: stop reading stdin before emitting anything, so
+        // no reader outlives this call (see `Interruptible`).
+        drop(feed);
         if fzf_mode {
             // On Enter (submit) emit the selection (marked lines, or the cursor
             // line). With a `| CONS` consumer, pipe the selection through it first
@@ -2161,14 +2173,96 @@ fn poll_producer(
     err_state
 }
 
+/// A reader over `fd` that a thread blocked on it can be told to leave.
+///
+/// A blocking `read(2)` cannot be interrupted from another thread, so a feed
+/// thread parked in one outlives the invocation that started it. The `arb`
+/// binary never notices — exiting reclaims the thread. Hosted inside
+/// zshrs-native (the `arb` builtin) it stays in the shell, holding the
+/// process-wide `StdinLock` and reading fd 0, which is the terminal again once
+/// the builtin returns: it eats the keystrokes typed at the prompt, and the next
+/// `arb --fzf` neither gets its input (the lock is taken) nor reliably its keys.
+///
+/// `fd` must already be non-blocking. A read that would block waits in `select`
+/// for at most [`tui::STOP_POLL_MS`], then checks `stop` again; once `stop` is
+/// set every read is end of input. `inner` is read directly, so for stdin the
+/// `StdinLock` keeps serving the lines the sniffer buffered past what it peeked.
+struct Interruptible<R> {
+    inner: R,
+    fd: RawFd,
+    stop: Arc<AtomicBool>,
+}
+
+impl<R: io::Read> io::Read for Interruptible<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return Ok(0);
+            }
+            match self.inner.read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if tui::select_readable(self.fd, tui::STOP_POLL_MS).is_none() {
+                        // Unrepresentable in an fd_set: sleep instead of spinning.
+                        thread::sleep(Duration::from_millis(tui::STOP_POLL_MS as u64));
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                r => return r,
+            }
+        }
+    }
+}
+
+/// Put `fd` in non-blocking mode, returning its previous flags to restore.
+/// `None` when it could not be done — the fd stays blocking.
+fn set_nonblocking(fd: RawFd) -> Option<libc::c_int> {
+    // SAFETY: fcntl on an fd we only query and flag; no memory is passed.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return None;
+    }
+    Some(flags)
+}
+
+/// The stdin feed thread, stopped and joined when this drops — at the end of the
+/// TUI, and on every other way out of [`run`], `hosted::exit` unwinds included.
+/// Only then does fd 0 get its blocking mode back, so the thread never sees a
+/// blocking fd 0 it could park on.
+struct StdinFeed {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    /// fd 0's flags before the feed made it non-blocking. `None` if that
+    /// failed: the thread may then be parked in a read nothing can end, so it
+    /// is left to run rather than joined forever.
+    saved_flags: Option<libc::c_int>,
+}
+
+impl Drop for StdinFeed {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let Some(flags) = self.saved_flags else {
+            return;
+        };
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        // SAFETY: restores the flags read from this same fd in `set_nonblocking`.
+        unsafe { libc::fcntl(0, libc::F_SETFL, flags) };
+    }
+}
+
 fn spawn_reader(
     state: Arc<Mutex<StreamState>>,
     tee: bool,
     controls: Arc<Mutex<tui::Controls>>,
     out_ops: Option<Vec<QueryOp>>,
     prelude: Vec<String>,
-) {
-    thread::spawn(move || {
+) -> StdinFeed {
+    let stop = Arc::new(AtomicBool::new(false));
+    let saved_flags = set_nonblocking(0);
+    let thread_stop = stop.clone();
+    let thread = thread::spawn(move || {
+        let stop = thread_stop;
         // Only hold the stdout lock when actually teeing. Otherwise (e.g. --fzf,
         // which emits its selection from `main` after the TUI exits) this thread
         // would keep stdout locked for its whole life and deadlock `main`'s final
@@ -2189,7 +2283,14 @@ fn spawn_reader(
         // would allocate a `String` per line that the stream then copies again.
         // Lock stdin ONCE: `read_until` on the unlocked handle takes the stdin
         // mutex per call, which at a million lines costs more than the read.
-        let mut stdin = io::BufReader::with_capacity(256 * 1024, io::stdin().lock());
+        let mut stdin = io::BufReader::with_capacity(
+            256 * 1024,
+            Interruptible {
+                inner: io::stdin().lock(),
+                fd: 0,
+                stop: stop.clone(),
+            },
+        );
         let mut raw = Vec::new();
         let mut prelude = prelude.into_iter();
         let feed = std::iter::from_fn(move || -> Option<std::sync::Arc<str>> {
@@ -2218,6 +2319,12 @@ fn spawn_reader(
         let mut batch: Vec<std::sync::Arc<str>> = Vec::with_capacity(BATCH);
         let mut last_flush = std::time::Instant::now();
         for l in feed {
+            // Up to a buffer's worth of lines is already read when the session
+            // ends; none of it is wanted, and teeing it could block on a stalled
+            // consumer.
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             if let Some(o) = out.as_mut() {
                 // One lock: snapshot the live filter and input values together.
                 let (filter, inputs) = {
@@ -2263,6 +2370,11 @@ fn spawn_reader(
             state.lock().unwrap().extend(batch.drain(..));
         }
     });
+    StdinFeed {
+        stop,
+        thread: Some(thread),
+        saved_flags,
+    }
 }
 
 /// `arb -- CMD` preview: re-run the command chain over arb's CURRENT post-filter
@@ -2702,5 +2814,51 @@ mod tests {
         assert!(fuzzy_score_case("README", "read", Case::Respect).is_none());
         assert!(fuzzy_score_case("readme", "READ", Case::Smart).is_none());
         assert!(fuzzy_score_case("readme", "READ", Case::Ignore).is_some());
+    }
+
+    /// A feed on an input that never ends — the producer still running when the
+    /// user picks — has to leave when told. A blocking read never does, and
+    /// hosted in zshrs-native that reader outlived the `arb` call, holding the
+    /// stdin lock and eating the keystrokes typed at the shell prompt.
+    #[test]
+    fn an_interruptible_reader_leaves_an_open_idle_pipe_when_stopped() {
+        use super::{set_nonblocking, Interruptible};
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::io::FromRawFd;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (rfd, wfd) = (fds[0], fds[1]);
+        set_nonblocking(rfd).expect("a pipe goes non-blocking");
+        // SAFETY: both fds are fresh from pipe(2) and each is owned exactly once.
+        let (read_end, mut writer) =
+            unsafe { (std::fs::File::from_raw_fd(rfd), std::fs::File::from_raw_fd(wfd)) };
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = Interruptible {
+            inner: read_end,
+            fd: rfd,
+            stop: stop.clone(),
+        };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(reader).lines() {
+                tx.send(Some(line.unwrap())).unwrap();
+            }
+            tx.send(None).unwrap();
+        });
+        let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        // Lines written while the reader waits are still delivered.
+        writeln!(writer, "a\nb").unwrap();
+        assert_eq!(next().as_deref(), Some("a"));
+        assert_eq!(next().as_deref(), Some("b"));
+        // The write end stays open: nothing ends this read but the stop.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        stop.store(true, Ordering::Relaxed);
+        assert_eq!(next(), None);
     }
 }

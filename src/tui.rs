@@ -733,41 +733,92 @@ fn tick_timeouts(
 /// instead of being decoded (see `feed_keys`/`partial_escape`). Without the
 /// carry, the remainder of a split report typed itself into the filter as
 /// `[<64;33;10M`.
-fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
-    if let Ok(mut tty) = OpenOptions::new().read(true).open("/dev/tty") {
-        thread::spawn(move || {
-            let fd = tty.as_raw_fd();
-            // Big enough that a whole wheel burst normally lands in one read;
-            // the carry covers the bursts that still straddle a boundary.
-            let mut buf = [0u8; 4096];
-            let mut pend: Vec<u8> = Vec::new();
-            loop {
-                let n = match tty.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    // A signal (SIGWINCH on resize, SIGCHLD from a `spawn`
-                    // source) interrupts the read. Retry: bailing kills the only
-                    // key reader and wedges the UI with no working keys at all,
-                    // not even Esc/Ctrl-C (raw mode already disabled SIGINT).
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                };
-                pend.extend_from_slice(&buf[..n]);
-                if drain_keys(&controls, &mut pend, true) {
+///
+/// The reader never parks in `read` with nothing to read. A session can end
+/// without a keypress — a double-click pick, a `--bind` or `expect` action, a
+/// draw error — and a reader still blocked on `/dev/tty` would outlive it. The
+/// `arb` binary never notices, since exiting reclaims the thread; hosted inside
+/// zshrs-native (the `arb` builtin) it stays in the shell and eats the
+/// keystrokes typed at the prompt. So it waits in `select` and looks at
+/// [`session_over`] every [`STOP_POLL_MS`]; [`SessionEnd`] joins it.
+///
+/// Returns `None` when there is nothing to join: no `/dev/tty`, or a tty fd
+/// `select` can't wait on — that reader blocks in `read` as it always did, and
+/// joining it would wait for a keypress.
+fn spawn_key_handler(controls: Arc<Mutex<Controls>>) -> Option<thread::JoinHandle<()>> {
+    let mut tty = OpenOptions::new().read(true).open("/dev/tty").ok()?;
+    let joinable = fd_selectable(tty.as_raw_fd());
+    let reader = thread::spawn(move || {
+        let fd = tty.as_raw_fd();
+        // Big enough that a whole wheel burst normally lands in one read;
+        // the carry covers the bursts that still straddle a boundary.
+        let mut buf = [0u8; 4096];
+        let mut pend: Vec<u8> = Vec::new();
+        loop {
+            // An fd `select` can't represent reads as the blocking reader it
+            // was before this gate existed.
+            if !select_readable(fd, STOP_POLL_MS).unwrap_or(true) {
+                if session_over(&controls) {
                     break;
                 }
-                // Leftover bytes = a truncated escape at the tail. Give the rest
-                // of the sequence a moment to arrive; if nothing comes it was a
-                // real Esc keypress, so replay the tail literally rather than
-                // swallowing the key.
-                if !pend.is_empty()
-                    && !tty_readable(fd, ESC_WAIT_MS)
-                    && drain_keys(&controls, &mut pend, false)
-                {
-                    break;
-                }
+                continue;
             }
-        });
+            let n = match tty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                // A signal (SIGWINCH on resize, SIGCHLD from a `spawn`
+                // source) interrupts the read. Retry: bailing kills the only
+                // key reader and wedges the UI with no working keys at all,
+                // not even Esc/Ctrl-C (raw mode already disabled SIGINT).
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            pend.extend_from_slice(&buf[..n]);
+            if drain_keys(&controls, &mut pend, true) {
+                break;
+            }
+            // Leftover bytes = a truncated escape at the tail. Give the rest
+            // of the sequence a moment to arrive; if nothing comes it was a
+            // real Esc keypress, so replay the tail literally rather than
+            // swallowing the key.
+            if !pend.is_empty()
+                && !tty_readable(fd, ESC_WAIT_MS)
+                && drain_keys(&controls, &mut pend, false)
+            {
+                break;
+            }
+        }
+    });
+    joinable.then_some(reader)
+}
+
+/// Whether the session a helper thread serves is over: a pick, an abort, or
+/// [`SessionEnd`] closing it. A poisoned lock means the session died mid-panic,
+/// which is over too.
+fn session_over(controls: &Mutex<Controls>) -> bool {
+    controls.lock().map(|c| c.quit || c.submit).unwrap_or(true)
+}
+
+/// Ends a TUI session on drop — on the normal way out of [`run`] and on an
+/// unwind through it alike: marks it over (the `--preview` and `arb -- CMD`
+/// pane threads stop on `quit`; a pick sets only `submit`), then waits for the
+/// key reader, which notices within [`STOP_POLL_MS`]. Leaving either thread
+/// running is invisible in the `arb` binary and a leak into the host shell
+/// otherwise.
+struct SessionEnd {
+    controls: Arc<Mutex<Controls>>,
+    key_reader: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for SessionEnd {
+    fn drop(&mut self) {
+        match self.controls.lock() {
+            Ok(mut c) => c.quit = true,
+            Err(poisoned) => poisoned.into_inner().quit = true,
+        }
+        if let Some(t) = self.key_reader.take() {
+            let _ = t.join();
+        }
     }
 }
 
@@ -777,16 +828,35 @@ fn spawn_key_handler(controls: Arc<Mutex<Controls>>) {
 const ESC_WAIT_MS: i32 = 30;
 
 /// Whether `fd` has bytes readable within `ms` — a wait, never a read.
+/// An fd that `select` cannot represent counts as not readable: the escape
+/// decoder then decodes what it has instead of waiting.
+fn tty_readable(fd: RawFd, ms: i32) -> bool {
+    select_readable(fd, ms).unwrap_or(false)
+}
+
+/// How long a helper thread waiting on input sleeps before it looks again at
+/// whether its session is over. Bounds how long ending a session takes.
+pub(crate) const STOP_POLL_MS: i32 = 50;
+
+/// Whether `fd` fits in an `fd_set`: non-negative and below `FD_SETSIZE`.
+fn fd_selectable(fd: RawFd) -> bool {
+    fd >= 0 && (fd as usize) < libc::FD_SETSIZE
+}
+
+/// Wait up to `ms` for `fd` to become readable. `None` when `fd` cannot be put
+/// in an `fd_set` (see [`fd_selectable`]), so each caller decides what "can't
+/// wait" means for it.
 ///
 /// `select(2)`, not `poll(2)`: on Darwin, polling a tty returns `POLLNVAL`
 /// (verified: `rc=1 revents=32` on a pty), so a `rc > 0` test reads as "data
 /// waiting" and the reader blocks in `read` — Esc then does nothing until the
-/// next keypress. `select` reports ttys correctly on both Darwin and Linux.
-fn tty_readable(fd: RawFd, ms: i32) -> bool {
-    if fd < 0 || fd as usize >= libc::FD_SETSIZE {
-        return false; // unrepresentable in an fd_set: don't wait, decode now
+/// next keypress. `select` reports ttys correctly on both Darwin and Linux, and
+/// pipes too.
+pub(crate) fn select_readable(fd: RawFd, ms: i32) -> Option<bool> {
+    if !fd_selectable(fd) {
+        return None;
     }
-    unsafe {
+    Some(unsafe {
         let mut set: libc::fd_set = std::mem::zeroed();
         libc::FD_SET(fd, &mut set);
         let mut tv = libc::timeval {
@@ -800,7 +870,7 @@ fn tty_readable(fd: RawFd, ms: i32) -> bool {
             std::ptr::null_mut(),
             &mut tv,
         ) > 0
-    }
+    })
 }
 
 /// Feed `pend` through `feed_keys` and drop what it consumed. Returns `true`
@@ -1254,7 +1324,10 @@ pub fn run(
     execute!(terminal.backend_mut(), EnableMouseCapture)?;
 
     controls.lock().unwrap().fzf = fzf;
-    spawn_key_handler(controls.clone());
+    let session = SessionEnd {
+        controls: controls.clone(),
+        key_reader: spawn_key_handler(controls.clone()),
+    };
 
     // Select-mode projection (`--with-nth`): the select widget's `source` pipeline
     // transforms each raw line into what's SHOWN and SEARCHED, while the original
@@ -1865,6 +1938,10 @@ pub fn run(
     std::mem::forget(fzf_hits);
     std::mem::forget(fzf_matched);
 
+    // Stop the helper threads while the terminal is still raw: a key reader
+    // still waiting once cooked mode is back would take typeahead meant for
+    // whatever runs next.
+    drop(session);
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
     if let Some(area) = inline {

@@ -12,6 +12,13 @@
 //! and destructors still run — which is what puts the terminal back after a TUI
 //! session that left through an exit.
 //!
+//! Threads are the other thing process exit used to clean up. Every thread an
+//! invocation starts that reads a shared descriptor — the stdin feed, the
+//! `/dev/tty` key reader — is stopped and joined before the invocation returns
+//! (`cli::StdinFeed`, `tui::SessionEnd`, both drop guards). One left running
+//! stays in the host: a reader still on fd 0 or the terminal takes the
+//! keystrokes meant for the shell prompt and for the next `arb --fzf`.
+//!
 //! zvcs carries a module of the same shape for the same reason
 //! (`src/extensions/src/hosted.rs`). They are deliberately separate: the flag is
 //! per-crate state, each crate's payload type is its own, and neither crate
