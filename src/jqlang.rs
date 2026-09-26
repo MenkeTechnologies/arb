@@ -2857,6 +2857,14 @@ fn eval_string(
     )
 }
 
+/// Every jq `@format` name. A leading `@` is otherwise an XPATH attribute
+/// step, so only these names are claimed for jq — `@href` still selects an
+/// attribute. The lexer, the body dispatcher and the xpath front-end all read
+/// this one list, so a format added here is claimed everywhere at once.
+pub const FORMAT_NAMES: &[&str] = &[
+    "base64", "base64d", "csv", "tsv", "json", "text", "html", "uri", "urid", "sh",
+];
+
 /// jq's `@name` format strings.
 fn apply_format(name: &str, v: &JqVal) -> R<String> {
     let v = v.bare();
@@ -2880,6 +2888,34 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
                 }
             }
             Ok(out)
+        }
+        // The inverse of `@uri`: `%XX` escapes decode to bytes, every other
+        // byte passes through (`+` is NOT a space), and the decoded bytes must
+        // be UTF-8. A stray `%`, a non-hex escape or a bad byte sequence is an
+        // error, as jq 1.8 has it.
+        "urid" => {
+            let s = render_raw(v);
+            let bad = || {
+                JqErr::msg(format!(
+                    "string ({}) is not a valid uri encoding",
+                    render(&JqVal::str(s.as_str()))
+                ))
+            };
+            let src = s.as_bytes();
+            let mut raw = Vec::with_capacity(src.len());
+            let mut i = 0;
+            while i < src.len() {
+                if src[i] == b'%' {
+                    let hex = src.get(i + 1..i + 3).ok_or_else(bad)?;
+                    let hex = std::str::from_utf8(hex).map_err(|_| bad())?;
+                    raw.push(u8::from_str_radix(hex, 16).map_err(|_| bad())?);
+                    i += 3;
+                } else {
+                    raw.push(src[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8(raw).map_err(|_| bad())
         }
         "csv" | "tsv" => {
             let JqVal::Arr(a) = v else {

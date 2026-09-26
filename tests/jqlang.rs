@@ -675,3 +675,24 @@ fn string_interpolation_varies_the_rightmost_generator_slowest() {
         (r#""x\(.a)y""#, &[r#"{"a":[1]}"#], Some(&["x[1]y"])),
     ]);
 }
+
+/// `@urid` (jq 1.8) is the inverse of `@uri`. It was not a format name at all,
+/// so a leading `@urid` fell through to the xpath front-end as an attribute
+/// step and answered NOTHING with a zero exit.
+#[test]
+fn urid_decodes_percent_escapes_and_refuses_bad_ones() {
+    run_pinned(&[
+        ("@urid", &[r#""%C3%A9%2b""#], Some(&["é+"])),
+        ("@urid", &[r#""a+b%20""#], Some(&["a+b "])),
+        ("@urid", &[r#""%6a%71""#], Some(&["jq"])),
+        (
+            "@uri | @urid",
+            &[r#""héllo wörld/?&""#],
+            Some(&["héllo wörld/?&"]),
+        ),
+        (r#"@urid "<\(.)>""#, &[r#""%41""#], Some(&["<A>"])),
+        ("@urid", &[r#""%4""#], None),
+        ("@urid", &[r#""%zz""#], None),
+        ("@urid", &[r#""%ff""#], None),
+    ]);
+}

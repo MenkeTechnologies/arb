@@ -51,10 +51,7 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     // attribute with one of these names is still reachable through the native
     // `attr` verb, which is not `@`-dispatched.)
     if let Some(rest) = s.strip_prefix('@') {
-        const JQ_FORMATS: [&str; 9] = [
-            "text", "json", "html", "uri", "csv", "tsv", "sh", "base64", "base64d",
-        ];
-        if JQ_FORMATS.contains(&rest) {
+        if crate::jqlang::FORMAT_NAMES.contains(&rest) {
             return Err(format!(
                 "xpath: `@{rest}` is a jq format string, which is outside the \
                  supported subset (a leading `@` here is an xpath attribute step; \

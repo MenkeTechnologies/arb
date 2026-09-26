@@ -2756,13 +2756,10 @@ fn set_grid(
 /// real and neither reports a problem. `@base64d ` was also absent from that
 /// list, so the trailing-space form of it had the same fate.
 fn opens_jq_format(name: &str) -> bool {
-    const FORMATS: [&str; 9] = [
-        "base64d", "base64", "csv", "tsv", "json", "text", "html", "uri", "sh",
-    ];
     let Some(rest) = name.strip_prefix('@') else {
         return false;
     };
-    FORMATS.iter().any(|f| {
+    crate::jqlang::FORMAT_NAMES.iter().any(|f| {
         rest.strip_prefix(f)
             .is_some_and(|tail| !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
     })

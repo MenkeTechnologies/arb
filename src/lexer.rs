@@ -598,11 +598,7 @@ const JQ_BARE: &[&str] = &[
     "modulemeta",
 ];
 
-/// jq's `@format` strings. A leading `@` is otherwise an XPATH attribute step,
-/// so only these names are claimed for jq — `@href` still selects an attribute.
-const JQ_FORMATS: &[&str] = &[
-    "base64", "base64d", "csv", "tsv", "json", "text", "html", "uri", "sh",
-];
+use crate::jqlang::FORMAT_NAMES as JQ_FORMATS;
 
 /// Does a jq literal begin at `cs[i]`, which is at command position inside a
 /// body block?
