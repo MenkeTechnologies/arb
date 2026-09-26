@@ -626,3 +626,26 @@ fn update_to_empty_deletes_every_matched_path() {
         ),
     ]);
 }
+
+/// `a // b` does NOT swallow an error raised by `a` — jq 1.8 propagates it, and
+/// `(a)? // b` is the spelling that suppresses. Swallowing it also hid real
+/// errors inside builtins defined with `//`: `join` with a non-string
+/// separator answered nothing instead of failing.
+#[test]
+fn alternative_operator_propagates_errors() {
+    run_pinned(&[
+        (".a // 3", &["1"], None),
+        ("[(1, error(\"x\")) // 3]", &["1"], None),
+        ("[error(\"x\") // 3]", &["1"], None),
+        ("(.a)? // 3", &["1"], Some(&["3"])),
+        (
+            "try (error(\"x\") // 1) catch \"caught\"",
+            &["1"],
+            Some(&["caught"]),
+        ),
+        ("[(null, false) // 3]", &["1"], Some(&["[3]"])),
+        ("[(null, 1, false, 2) // 3]", &["1"], Some(&["[1,2]"])),
+        ("[.a.b // 3]", &["{}"], Some(&["[3]"])),
+        ("join(.)", &[r#"["0","1"]"#], None),
+    ]);
+}

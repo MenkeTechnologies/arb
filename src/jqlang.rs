@@ -2332,25 +2332,20 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             }
             eval(it, b, input, env, &mut |rv| out(JqVal::Bool(rv.truthy())))
         }),
-        // `a // b`: every TRUTHY output of `a`, with its errors suppressed; only
-        // if there were none does `b` run.
+        // `a // b`: every TRUTHY output of `a`; only if there were none does
+        // `b` run. An error raised by `a` PROPAGATES — jq 1.8 does not suppress
+        // it (`1 | .a // 3` is "Cannot index number", not `3`); `(a)? // b` is
+        // how a program asks for suppression.
         Filter::Alt(a, b) => {
             let mut any = false;
-            let r = eval(it, a, input, env, &mut |v| {
+            eval(it, a, input, env, &mut |v| {
                 if v.truthy() {
                     any = true;
-                    out(v).map_err(wrap_downstream)
+                    out(v)
                 } else {
                     Ok(())
                 }
-            });
-            if let Err(e) = r {
-                match unwrap_downstream(e) {
-                    Ok(real) => return Err(real),
-                    Err(JqErr::Err(_)) => {}
-                    Err(other) => return Err(other),
-                }
-            }
+            })?;
             if any {
                 Ok(())
             } else {
@@ -3281,23 +3276,17 @@ fn eval_paths(
             env,
             out,
         ),
+        // The path form of `a // b`: errors in `a` propagate here too.
         Filter::Alt(a, b) => {
             let mut any = false;
-            let r = eval_paths(it, a, input, pre, val, env, &mut |p, v| {
+            eval_paths(it, a, input, pre, val, env, &mut |p, v| {
                 if v.truthy() {
                     any = true;
-                    out(p, v).map_err(wrap_downstream)
+                    out(p, v)
                 } else {
                     Ok(())
                 }
-            });
-            if let Err(e) = r {
-                match unwrap_downstream(e) {
-                    Ok(real) => return Err(real),
-                    Err(JqErr::Err(_)) => {}
-                    Err(other) => return Err(other),
-                }
-            }
+            })?;
             if any {
                 Ok(())
             } else {
