@@ -572,3 +572,57 @@ fn a_non_json_line_is_jqs_string() {
     assert_eq!(arb_run("ascii_upcase", &["abc"]).unwrap(), vec!["ABC"]);
     assert_eq!(arb_run("length", &["abc"]).unwrap(), vec!["3"]);
 }
+
+/// A probe with jq 1.8.2's answer RECORDED: `Some(lines)` for an answer, `None`
+/// for a refusal. The recorded answer is asserted unconditionally, so a CI box
+/// without `jq` still catches a regression; when the 1.8 reference IS present
+/// the probe is also byte-diffed live, so a stale recording cannot hide.
+type Pinned<'a> = (&'a str, &'a [&'a str], Option<&'a [&'a str]>);
+
+fn run_pinned(probes: &[Pinned]) {
+    for (filter, input, want) in probes {
+        match (arb_run(filter, input), want) {
+            (Ok(got), Some(w)) => assert_eq!(got, *w, "`{filter}` over {input:?}"),
+            (Err(_), None) => {}
+            (Ok(got), None) => {
+                panic!("`{filter}` over {input:?}: jq 1.8 refuses, arb gave {got:?}")
+            }
+            (Err(e), Some(w)) => {
+                panic!("`{filter}` over {input:?}: arb refused ({e}), jq 1.8 gives {w:?}")
+            }
+        }
+    }
+    if reference_ok() {
+        for (filter, input, _) in probes {
+            same(filter, input);
+        }
+    }
+}
+
+/// `path |= empty` deletes EVERY path whose update produced nothing. jq's
+/// `_modify` collects them and deletes once at the end; deleting as it went
+/// shifted each later array index down, so every other element survived.
+#[test]
+fn update_to_empty_deletes_every_matched_path() {
+    run_pinned(&[
+        (".[] |= empty", &["[1,2,3]"], Some(&["[]"])),
+        (
+            "(.[] | select(. >= 2)) |= empty",
+            &["[1,5,3,0,7]"],
+            Some(&["[1,0]"]),
+        ),
+        (
+            "(.[] | select(. > 2)) |= empty",
+            &["[1,2,3,4]"],
+            Some(&["[1,2]"]),
+        ),
+        (".a[] |= empty", &[r#"{"a":[1,2]}"#], Some(&[r#"{"a":[]}"#])),
+        ("map_values(empty)", &["[1,2]"], Some(&["[]"])),
+        (".[] |= empty", &[r#"{"a":1,"b":2}"#], Some(&["{}"])),
+        (
+            ".[] |= (if . > 1 then empty else . * 10 end)",
+            &["[1,2,1,3]"],
+            Some(&["[10,10]"]),
+        ),
+    ]);
+}

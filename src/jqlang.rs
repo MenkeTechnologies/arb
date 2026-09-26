@@ -3773,6 +3773,11 @@ fn eval_assign(
             paths.push(p);
             Ok(())
         })?;
+        // jq's `_modify` DELETES a path whose update produced nothing — but it
+        // collects those paths and deletes them all at the END. Deleting as it
+        // went shifted every later array index down by one, so
+        // `[1,2,3] | .[] |= empty` answered `[2]` instead of `[]`.
+        let mut dead = Vec::new();
         for p in paths {
             let old = get_path(&cur, &p)?;
             let mut first = None;
@@ -3782,11 +3787,13 @@ fn eval_assign(
                 }
                 Ok(())
             })?;
-            cur = match first {
-                // jq's `_modify` DELETES a path whose update produced nothing.
-                None => del_paths(&cur, vec![p])?,
-                Some(v) => set_path(&cur, &p, v)?,
-            };
+            match first {
+                None => dead.push(p),
+                Some(v) => cur = set_path(&cur, &p, v)?,
+            }
+        }
+        if !dead.is_empty() {
+            cur = del_paths(&cur, dead)?;
         }
         return out(cur);
     }
