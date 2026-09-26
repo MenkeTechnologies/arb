@@ -2797,8 +2797,10 @@ fn split_str(s: &str, sep: &str) -> Vec<JqVal> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Build an interpolated string. Each `\(…)` is a GENERATOR, so `"\(1,2)"`
-/// yields two strings; the pieces are walked left to right with the leftmost
-/// interpolation varying slowest, which is the order jq emits.
+/// yields two strings. jq compiles the pieces as a chain of `+` whose RIGHT
+/// operand is evaluated outermost, so the RIGHTMOST interpolation varies
+/// slowest: `"\(1,2)-\(3,4)"` is `1-3`, `2-3`, `1-4`, `2-4`. The pieces are
+/// therefore walked right to left, each prepended to the suffix built so far.
 /// Everything a string build carries unchanged from piece to piece.
 struct StrBuild<'a> {
     it: &'a Interp,
@@ -2817,13 +2819,13 @@ fn eval_string(
     out: Sink,
 ) -> R<()> {
     fn go(b: &StrBuild, i: usize, acc: &str, out: Sink) -> R<()> {
-        let Some(p) = b.pieces.get(i) else {
+        let Some(i) = i.checked_sub(1) else {
             return out(JqVal::str(acc));
         };
-        match p {
+        match &b.pieces[i] {
             StrPiece::Lit(s) => {
-                let next = format!("{acc}{s}");
-                go(b, i + 1, &next, out)
+                let next = format!("{s}{acc}");
+                go(b, i, &next, out)
             }
             StrPiece::Interp(src) => {
                 // The interpolation's source is parsed here rather than at lex
@@ -2835,8 +2837,8 @@ fn eval_string(
                         Some(name) => apply_format(name, &v)?,
                         None => render_raw(&v),
                     };
-                    let next = format!("{acc}{piece}");
-                    go(b, i + 1, &next, out)
+                    let next = format!("{piece}{acc}");
+                    go(b, i, &next, out)
                 })
             }
         }
@@ -2849,7 +2851,7 @@ fn eval_string(
             input,
             env,
         },
-        0,
+        pieces.len(),
         "",
         out,
     )

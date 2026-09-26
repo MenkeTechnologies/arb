@@ -649,3 +649,29 @@ fn alternative_operator_propagates_errors() {
         ("join(.)", &[r#"["0","1"]"#], None),
     ]);
 }
+
+/// Interpolation is a chain of `+` whose RIGHT operand is evaluated outermost,
+/// so with several generator interpolations the RIGHTMOST varies slowest —
+/// the same order `(1,2) + (10,20)` produces.
+#[test]
+fn string_interpolation_varies_the_rightmost_generator_slowest() {
+    run_pinned(&[
+        (
+            r#""\(1,2)-\(3,4)""#,
+            &["null"],
+            Some(&["1-3", "2-3", "1-4", "2-4"]),
+        ),
+        (
+            r#""\(1,2)\(3,4)\(5,6)""#,
+            &["null"],
+            Some(&["135", "235", "145", "245", "136", "236", "146", "246"]),
+        ),
+        (
+            r#"@json "a\(1,2)b\(3,4)""#,
+            &["null"],
+            Some(&["a1b3", "a2b3", "a1b4", "a2b4"]),
+        ),
+        ("[(1,2) + (10,20)]", &["null"], Some(&["[11,12,21,22]"])),
+        (r#""x\(.a)y""#, &[r#"{"a":[1]}"#], Some(&["x[1]y"])),
+    ]);
+}
