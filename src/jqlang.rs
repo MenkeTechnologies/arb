@@ -2786,8 +2786,10 @@ fn split_str(s: &str, sep: &str) -> Vec<JqVal> {
     if s.is_empty() {
         return Vec::new();
     }
+    // An empty separator splits between every character, as jq 1.8 does
+    // (`"ab" | split("")` is `["a","b"]`, and so is `"ab" / ""`).
     if sep.is_empty() {
-        return vec![JqVal::str(s)];
+        return s.chars().map(|c| JqVal::str(c.to_string())).collect();
     }
     s.split(sep).map(JqVal::str).collect()
 }
@@ -4075,7 +4077,7 @@ fn builtin(
         }
         ("tonumber", 0) => match input {
             JqVal::Num(..) => out(input.clone()),
-            JqVal::Str(s) => match s.trim().parse::<f64>() {
+            JqVal::Str(s) => match s.parse::<f64>() {
                 Ok(n) => out(JqVal::num(n)),
                 Err(_) => Err(JqErr::msg(format!(
                     "{}{} cannot be parsed as a number",
@@ -5086,19 +5088,19 @@ def from_entries: reduce .[] as $x ({};
         ($x | if has("value") then .value elif has("Value") then .Value else null end) });
 def with_entries(f): to_entries | map(f) | from_entries;
 def add: reduce .[] as $x (null; . + $x);
-def add(f): reduce (.[]|f) as $x (null; . + $x);
+def add(f): reduce f as $x (null; . + $x);
 def join($x): reduce .[] as $i (null;
     (if . == null then "" else . + $x end) +
     ($i | if . == null then "" elif type == "string" then . else tojson end)) // "";
 def flatten: _flatten(1e9);
 def flatten($x): _flatten($x);
-def ltrimstr($left): if ($left|type) == "string" and startswith($left) then .[($left|length):] else . end;
-def rtrimstr($right): if ($right|type) == "string" and endswith($right) then .[:length - ($right|length)] else . end;
+def ltrimstr($left): if startswith($left) then .[($left|length):] else . end;
+def rtrimstr($right): if endswith($right) then .[:length - ($right|length)] else . end;
 def range($x): range(0; $x);
 def isempty(g): label $go | (g|false, break $go), true;
 def first(f): label $out | (f | ., break $out);
 def first: .[0];
-def last(f): reduce f as $x (null; $x);
+def last(f): reduce f as $x (null; [$x]) | values | .[0];
 def last: .[-1];
 def any: reduce .[] as $x (false; . or $x);
 def all: reduce .[] as $x (true; . and $x);
@@ -5108,9 +5110,10 @@ def any(g; y): isempty(first(g|select(y))) | not;
 def all(g; y): isempty(first(g|y|select(.|not)));
 def limit($n; f): if $n > 0 then label $out | foreach f as $item (0; .+1; $item, if . >= $n then break $out else empty end)
                   elif $n == 0 then empty
-                  else f end;
+                  else error("limit doesn't support negative count") end;
+def skip($n; f): if $n < 0 then error("skip doesn't support negative count") else foreach f as $item (-1; . + 1; if . >= $n then $item else empty end) end;
 def nth($n): .[$n];
-def nth($n; f): if $n < 0 then error("Out of bounds negative array index") else last(limit($n + 1; f)) end;
+def nth($n; f): if $n < 0 then error("Out of bounds negative array index") else first(skip($n; f)) end;
 def until(cond; update): def _until: if cond then . else (update | _until) end; _until;
 def while(cond; update): def _while: if cond then ., (update | _while) else empty end; _while;
 def repeat(f): def _repeat: f | (., _repeat); _repeat;
@@ -5123,7 +5126,7 @@ def walk(f): def w: if type == "object" then map_values(w) elif type == "array" 
 def unique: unique_by(.);
 def del(f): delpaths([path(f)]);
 def paths: path(..) | select(length > 0);
-def paths(node_filter): . as $dot | paths | select(. as $p | $dot | getpath($p) | node_filter);
+def paths(node_filter): path(..|select(node_filter)) | select(length > 0);
 def leaf_paths: paths(scalars);
 def pick(pathexps): . as $top | reduce path(pathexps) as $p (null; setpath($p; $top | getpath($p)));
 def transpose: if . == [] then [] else . as $in | (map(length) | max) as $max
@@ -5134,7 +5137,6 @@ def trimstr($val): ltrimstr($val) | rtrimstr($val);
 def toboolean: if type == "boolean" then .
   elif type == "string" and (. == "true" or . == "false") then . == "true"
   else error("\(type) (\(tojson)) cannot be parsed as a boolean") end;
-def skip($n; f): foreach f as $item (-1; . + 1; if . >= $n then $item else empty end);
 def JOIN($idx; idx_expr): [.[] | [., $idx[idx_expr]]];
 def JOIN($idx; stream; idx_expr): stream | [., $idx[idx_expr]];
 def JOIN($idx; stream; idx_expr; join_expr): stream | [., $idx[idx_expr]] | join_expr;

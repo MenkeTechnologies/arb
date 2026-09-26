@@ -696,3 +696,44 @@ fn urid_decodes_percent_escapes_and_refuses_bad_ones() {
         ("@urid", &[r#""%ff""#], None),
     ]);
 }
+
+/// jq 1.8 builtin semantics that arb's prelude still had in their 1.6/1.7
+/// shape: each row is a place the two engines answered differently.
+#[test]
+fn builtins_follow_jq_18_semantics() {
+    run_pinned(&[
+        // `add(f)` reduces `f` itself, not `.[] | f`.
+        ("add(.[])", &[r#"{"a":1,"b":2}"#], Some(&["3"])),
+        ("add(1, 2)", &["null"], Some(&["3"])),
+        ("add(empty)", &["null"], Some(&["null"])),
+        // `ltrimstr`/`rtrimstr` error on a non-string argument.
+        ("ltrimstr(1)", &[r#""a""#], None),
+        ("rtrimstr(1)", &[r#""a""#], None),
+        ("ltrimstr(\"a\")", &[r#""abc""#], Some(&["bc"])),
+        // `last(empty)` yields nothing, like `first(empty)`.
+        ("[last(empty)]", &["null"], Some(&["[]"])),
+        ("last(1, 2)", &["null"], Some(&["2"])),
+        ("[last(null)]", &["null"], Some(&["[null]"])),
+        // `nth` past the end is empty, not the last element.
+        ("[nth(5; 1, 2)]", &["null"], Some(&["[]"])),
+        ("nth(1; 1, 2, 3)", &["null"], Some(&["2"])),
+        // Negative counts are errors.
+        ("[limit(-1; 1, 2)]", &["null"], None),
+        ("[skip(-1; 1, 2)]", &["null"], None),
+        // `split("")` splits between characters.
+        (r#"split("")"#, &[r#""héy""#], Some(&[r#"["h","é","y"]"#])),
+        (r#". / """#, &[r#""ab""#], Some(&[r#"["a","b"]"#])),
+        (r#"split("")"#, &[r#""""#], Some(&["[]"])),
+        // `tonumber` no longer trims whitespace.
+        ("tonumber", &[r#"" 1 ""#], None),
+        ("tonumber", &[r#""1 ""#], None),
+        ("tonumber", &[r#""1.5""#], Some(&["1.5"])),
+        // `paths(f)` runs `f` on every node `..` visits, the root included.
+        ("[paths(.a)]", &["1"], None),
+        (
+            "[paths(type == \"number\")]",
+            &[r#"{"a":1,"b":[2]}"#],
+            Some(&[r#"[["a"],["b",0]]"#]),
+        ),
+    ]);
+}
