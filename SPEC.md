@@ -1057,8 +1057,9 @@ constraint is unsatisfiable. The module resolver reads `~/.arb/pkg` as the §17
 the index clone, upserts the package's `{repo, version, desc}` entry into
 `index.json`, commits, and pushes to the index remote (default
 [`github.com/MenkeTechnologies/arb-registry`](https://github.com/MenkeTechnologies/arb-registry)).
-With write access the entry lands directly; without it the commit stays local and
-arb prints the fork+PR flow — it never falsely claims a push succeeded.
+With write access the entry lands directly; when the push fails the commit stays
+local and arb prints git's reason with the fork+PR flow -- it never falsely
+claims a push succeeded, nor assumes every failure is a denied one.
 `GIT_URL` defaults to the package repo's `origin` remote. A package declaring
 `[exports.native]` is rejected (native/cdylib loading isn't built — never
 installed with an inert native half). Full multi-version semver *resolution*
