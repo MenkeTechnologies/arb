@@ -5161,7 +5161,7 @@ def bsearch($target):
       else (-1 - .[0]) end
   end;
 def toarray: if type == "array" then . else [.] end;
-def abs: if type == "number" and . < 0 then - . else . end;
+def abs: if . < 0 then - . else . end;
 def isvalid(f): try (f|true) catch false;
 def indices($i): if type == "array" and ($i|type) == "array" then .[$i]
                  elif type == "array" then .[[$i]]
