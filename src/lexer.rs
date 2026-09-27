@@ -637,7 +637,16 @@ fn jq_literal_at(cs: &[char], i: usize) -> bool {
             j += 1;
         }
         let name: String = cs[start..j].iter().collect();
-        return JQ_FORMATS.contains(&name.as_str());
+        // `@name "…"` is a jq FORMAT STRING whatever the name: jq applies the
+        // format to the interpolations and decides at run time whether it knows
+        // it (`@foo "lit"` is `"lit"`, and `@foo "\(.)"` is `foo is not a valid
+        // format`). An xpath attribute step is never followed by a string, so
+        // nothing is taken from xpath.
+        let mut k = j;
+        while k < cs.len() && matches!(cs[k], ' ' | '\t') {
+            k += 1;
+        }
+        return JQ_FORMATS.contains(&name.as_str()) || (j > start && cs.get(k) == Some(&'"'));
     }
     while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_') {
         j += 1;

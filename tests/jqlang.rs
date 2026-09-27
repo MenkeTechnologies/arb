@@ -849,3 +849,26 @@ fn base64d_decodes_and_refuses_as_jq_does() {
         (r#"map(@base64d | explode)"#, &[r#"["/w==","wKA=","7aCA","4oKs"]"#]),
     ]);
 }
+
+/// Two spellings that reached the wrong engine. `.1` is jq's number `0.1`, and
+/// `.a.1` a syntax error, because a jq identifier cannot start with a digit --
+/// the path layer read both as a key named `1` and answered `null` and `7`.
+/// `@NAME "…"` is a format string whatever the name, and jq decides at run
+/// time whether it knows the format -- `@foo "lit"` is `"lit"` -- where arb
+/// sent every name outside the nine it knows to the xpath front-end, which
+/// refused a string after an attribute step.
+#[test]
+fn a_dot_digit_is_a_number_and_any_format_string_is_jq() {
+    let obj: &[&str] = &[r#"{"a":{"1":7},"a.1":3}"#];
+    run_table(&[
+        (".1", obj),
+        (".5 * 2", obj),
+        (".a.1", obj),
+        (r#".["a.1"]"#, obj),
+        (r#".a["1"]"#, obj),
+        (r#"@foo "lit""#, obj),
+        (r#"@foo  "x""#, obj),
+        (r#"[@foo "lit", 1]"#, obj),
+        (r#"@foo "a\(.)b""#, obj),
+    ]);
+}

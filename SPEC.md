@@ -540,8 +540,11 @@ continuation (`//a; @href`) rather than XPath's `attribute::` axis from the
 document node, which is the one place the pipeline shape shows through: an
 expression that is a RELATIVE location path is evaluated per line so it composes
 with the step before it, and every other expression is one question about the
-document, answered once. **Anything that is not well-formed XPath is a hard
-error** (`xpath: …`) anchored to the offending verb, raised at BUILD time before
+document, answered once. A leading `@` belongs to jq instead when it names
+one of jq's formats (`@base64`, `@csv`, …) or is followed by a string, which
+makes it a format string whatever the name: `@foo "lit"` answers `lit` as jq
+does, and `@foo "\(.)"` fails as jq's `foo is not a valid format`. **Anything
+that is not well-formed XPath is a hard error** (`xpath: …`) anchored to the offending verb, raised at BUILD time before
 any input is read — never silently reinterpreted.
 
 Where a jq builtin shares a spelling with an arb NATIVE verb (`sort`, `min`,

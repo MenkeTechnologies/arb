@@ -192,8 +192,16 @@ fn fn_call<'a>(s: &'a str, name: &str) -> Option<&'a str> {
 /// whole string rejected keys holding any char it did not list and then re-routed
 /// the stage to the arithmetic parser, which failed on the `[`.
 fn is_pure_path(s: &str) -> bool {
+    // `.1` is a NUMBER in jq (`0.1`), and `.a.1` a syntax error rather than a
+    // key named `1`: a jq identifier cannot start with a digit. Neither is a
+    // path. Only outside a subscript, where `.["a.1"]` is a key.
     let mut depth = 0i32;
+    let mut after_dot = false;
     for c in s.chars() {
+        if depth == 0 && after_dot && c.is_ascii_digit() {
+            return false;
+        }
+        after_dot = depth == 0 && c == '.';
         match c {
             '[' => depth += 1,
             ']' => depth -= 1,

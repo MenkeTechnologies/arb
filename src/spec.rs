@@ -2755,10 +2755,18 @@ fn set_grid(
 /// answering as xpath is the worst shape of divergence, because both engines are
 /// real and neither reports a problem. `@base64d ` was also absent from that
 /// list, so the trailing-space form of it had the same fate.
+///
+/// Any NAME followed by a string is a jq format string too (`@foo "lit"`): jq
+/// decides at run time whether it knows the format, and an xpath attribute
+/// step is never followed by a string.
 fn opens_jq_format(name: &str) -> bool {
     let Some(rest) = name.strip_prefix('@') else {
         return false;
     };
+    let after = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+    if after.len() < rest.len() && after.trim_start().starts_with('"') {
+        return true;
+    }
     crate::jqlang::FORMAT_NAMES.iter().any(|f| {
         rest.strip_prefix(f)
             .is_some_and(|tail| !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
