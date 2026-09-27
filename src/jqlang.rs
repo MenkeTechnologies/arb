@@ -2945,9 +2945,12 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
         "json" => Ok(render(v)),
         "base64" => Ok(b64_encode(render_raw(v).as_bytes())),
         "base64d" => {
-            let raw = b64_decode(&render_raw(v))
-                .ok_or_else(|| JqErr::msg(format!("{} is not valid base64 data", render(v))))?;
-            Ok(String::from_utf8_lossy(&raw).into_owned())
+            let text = render_raw(v);
+            let raw = b64_decode(&text).map_err(|why| {
+                let s = JqVal::str(text.as_str());
+                JqErr::msg(format!("{}{} {why}", s.type_name(), paren_of(&s)))
+            })?;
+            Ok(jq_utf8_lossy(&raw))
         }
         "uri" => {
             let s = render_raw(v);
@@ -3084,36 +3087,79 @@ fn b64_encode(data: &[u8]) -> String {
     out
 }
 
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    let mut out = Vec::new();
-    // A base64 group is 2, 3 or 4 characters; ONE leftover character encodes no
-    // byte at all, and the reference rejects exactly that — `@base64d` on
-    // "hello" (5 significant characters) is
-    // `string ("hello") trailing base64 byte found`, while 2, 3, 6 and 7 all
-    // decode with their spare bits discarded. Counted before decoding because
-    // the loop cannot tell a short final group from a complete one.
-    let significant = s
-        .bytes()
-        .filter(|c| !matches!(c, b'=' | b'\n' | b'\r'))
-        .count();
-    if significant % 4 == 1 {
-        return None;
-    }
-    for c in s.bytes() {
-        if c == b'=' || c == b'\n' || c == b'\r' {
-            continue;
-        }
-        let v = B64.iter().position(|&x| x == c)? as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
+/// `@base64d`'s decoder, ported from jq 1.8.2 `src/builtin.c:f_format`.
+///
+/// Decoding stops at the first `=`, whatever follows it (`"YW=Jj"` is `a`);
+/// any byte outside the alphabet -- a newline included -- is `is not valid
+/// base64 data`; and one character left over after the last whole group is
+/// `trailing base64 byte found`, while two or three decode with their spare
+/// bits dropped. The error is the reason, for the caller to name the input.
+fn b64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
+    let mut out = Vec::with_capacity(s.len() / 4 * 3 + 2);
+    let (mut code, mut held) = (0u32, 0u32);
+    for c in s.bytes().take_while(|&c| c != b'=') {
+        let v = B64.iter().position(|&x| x == c).ok_or("is not valid base64 data")? as u32;
+        code = (code << 6) | v;
+        held += 1;
+        if held == 4 {
+            out.extend_from_slice(&[(code >> 16) as u8, (code >> 8) as u8, code as u8]);
+            (code, held) = (0, 0);
         }
     }
-    Some(out)
+    match held {
+        3 => out.extend_from_slice(&[(code >> 10) as u8, (code >> 2) as u8]),
+        2 => out.push((code >> 4) as u8),
+        1 => return Err("trailing base64 byte found"),
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// Bytes to a string the way jq 1.8's `jv_string_sized` repairs them, which is
+/// not `String::from_utf8_lossy`: jq's `jvp_utf8_next` writes one U+FFFD per
+/// bad sequence, and a lead byte whose sequence runs past the END takes every
+/// remaining byte with it -- `9E E9 65` is two replacement characters in jq,
+/// where the Rust repair keeps the `e`.
+fn jq_utf8_lossy(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let first = b[i];
+        let length = match first {
+            0x00..=0x7F => {
+                out.push(first as char);
+                i += 1;
+                continue;
+            }
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            // A continuation byte, or a lead byte no sequence starts with.
+            _ => {
+                out.push('\u{FFFD}');
+                i += 1;
+                continue;
+            }
+        };
+        if i + length > b.len() {
+            out.push('\u{FFFD}');
+            break;
+        }
+        match std::str::from_utf8(&b[i..i + length]) {
+            Ok(s) => {
+                out.push_str(s);
+                i += length;
+            }
+            Err(_) => {
+                out.push('\u{FFFD}');
+                // Consume up to the first byte that is not a continuation; an
+                // overlong or surrogate sequence of whole length goes entirely.
+                let bad = (1..length).find(|&k| b[i + k] & 0xC0 != 0x80).unwrap_or(length);
+                i += bad;
+            }
+        }
+    }
+    out
 }
 
 /// `{k: v, …}`. Both the key and the value are generators, and the FIRST entry

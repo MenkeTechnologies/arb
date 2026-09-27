@@ -831,3 +831,21 @@ fn fromjson_reads_non_finite_literals() {
         (r#""nan" | fromjson | isnan"#, &["null"]),
     ]);
 }
+
+/// `@base64d` as jq 1.8.2's `f_format` decodes: it stops at the first `=`,
+/// refuses any byte outside the alphabet (a newline included) with the input
+/// named, reports one leftover character as `trailing base64 byte found`, and
+/// repairs bad UTF-8 the way `jv_string_sized` does -- a sequence cut off by
+/// the end takes the rest with it, so `null | @base64d` is two U+FFFD, not
+/// two and an `e`.
+#[test]
+fn base64d_decodes_and_refuses_as_jq_does() {
+    run_table(&[
+        (
+            r#"map(try @base64d catch .)"#,
+            &[r#"["YW=Jj","YWJj\n","YW Jj","Y","hello","!!!","YQ=","YWJj===="]"#],
+        ),
+        ("@base64d | explode", &["null"]),
+        (r#"map(@base64d | explode)"#, &[r#"["/w==","wKA=","7aCA","4oKs"]"#]),
+    ]);
+}
