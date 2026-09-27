@@ -5113,7 +5113,7 @@ def add: reduce .[] as $x (null; . + $x);
 def add(f): reduce f as $x (null; . + $x);
 def join($x): reduce .[] as $i (null;
     (if . == null then "" else . + $x end) +
-    ($i | if . == null then "" elif type == "string" then . else tojson end)) // "";
+    ($i | if . == null then "" elif type == "boolean" or type == "number" then tojson else . end)) // "";
 def flatten: _flatten(1e9);
 def flatten($x): _flatten($x);
 def ltrimstr($left): if startswith($left) then .[($left|length):] else . end;

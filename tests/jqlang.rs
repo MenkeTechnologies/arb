@@ -805,3 +805,15 @@ fn nan_compares_below_every_number_itself_included() {
         ("[{a: nan}, {a: 1}] | sort_by(.a) | map(.a)", &["null"]),
     ]);
 }
+
+/// `join` stringifies only booleans and numbers, as jq 1.8's definition does;
+/// an array or object element is ADDED to the string and so raises. arb ran
+/// every non-string through `tojson` and joined `[[1]]` to `"[1]"`.
+#[test]
+fn join_refuses_an_array_or_object_element() {
+    run_table(&[
+        (r#"try join(",") catch ."#, &["[[1]]"]),
+        (r#"try join(",") catch ."#, &[r#"["a",{"b":1}]"#]),
+        (r#"join("-")"#, &[r#"[true,1.5,null,"x",1.000]"#]),
+    ]);
+}
