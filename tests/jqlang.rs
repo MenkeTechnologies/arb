@@ -817,3 +817,17 @@ fn join_refuses_an_array_or_object_element() {
         (r#"join("-")"#, &[r#"[true,1.5,null,"x",1.000]"#]),
     ]);
 }
+
+/// `fromjson` reads the non-finite literals jq's reader takes -- `nan`, `inf`,
+/// `infinity`, any case, signed -- and still refuses `nan1`. It refused all of
+/// them.
+#[test]
+fn fromjson_reads_non_finite_literals() {
+    run_table(&[
+        (
+            r#"["nan", "[nan,1]", "{\"a\":NaN}", "-nan", "Infinity", "[-Infinity]", "inf", "nan1"] | map(try fromjson catch "err")"#,
+            &["null"],
+        ),
+        (r#""nan" | fromjson | isnan"#, &["null"]),
+    ]);
+}
