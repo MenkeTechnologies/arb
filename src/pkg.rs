@@ -426,11 +426,14 @@ pub fn serialize_index(idx: &Index) -> String {
 }
 
 /// The result of a publish: the entry was pushed to the index remote, or the
-/// commit was made locally but the push was denied (no write access → PR flow).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// commit was made locally and not pushed -- `push_error` is what `git push`
+/// said (`None` when no push was asked for). A denied push (no write access)
+/// is the common case and leads to the fork + PR flow, but it is not the only
+/// one, so the reason is carried rather than assumed.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Published {
     Pushed,
-    CommittedLocally,
+    CommittedLocally { push_error: Option<String> },
 }
 
 /// Env-free publish core (the unit-test seam): validate the package in `pkg_dir`,
@@ -482,11 +485,11 @@ pub fn publish_with(
     if push {
         match run_git(&["push"], Some(reg_dir)) {
             Ok(_) => Ok((Published::Pushed, m)),
-            // No write access — the commit stays local for a fork+PR.
-            Err(_) => Ok((Published::CommittedLocally, m)),
+            // The commit stays local (for a fork + PR when access was denied).
+            Err(e) => Ok((Published::CommittedLocally { push_error: Some(e) }, m)),
         }
     } else {
-        Ok((Published::CommittedLocally, m))
+        Ok((Published::CommittedLocally { push_error: None }, m))
     }
 }
 
@@ -511,12 +514,14 @@ pub fn publish(dir: &Path, repo: Option<&str>) -> Result<(), String> {
         Published::Pushed => {
             eprintln!("arb: published `{}` v{} to {url}", m.name, m.version);
         }
-        Published::CommittedLocally => {
+        Published::CommittedLocally { push_error } => {
             eprintln!(
-                "arb: validated + committed `{}` v{} to the local index, but the push to {url} was denied.",
-                m.name, m.version
+                "arb: validated + committed `{}` v{} to the local index, but the push to {url} failed: {}",
+                m.name,
+                m.version,
+                push_error.as_deref().unwrap_or("not attempted")
             );
-            eprintln!("arb: you likely lack write access — fork the index and open a PR:");
+            eprintln!("arb: without write access to it, fork the index and open a PR:");
             eprintln!("arb:   gh repo fork {url} --clone && cd arb-registry \\");
             eprintln!("arb:     && git fetch {} && git cherry-pick FETCH_HEAD && git push && gh pr create", reg.display());
         }

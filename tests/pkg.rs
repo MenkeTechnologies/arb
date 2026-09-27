@@ -556,3 +556,41 @@ fn install_walks_deps_of_a_preexisting_mid_tree_package() {
     );
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn publish_reports_why_a_push_failed() {
+    use arb::pkg::{publish_with, Published};
+    if !have_git() {
+        return;
+    }
+    let root = tmp("publish-nopush");
+    let reg_url = make_bare_registry(&root, "{}\n");
+    let pkg = root.join("mypkg");
+    make_pkg_repo(
+        &pkg,
+        "mypkg",
+        "[package]\nname = \"mypkg\"\nversion = \"0.2.0\"\n",
+        "tail .t\n",
+    );
+    let reg = root.join("regclone");
+    git_ok(&root, &["clone", "-q", &reg_url, &reg.to_string_lossy()]);
+    git_ok(&reg, &["config", "user.email", "pub@e"]);
+    git_ok(&reg, &["config", "user.name", "pub"]);
+    // Fetching still works; only the push has nowhere to go.
+    let nowhere = root.join("no-such-remote.git");
+    git_ok(
+        &reg,
+        &["remote", "set-url", "--push", "origin", &nowhere.to_string_lossy()],
+    );
+    let (outcome, _) =
+        publish_with(&pkg, "https://example.com/mypkg.git", &reg, &reg_url, true).unwrap();
+    // The commit is made and kept, and the reason travels with it -- it used
+    // to be dropped, and every failure was reported as "no write access".
+    match outcome {
+        Published::CommittedLocally { push_error: Some(e) } => {
+            assert!(!e.trim().is_empty(), "an empty reason")
+        }
+        other => panic!("expected a local commit with a reason, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
