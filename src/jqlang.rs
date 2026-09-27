@@ -4107,12 +4107,17 @@ fn builtin(
             };
             let mut s = String::with_capacity(a.len());
             for e in a.iter() {
-                let n = e
-                    .as_f64()
-                    .ok_or_else(|| JqErr::msg("Unicode codepoint must be numeric"))?;
-                s.push(char::from_u32(n as u32).ok_or_else(|| {
-                    JqErr::msg(format!("Invalid codepoint literal {}", fmt_num(n)))
-                })?);
+                let n = e.as_f64().ok_or_else(|| {
+                    JqErr::msg(format!(
+                        "{}{} can't be imploded, unicode codepoint needs to be numeric",
+                        e.type_name(),
+                        paren_of(e)
+                    ))
+                })?;
+                // jq 1.8 writes U+FFFD for a code point that is not a Unicode
+                // scalar value -- negative, a surrogate, or past U+10FFFF.
+                let scalar = (0.0..=f64::from(u32::MAX)).contains(&n).then(|| n as u32);
+                s.push(scalar.and_then(char::from_u32).unwrap_or('\u{FFFD}'));
             }
             out(JqVal::str(s))
         }
