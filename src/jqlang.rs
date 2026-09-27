@@ -2619,23 +2619,29 @@ fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
         .collect()
 }
 
+/// The `[start, end)` a slice `.[lo:hi]` of `len` items covers, as jq 1.8's
+/// `parse_slice` computes it: a negative bound counts from the end, both are
+/// clamped to `0..=len`, a fractional start is truncated and a fractional end
+/// rounded UP (`[1,2,3,4,5] | .[1.2:3.5]` is `[2,3,4]`), and an end before the
+/// start is the start. A bound that is not a number is open. Reading, assigning
+/// and deleting a slice all go through here.
+fn slice_bounds(lo: Option<&JqVal>, hi: Option<&JqVal>, len: usize) -> (usize, usize) {
+    let conv = |b: Option<&JqVal>, open: f64| match b.map(JqVal::bare) {
+        Some(JqVal::Num(n, _)) => {
+            let n = if *n < 0.0 { n + len as f64 } else { *n };
+            n.clamp(0.0, len as f64)
+        }
+        _ => open,
+    };
+    let s = conv(lo, 0.0) as usize;
+    let e = conv(hi, len as f64).ceil() as usize;
+    (s, e.max(s))
+}
+
 /// jq's slice: clamped, negative-from-the-end, over arrays and strings, with
 /// `null` slicing to `null`.
 fn slice_value(v: &JqVal, lo: &JqVal, hi: &JqVal) -> R<JqVal> {
-    let bounds = |len: usize| -> (usize, usize) {
-        let conv = |b: &JqVal, dflt: f64| -> f64 {
-            match b.bare() {
-                JqVal::Num(n, _) => {
-                    let n = if *n < 0.0 { n + len as f64 } else { *n };
-                    n.clamp(0.0, len as f64)
-                }
-                _ => dflt,
-            }
-        };
-        let s = conv(lo, 0.0) as usize;
-        let e = conv(hi, len as f64) as usize;
-        (s, e.max(s))
-    };
+    let bounds = |len: usize| slice_bounds(Some(lo), Some(hi), len);
     match v.bare() {
         JqVal::Null => Ok(JqVal::Null),
         JqVal::Arr(a) => {
@@ -3639,23 +3645,17 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
             let a = match v {
                 JqVal::Arr(a) => a.as_ref().clone(),
                 JqVal::Null => Vec::new(),
+                JqVal::Str(_) => return Err(JqErr::msg("Cannot update string slices")),
                 other => {
                     return Err(JqErr::msg(format!(
-                        "Cannot update field at object index of {}",
-                        other.type_name()
+                        "Cannot index {} with object ({{\"start\":{},\"end\":{}}})",
+                        other.type_name(),
+                        render(&lo),
+                        render(&hi)
                     )))
                 }
             };
-            let len = a.len();
-            let conv = |b: &JqVal, dflt: f64| match b.bare() {
-                JqVal::Num(n, _) => {
-                    let n = if *n < 0.0 { n + len as f64 } else { *n };
-                    n.clamp(0.0, len as f64) as usize
-                }
-                _ => dflt as usize,
-            };
-            let s = conv(&lo, 0.0);
-            let e = conv(&hi, len as f64).max(s);
+            let (s, e) = slice_bounds(Some(&lo), Some(&hi), a.len());
             let cur = JqVal::arr(a[s..e].to_vec());
             let sub = set_path(&cur, rest, newv)?;
             let JqVal::Arr(repl) = sub else {
@@ -3711,16 +3711,7 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
                 )))
             }
             (JqVal::Arr(a), JqVal::Obj(_)) => {
-                let len = a.len();
-                let conv = |b: Option<&JqVal>, dflt: usize| match b.map(JqVal::bare) {
-                    Some(JqVal::Num(n, _)) => {
-                        let n = if *n < 0.0 { n + len as f64 } else { *n };
-                        n.clamp(0.0, len as f64) as usize
-                    }
-                    _ => dflt,
-                };
-                let s = conv(seg.obj_get("start"), 0);
-                let e = conv(seg.obj_get("end"), len).max(s);
+                let (s, e) = slice_bounds(seg.obj_get("start"), seg.obj_get("end"), a.len());
                 let mut out = a[..s].to_vec();
                 out.extend(a[e..].iter().cloned());
                 Ok(rebox(JqVal::arr(out)))

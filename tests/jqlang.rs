@@ -752,3 +752,29 @@ fn a_number_may_start_or_end_with_its_point() {
         ("1.foo", &["null"]),
     ]);
 }
+
+/// Four builtins brought to jq 1.8.2's answers, messages included (a caught
+/// error's text is a value, so `try … catch .` byte-diffs it):
+///  * `abs` is `if . < 0 then -. else . end`, so `null` and booleans -- which
+///    sort below every number -- raise instead of passing through;
+///  * a slice truncates a fractional start and rounds a fractional end UP, the
+///    same when reading, assigning and deleting it;
+///  * `implode` writes U+FFFD for a code point that is no Unicode scalar value,
+///    and names a non-number element in its error;
+///  * assigning to a string slice, or slicing a scalar, raises jq's words.
+#[test]
+fn abs_slices_and_implode_answer_as_jq_does() {
+    run_table(&[
+        ("[.[] | try abs catch .]", &[r#"[null,true,false,"a",[],{},-2,-0]"#]),
+        (".[1.2:3.5], .[:2.1], .[-2.5:]", &["[1,2,3,4,5]"]),
+        (".[1.5:3.5]", &[r#""abcdef""#]),
+        (".[1.2:3.5] = [\"x\"]", &["[1,2,3,4,5]"]),
+        ("del(.[0.5:1.5])", &["[1,2,3,4,5]"]),
+        ("implode | explode", &["[65,1114112,-1,55296,56320,65.7]"]),
+        ("try implode catch .", &[r#"["a"]"#]),
+        ("try implode catch .", &["[null]"]),
+        (r#"try (.[1:] = "x") catch ."#, &[r#""abc""#]),
+        ("try (.[1:2] = [1]) catch .", &["{}"]),
+        ("try (.[1:] = [1]) catch .", &["5"]),
+    ]);
+}
