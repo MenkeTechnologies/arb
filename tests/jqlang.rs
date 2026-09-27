@@ -790,3 +790,18 @@ fn tonumber_keeps_the_literal() {
         ("tonumber", &[r#""123456789012345678901234567890""#]),
     ]);
 }
+
+/// jq compares a NaN as `null` against a number, so it sits below every
+/// number, itself included: `nan < nan` and `nan != nan` are true, `[1,nan] |
+/// min` is the NaN. arb's `partial_cmp` fallback made two NaNs EQUAL and a NaN
+/// equal to every number. Sorting still gets a total order.
+#[test]
+fn nan_compares_below_every_number_itself_included() {
+    run_table(&[
+        ("[nan < nan, nan > nan, nan == nan, nan != nan, nan < 1, nan >= 1, nan < -infinite]", &["null"]),
+        ("[nan < null, nan > null, [nan] == [nan], {a: nan} == {a: nan}]", &["null"]),
+        ("[nan, 1, nan, -1] | sort, unique, (min | isnan), max", &["null"]),
+        ("[nan, nan, 1] | group_by(.) | length", &["null"]),
+        ("[{a: nan}, {a: 1}] | sort_by(.a) | map(.a)", &["null"]),
+    ]);
+}

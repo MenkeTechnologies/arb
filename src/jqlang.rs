@@ -191,12 +191,26 @@ impl JqVal {
     }
 }
 
-/// jq's total order over values (`sort`, `<`, `group_by`, `unique`).
+/// jq's order over values (`<`, `==`, `min`, `max`, `unique`, `group_by`).
 ///
 /// Ported from jq 1.8.2 `src/jv.c:jv_cmp`. Objects compare by their SORTED key
 /// list first and only then by the values at those keys, which is why
-/// `{"a":1} < {"b":0}` even though `1 > 0`.
+/// `{"a":1} < {"b":0}` even though `1 > 0`. A NaN compares as `null` against a
+/// number -- below every number, itself included -- so `nan < 1`, `nan < nan`
+/// and `nan != nan` are all true, which makes this NOT a total order; sorting
+/// uses [`cmp_sort`].
 pub fn cmp_vals(a: &JqVal, b: &JqVal) -> Ordering {
+    cmp_with(a, b, false)
+}
+
+/// The order `sort` and `sort_by` use: [`cmp_vals`] with two NaNs equal, so a
+/// sort is handed a total order. Where jq's `nan < nan` would have the sort
+/// place one NaN before another, the two are indistinguishable anyway.
+pub fn cmp_sort(a: &JqVal, b: &JqVal) -> Ordering {
+    cmp_with(a, b, true)
+}
+
+fn cmp_with(a: &JqVal, b: &JqVal, total: bool) -> Ordering {
     let (ra, rb) = (a.order_rank(), b.order_rank());
     if ra != rb {
         return ra.cmp(&rb);
@@ -205,11 +219,16 @@ pub fn cmp_vals(a: &JqVal, b: &JqVal) -> Ordering {
     // reorder a sort, so both sides are unboxed before the comparison.
     let (a, b) = (a.bare(), b.bare());
     match (a, b) {
-        (JqVal::Num(x, _), JqVal::Num(y, _)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        (JqVal::Num(x, _), JqVal::Num(y, _)) => match (x.is_nan(), y.is_nan()) {
+            (true, true) if total => Ordering::Equal,
+            (true, _) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        },
         (JqVal::Str(x), JqVal::Str(y)) => x.cmp(y),
         (JqVal::Arr(x), JqVal::Arr(y)) => {
             for (ea, eb) in x.iter().zip(y.iter()) {
-                let c = cmp_vals(ea, eb);
+                let c = cmp_with(ea, eb, total);
                 if c != Ordering::Equal {
                     return c;
                 }
@@ -226,9 +245,10 @@ pub fn cmp_vals(a: &JqVal, b: &JqVal) -> Ordering {
                 return c;
             }
             for k in ka {
-                let c = cmp_vals(
+                let c = cmp_with(
                     a.obj_get(k).unwrap_or(&JqVal::Null),
                     b.obj_get(k).unwrap_or(&JqVal::Null),
+                    total,
                 );
                 if c != Ordering::Equal {
                     return c;
@@ -3732,7 +3752,7 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
 /// `delpaths`. Paths are removed LONGEST/LAST first so that deleting `.[0]` does
 /// not shift the index of a sibling path that has not been deleted yet.
 fn del_paths(v: &JqVal, mut paths: Vec<Vec<JqVal>>) -> R<JqVal> {
-    paths.sort_by(|a, b| cmp_vals(&JqVal::arr(b.clone()), &JqVal::arr(a.clone())));
+    paths.sort_by(|a, b| cmp_sort(&JqVal::arr(b.clone()), &JqVal::arr(a.clone())));
     paths.dedup_by(|a, b| {
         cmp_vals(&JqVal::arr(a.clone()), &JqVal::arr(b.clone())) == Ordering::Equal
     });
@@ -4041,7 +4061,7 @@ fn builtin(
                 }
             };
             if name == "keys" {
-                ks.sort_by(cmp_vals);
+                ks.sort_by(cmp_sort);
             }
             out(JqVal::arr(ks))
         }
@@ -4158,7 +4178,7 @@ fn builtin(
         ("sort", 0) => {
             let a = want_arr(input, "sorted")?;
             let mut v = a.as_ref().clone();
-            v.sort_by(cmp_vals);
+            v.sort_by(cmp_sort);
             out(JqVal::arr(v))
         }
         ("reverse", 0) => match input {
@@ -4173,7 +4193,7 @@ fn builtin(
         },
         ("sort_by", 1) | ("group_by", 1) | ("unique_by", 1) => {
             let mut keyed = keyed_elements(it, &args[0], input, env)?;
-            keyed.sort_by(|a, b| cmp_vals(&a.0, &b.0));
+            keyed.sort_by(|a, b| cmp_sort(&a.0, &b.0));
             match name {
                 "sort_by" => out(JqVal::arr(keyed.into_iter().map(|(_, v)| v).collect())),
                 "unique_by" => {
