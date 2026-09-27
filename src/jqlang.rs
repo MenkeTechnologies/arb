@@ -4072,8 +4072,10 @@ fn builtin(
         }
         ("tonumber", 0) => match input {
             JqVal::Num(..) => out(input.clone()),
+            // jq 1.8 keeps the text as the number's literal, so `"1.000"` is
+            // printed `1.000` and `"1e2"` `1E+2`, as a literal in a program is.
             JqVal::Str(s) => match s.parse::<f64>() {
-                Ok(n) => out(JqVal::num(n)),
+                Ok(n) => out(num_from_literal(n, s)),
                 Err(_) => Err(JqErr::msg(format!(
                     "{}{} cannot be parsed as a number",
                     input.type_name(),

@@ -778,3 +778,15 @@ fn abs_slices_and_implode_answer_as_jq_does() {
         ("try (.[1:] = [1]) catch .", &["5"]),
     ]);
 }
+
+/// `tonumber` keeps the string as the number's literal, as jq 1.8 does, so it
+/// prints in decNumber's canonical form: `"1.000"` is `1.000`, `"1e2"` is
+/// `1E+2`, `"-0"` is `-0`. It printed the double (`1`, `100`, `0`).
+#[test]
+fn tonumber_keeps_the_literal() {
+    run_table(&[
+        ("map(tonumber)", &[r#"["1.000","1e2","0.10","-0","1.5e300","5.",".5","+1"]"#]),
+        ("tonumber, (tonumber + 1), (tonumber | tostring)", &[r#""1.000""#]),
+        ("tonumber", &[r#""123456789012345678901234567890""#]),
+    ]);
+}
