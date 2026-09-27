@@ -737,3 +737,18 @@ fn builtins_follow_jq_18_semantics() {
         ),
     ]);
 }
+
+/// jq 1.8's scanner reads a number as `([0-9]+(\.[0-9]*)?|\.[0-9]+)` plus an
+/// exponent, maximal munch: `.5` is 0.5 and `1.` is 1. arb read `.5` as a field
+/// named `5` and stopped `1.` before its point. `1.foo` is the literal `1.`
+/// then `foo`, which both engines refuse.
+#[test]
+fn a_number_may_start_or_end_with_its_point() {
+    run_table(&[
+        ("[.1, .5e1, 1., 1.e2, 2.50]", &["null"]),
+        (".a + .5", &[r#"{"a":1}"#]),
+        (". * .5", &["3"]),
+        ("[range(1;3)] | .[1.]", &["null"]),
+        ("1.foo", &["null"]),
+    ]);
+}

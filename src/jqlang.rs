@@ -888,8 +888,7 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
             i = j;
             continue;
         }
-        // `.name` — but not `..`, and not a `.` that begins a number (`.5` is
-        // not jq syntax, so a digit here still falls through to the operator).
+        // `.name` -- but not `..`, and not a `.` that begins a number (`.5`).
         if c == '.'
             && cs
                 .get(i + 1)
@@ -904,16 +903,21 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
             i = j;
             continue;
         }
-        if c.is_ascii_digit() {
+        // A number, lexed as jq 1.8's scanner does: `([0-9]+(\.[0-9]*)?|\.[0-9]+)`
+        // then an optional exponent, maximal munch. So `.5` is 0.5 and `1.` is
+        // 1, and `1.foo` is the literal `1.` followed by `foo` -- the syntax
+        // error jq reports -- rather than a field access on 1.
+        let fraction_first = c == '.' && cs.get(i + 1).is_some_and(|d| d.is_ascii_digit());
+        if c.is_ascii_digit() || fraction_first {
             let start = i;
-            while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '.') {
-                // A `.` only continues the number when a DIGIT follows it —
-                // otherwise `1.foo` would swallow the field access, and `..` in
-                // `1..2` would vanish.
-                if cs[i] == '.' && !matches!(cs.get(i + 1), Some(d) if d.is_ascii_digit()) {
-                    break;
-                }
+            while i < cs.len() && cs[i].is_ascii_digit() {
                 i += 1;
+            }
+            if cs.get(i) == Some(&'.') {
+                i += 1;
+                while i < cs.len() && cs[i].is_ascii_digit() {
+                    i += 1;
+                }
             }
             if matches!(cs.get(i), Some('e') | Some('E')) {
                 let save = i;
