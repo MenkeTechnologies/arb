@@ -78,7 +78,9 @@
 #   711f0970e3 (round 5 corpus, before; yq absent) 729 pass / 23 diverged / 159 skipped
 #   112b8d8613 (round 5, first batch; yq absent)  752 pass /  0 diverged / 159 skipped
 #   711f0970e3 (round 5 + fromjson, before)       729 pass / 26 diverged / 159 skipped
-#   HEAD       (round 5 + fromjson, after)        755 pass /  0 diverged / 159 skipped
+#   984f052594 (round 5 + fromjson, after)        755 pass /  0 diverged / 159 skipped
+#   711f0970e3 (round 5 + numbers, before)        729 pass / 30 diverged / 159 skipped
+#   HEAD       (round 5 + numbers, after)         759 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1604,6 +1606,13 @@ jq_probe '[null]' 'try path(.[0] | abs) catch .'
 jq_probe '["01","1.",".5","+1","1.e5","-0.0","Infinity","-sNaN","nan1","1e","0x1","'"'"'a'"'"'"]' 'map(try fromjson catch .)'
 jq_probe '["[1,2","1 2","{\"a\"}","{\"a\" 1}","[1,]","[1:2]",",","tru e","truex","{\"a\":[}","[1,2]]","{\"a\":1,}","  "]' 'map(try fromjson catch .)'
 jq_probe '["\"\\uD800\"","\"\\uDC00\"","\"\\q\"","{\"a\":1,\"a\":2}","\"a\tb\""]' 'map(try fromjson catch .)'
+#   numbers       two literals compare as decimals (decNumber), a computed -0
+#                 prints `-0` while a negated literal zero stays `0`, `%`
+#                 refuses as "cannot be divided (remainder)", have_decnum.
+jq_probe '[100000000000000000003,100000000000000000001,-100000000000000000001,1E1000,-1E1000,1E+999,0,-0,0.0]' '. | sort'
+jq_probe '[100000000000000000001,100000000000000000000]' '.[0] == .[1], .[0] > .[1], (.[0] == .[1] + 0), unique'
+jq_probe '[0, 5, -0]' 'map(-.), map(. * -1), (.[2] | -.), [(1 - 1) | -.], (-1 * 0 | tostring)'
+jq_probe 'null'   'try ({} % 1) catch ., try ("a" % "b") catch ., have_decnum'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq

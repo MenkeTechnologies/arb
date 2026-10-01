@@ -996,3 +996,25 @@ fn fromjson_accepts_and_refuses_as_jq_reader_does() {
         ),
     ]);
 }
+
+/// jq 1.8.2 is a decNumber build: two number LITERALS compare as decimals, so
+/// integers past 2^53 that share a double still sort and compare apart; a
+/// COMPUTED negative zero prints `-0` while a negated literal zero is `0`.
+#[test]
+fn literals_compare_as_decimals_and_zero_keeps_jq_sign() {
+    run_table(&[
+        (
+            ". | sort",
+            &["[100000000000000000003,100000000000000000001,-100000000000000000001,1E1000,-1E1000,0,-0,0.0]"],
+        ),
+        (
+            ".[0] == .[1], .[0] > .[1], (.[0] == .[1] + 0), unique",
+            &["[100000000000000000001,100000000000000000000]"],
+        ),
+        (
+            "map(-.), map(. * -1), (.[2] | -.), [(1 - 1) | -.]",
+            &["[0, 5, -0]"],
+        ),
+        ("try ({} % 1) catch ., have_decnum", &["null"]),
+    ]);
+}

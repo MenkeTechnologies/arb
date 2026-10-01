@@ -354,9 +354,10 @@ order, the translator's `.[]`/`map`/`to_entries`/`flatten`/`add` keeping key
 order and number literals, literal-preserving negation, empty regex matches after
 a match, `{$name: P}` patterns, and jq's refusals for `unique`/`min`/`max`/
 `*_by`/`reverse`/`input`/non-path calls, and `fromjson` as jq's own `jv_parse.c`
-reader — what it accepts and its positioned refusals) measured 755 pass,
-0 diverged, 159 skipped (729 pass / 26 diverged on the same corpus before the
-fixes).
+reader — what it accepts and its positioned refusals, and jq 1.8's decNumber
+number model: two literals compare as decimals, a computed `-0` keeps its sign,
+`have_decnum` is true) measured 759 pass, 0 diverged, 159 skipped (729 pass /
+30 diverged on the same corpus before the fixes).
 
 | leg | reference | containment | status |
 |---|---|---|---|

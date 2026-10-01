@@ -210,6 +210,47 @@ pub fn cmp_sort(a: &JqVal, b: &JqVal) -> Ordering {
     cmp_with(a, b, true)
 }
 
+/// Compare two finite decimal literals exactly (`None` for anything else, such
+/// as a non-finite one). The value is `±0.DIGITS × 10^pos`: the sign decides
+/// first (every zero is equal), then the position of the leading digit, then
+/// the digits themselves with trailing zeros removed.
+fn cmp_decimal(a: &str, b: &str) -> Option<Ordering> {
+    fn parts(s: &str) -> Option<(bool, i64, String)> {
+        let (neg, s) = match s.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, s.strip_prefix('+').unwrap_or(s)),
+        };
+        let (mant, exp) = match s.find(['e', 'E']) {
+            Some(i) => (&s[..i], s[i + 1..].parse::<i64>().ok()?),
+            None => (s, 0),
+        };
+        let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+        if !(int.bytes().chain(frac.bytes())).all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let all = format!("{int}{frac}");
+        let lead = all.len() - all.trim_start_matches('0').len();
+        let digits = all[lead..].trim_end_matches('0').to_string();
+        // Position of the leading digit relative to the decimal point.
+        let pos = exp + int.len() as i64 - lead as i64;
+        Some((neg && !digits.is_empty(), pos, digits))
+    }
+    let (na, pa, da) = parts(a)?;
+    let (nb, pb, db) = parts(b)?;
+    let mag = |p: i64, d: &String, q: i64, e: &String| match (d.is_empty(), e.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => p.cmp(&q).then_with(|| d.cmp(e)),
+    };
+    Some(match (na, nb) {
+        (false, true) => Ordering::Greater,
+        (true, false) => Ordering::Less,
+        (false, false) => mag(pa, &da, pb, &db),
+        (true, true) => mag(pb, &db, pa, &da),
+    })
+}
+
 fn cmp_with(a: &JqVal, b: &JqVal, total: bool) -> Ordering {
     let (ra, rb) = (a.order_rank(), b.order_rank());
     if ra != rb {
@@ -223,7 +264,14 @@ fn cmp_with(a: &JqVal, b: &JqVal, total: bool) -> Ordering {
             (true, true) if total => Ordering::Equal,
             (true, _) => Ordering::Less,
             (false, true) => Ordering::Greater,
-            _ => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+            // Two number LITERALS compare as decimals, as jq 1.8's
+            // `jvp_number_cmp` does with decNumber: `100000000000000000001` is
+            // greater than `100000000000000000000` though both are one double.
+            _ => match (a, b) {
+                (JqVal::Num(_, Some(la)), JqVal::Num(_, Some(lb))) => cmp_decimal(la, lb),
+                _ => None,
+            }
+            .unwrap_or_else(|| x.partial_cmp(y).unwrap_or(Ordering::Equal)),
         },
         (JqVal::Str(x), JqVal::Str(y)) => x.cmp(y),
         (JqVal::Arr(x), JqVal::Arr(y)) => {
@@ -690,6 +738,16 @@ fn negate_num(n: f64, lit: Option<&str>) -> JqVal {
 /// Build a number value from its source text, keeping the literal only when jq
 /// would print something other than the double's own shortest form.
 pub(crate) fn num_from_literal(n: f64, text: &str) -> JqVal {
+    // A ZERO literal is kept even when it prints like the double: a literal
+    // negates as a decNumber (`0 | -.` is `0`) while a computed zero negates as
+    // a double (`(1-1) | -.` is `-0`), so the two must stay distinguishable.
+    // So is one past 2^53, where distinct integer literals share a double and
+    // only the literal still tells them apart in a comparison.
+    if n == 0.0 || n.abs() >= 9_007_199_254_740_992.0 {
+        if let Some(c) = canonical_num_literal(text) {
+            return JqVal::Num(n, Some(Rc::from(c.as_str())));
+        }
+    }
     if is_plain_shortest(text) {
         return JqVal::Num(n, None);
     }
@@ -760,6 +818,10 @@ fn is_plain_shortest(text: &str) -> bool {
 /// validated against `jq 1.8.2` over 200,000 doubles, so there is exactly one
 /// number formatter in the tree and the two can never drift.
 pub fn fmt_num(v: f64) -> String {
+    // jq prints a computed negative zero with its sign (`0 * -1` is `-0`).
+    if v == 0.0 && v.is_sign_negative() {
+        return "-0".to_string();
+    }
     crate::query::fmt_num(v)
 }
 
@@ -2825,7 +2887,7 @@ fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
                 }
                 Ok(JqVal::num((xi % yi) as f64))
             }
-            _ => Err(bad("divided")),
+            _ => Err(bad("divided (remainder)")),
         },
         _ => unreachable!("comparisons returned above"),
     }
@@ -4882,7 +4944,10 @@ fn builtin(
             render_raw(input)
         ))),
         ("have_literal_numbers", 0) => out(JqVal::Bool(true)),
-        ("have_decnum", 0) => out(JqVal::Bool(false)),
+        // jq 1.8.2 is built with decNumber, and arb keeps its number model:
+        // literals survive unmodified values, negate exactly and compare as
+        // decimals (`num_from_literal`, `negate_num`, `cmp_decimal`).
+        ("have_decnum", 0) => out(JqVal::Bool(true)),
         ("$__loc__", 0) => out(JqVal::obj(vec![
             (Rc::from("file"), JqVal::str("<top-level>")),
             (Rc::from("line"), JqVal::num(1.0)),
