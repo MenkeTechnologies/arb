@@ -973,3 +973,26 @@ fn object_pattern_variable_key_is_its_name() {
         (". as {$a: [$x, $y]} | [$a,$x,$y]", obj),
     ]);
 }
+
+/// `fromjson` is jq's own reader (`jv_parse.c`), not strict JSON: it takes
+/// `01`, `.5`, `Infinity` and `-sNaN`, refuses `nan1` and `1e`, and words every
+/// refusal with a line and column (`Unfinished JSON term at EOF at line 1,
+/// column 4`). arb's strict reader answered the first group with errors and the
+/// second with messages jq never prints.
+#[test]
+fn fromjson_accepts_and_refuses_as_jq_reader_does() {
+    run_table(&[
+        (
+            "map(try fromjson catch .)",
+            &[r#"["01","1.",".5","+1","1.e5","-0.0","Infinity","-sNaN","nan1","1e","0x1"]"#],
+        ),
+        (
+            "map(try fromjson catch .)",
+            &[r#"["[1,2","1 2","{\"a\"}","[1,]","[1:2]",",","tru e","{\"a\":[}","[1,2]]","  "]"#],
+        ),
+        (
+            "map(try fromjson catch .)",
+            &[r#"["\"\\uD800\"","\"\\uDC00\"","\"\\q\"","{\"a\":1,\"a\":2}","\"a\tb\""]"#],
+        ),
+    ]);
+}

@@ -76,7 +76,9 @@
 #               OOMs the harness on that binary) 703 pass / 24 diverged / 159 skipped
 #   711f0970e3 (round 4 corpus, after; yq absent) 728 pass /  0 diverged / 159 skipped
 #   711f0970e3 (round 5 corpus, before; yq absent) 729 pass / 23 diverged / 159 skipped
-#   HEAD       (round 5 corpus, after; yq absent) 752 pass /  0 diverged / 159 skipped
+#   112b8d8613 (round 5, first batch; yq absent)  752 pass /  0 diverged / 159 skipped
+#   711f0970e3 (round 5 + fromjson, before)       729 pass / 26 diverged / 159 skipped
+#   HEAD       (round 5 + fromjson, after)        755 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1572,6 +1574,7 @@ jq_probe '"abc"'  'try (. * 1e9) catch .'
 #   refusals      `unique`/`min`/`max`/`*_by` on a non-array, `reverse` as jq
 #                 1.8.2's `[.[length - 1 - range(0;length)]]`, `input` with
 #                 nothing left (`break`), and a non-path call in path context.
+#   fromjson      jq's own reader (jv_parse.c), see the probes at the end.
 jq_probe '{"a":1}' '[has("a","b")], [setpath(["a"],["b"]; 5,6)], [contains({a:1},{b:2})]'
 jq_probe '"a,b;c"' '[split(",",";")], [startswith("a","b")], [_strindices("b",",")]'
 jq_probe 'null'   '[pow(2,3;2,4)], [fma(1,2;3;4,5)], [range(1,2;3,4)], [range(0;4,6;2,3)]'
@@ -1596,6 +1599,11 @@ jq_probe '[1,1.0,2,1.00,"a",null,"a"]' '. | unique'
 jq_probe 'null'   'try input catch .'
 jq_probe '{"a":[1]}' 'try path(.a | tostring) catch ., try path(.a | length) catch ., try path(tojson) catch ., [path(empty | tostring)]'
 jq_probe '[null]' 'try path(.[0] | abs) catch .'
+#   fromjson      jq's own reader (jv_parse.c): what it accepts (`01`, `.5`,
+#                 `Infinity`, `-sNaN`) and its worded, positioned refusals.
+jq_probe '["01","1.",".5","+1","1.e5","-0.0","Infinity","-sNaN","nan1","1e","0x1","'"'"'a'"'"'"]' 'map(try fromjson catch .)'
+jq_probe '["[1,2","1 2","{\"a\"}","{\"a\" 1}","[1,]","[1:2]",",","tru e","truex","{\"a\":[}","[1,2]]","{\"a\":1,}","  "]' 'map(try fromjson catch .)'
+jq_probe '["\"\\uD800\"","\"\\uDC00\"","\"\\q\"","{\"a\":1,\"a\":2}","\"a\tb\""]' 'map(try fromjson catch .)'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq

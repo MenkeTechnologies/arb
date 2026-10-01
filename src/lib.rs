@@ -25,6 +25,7 @@ pub mod hosted;
 pub mod jq;
 pub mod jqlang;
 pub mod jqval;
+pub mod jvparse;
 pub mod lexer;
 pub mod lsp;
 pub mod parser;

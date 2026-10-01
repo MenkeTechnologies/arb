@@ -311,19 +311,12 @@ type Sink<'a> = &'a mut dyn FnMut(JqVal) -> R<()>;
 /// header gives: the two things this keeps — key ORDER and the number LITERAL —
 /// are precisely the two `serde_json::Value` discards.
 pub fn parse_json(src: &str) -> Result<JqVal, String> {
-    parse_json_with(src, false)
+    parse_json_with(src)
 }
 
-/// `fromjson`'s parser: JSON plus the non-finite literals jq's own reader takes
-/// (`nan`, `inf`, `infinity`, any case, optionally signed). The line stream
-/// keeps plain JSON, so a line reading `nan` stays the TEXT it is.
-pub fn parse_json_lax(src: &str) -> Result<JqVal, String> {
-    parse_json_with(src, true)
-}
-
-fn parse_json_with(src: &str, lax: bool) -> Result<JqVal, String> {
+fn parse_json_with(src: &str) -> Result<JqVal, String> {
     let b = src.as_bytes();
-    let mut p = JsonParser { b, i: 0, lax };
+    let mut p = JsonParser { b, i: 0 };
     p.ws();
     let v = p.value()?;
     p.ws();
@@ -336,11 +329,7 @@ fn parse_json_with(src: &str, lax: bool) -> Result<JqVal, String> {
 /// Parse a stream of whitespace-separated JSON documents (jq's own input model).
 pub fn parse_json_stream(src: &str) -> Result<Vec<JqVal>, String> {
     let b = src.as_bytes();
-    let mut p = JsonParser {
-        b,
-        i: 0,
-        lax: false,
-    };
+    let mut p = JsonParser { b, i: 0 };
     let mut out = Vec::new();
     loop {
         p.ws();
@@ -354,8 +343,6 @@ pub fn parse_json_stream(src: &str) -> Result<Vec<JqVal>, String> {
 struct JsonParser<'a> {
     b: &'a [u8],
     i: usize,
-    /// Accept jq's `nan` / `inf` / `infinity` literals (see [`parse_json_lax`]).
-    lax: bool,
 }
 
 impl JsonParser<'_> {
@@ -365,11 +352,6 @@ impl JsonParser<'_> {
         }
     }
     fn value(&mut self) -> Result<JqVal, String> {
-        if self.lax {
-            if let Some(v) = self.non_finite() {
-                return Ok(v);
-            }
-        }
         match self.b.get(self.i) {
             None => Err("unexpected end of input".into()),
             Some(b'n') => self.lit("null", JqVal::Null),
@@ -380,28 +362,6 @@ impl JsonParser<'_> {
             Some(b'{') => self.object(),
             Some(_) => self.number(),
         }
-    }
-    /// A signed `nan`, `inf` or `infinity` in any case, as jq reads one through
-    /// `jvp_strtod`; `nan1` is not one.
-    fn non_finite(&mut self) -> Option<JqVal> {
-        let rest = &self.b[self.i..];
-        let (neg, sign_len) = match rest.first() {
-            Some(b'-') => (true, 1),
-            Some(b'+') => (false, 1),
-            _ => (false, 0),
-        };
-        let word_len = rest[sign_len..]
-            .iter()
-            .take_while(|c| c.is_ascii_alphanumeric())
-            .count();
-        let word = std::str::from_utf8(&rest[sign_len..sign_len + word_len]).ok()?;
-        let n = match word.to_ascii_lowercase().as_str() {
-            "nan" => f64::NAN,
-            "inf" | "infinity" => f64::INFINITY,
-            _ => return None,
-        };
-        self.i += sign_len + word_len;
-        Some(JqVal::num(if neg { -n } else { n }))
     }
     fn lit(&mut self, w: &str, v: JqVal) -> Result<JqVal, String> {
         if self.b[self.i..].starts_with(w.as_bytes()) {
@@ -4342,7 +4302,10 @@ fn builtin(
         ("tojson", 0) => out(JqVal::str(render(input))),
         ("fromjson", 0) => {
             let s = want_str(input, "parsed as JSON")?;
-            out(parse_json_lax(&s).map_err(|e| JqErr::msg(format!("{e} (while parsing '{s}')")))?)
+            // jq's own reader (`jv_parse.c`), so what it accepts and the
+            // refusal it words are both jq's.
+            out(crate::jvparse::parse(&s)
+                .map_err(|e| JqErr::msg(format!("{e} (while parsing '{s}')")))?)
         }
         ("tonumber", 0) => match input {
             JqVal::Num(..) => out(input.clone()),

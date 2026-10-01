@@ -353,8 +353,10 @@ measured on a machine without `yq`: 728 pass, 0 diverged, 159 yq probes skipped
 order, the translator's `.[]`/`map`/`to_entries`/`flatten`/`add` keeping key
 order and number literals, literal-preserving negation, empty regex matches after
 a match, `{$name: P}` patterns, and jq's refusals for `unique`/`min`/`max`/
-`*_by`/`reverse`/`input`/non-path calls) measured 752 pass, 0 diverged, 159
-skipped (729 pass / 23 diverged on the same corpus before the fixes).
+`*_by`/`reverse`/`input`/non-path calls, and `fromjson` as jq's own `jv_parse.c`
+reader — what it accepts and its positioned refusals) measured 755 pass,
+0 diverged, 159 skipped (729 pass / 26 diverged on the same corpus before the
+fixes).
 
 | leg | reference | containment | status |
 |---|---|---|---|
