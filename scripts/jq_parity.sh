@@ -81,6 +81,8 @@
 #   984f052594 (round 5 + fromjson, after)        755 pass /  0 diverged / 159 skipped
 #   711f0970e3 (round 5 + numbers, before)        729 pass / 30 diverged / 159 skipped
 #   HEAD       (round 5 + numbers, after)         759 pass /  0 diverged / 159 skipped
+#   fbcd926c0b (round 6 corpus, before; yq absent) 760 pass / 12 diverged / 159 skipped
+#   HEAD       (round 6 corpus, after;  yq absent) 772 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1613,6 +1615,27 @@ jq_probe '[100000000000000000003,100000000000000000001,-100000000000000000001,1E
 jq_probe '[100000000000000000001,100000000000000000000]' '.[0] == .[1], .[0] > .[1], (.[0] == .[1] + 0), unique'
 jq_probe '[0, 5, -0]' 'map(-.), map(. * -1), (.[2] | -.), [(1 - 1) | -.], (-1 * 0 | tostring)'
 jq_probe 'null'   'try ({} % 1) catch ., try ("a" % "b") catch ., have_decnum'
+# ── round 6 (fusevm parity sweep, round 2) ───────────────────────────────────
+#   grammar       `as` binds jq 1.8's whole Expr; a `def` after a pipe; literal-
+#                 and negation-led programs; a trailing comma in `{…}`; a quoted
+#                 subscript that is not one plain string literal.
+jq_probe 'null'   '1 + 2 as $x | $x * 10, (1 // 2 as $x | $x + 10), (-1 as $x | [limit(1; $x, 2)])'
+jq_probe 'null'   'reduce 1 + 2 as $x (0; . + $x), [1, 2 as $x | $x, 3]'
+jq_probe '[1,2]'  '. | def s: .[0]; s'
+jq_probe 'null'   'null | setpath([0]; 5)'
+jq_probe 'null'   '{a: 1, b: 2,}'
+jq_probe '{"a":[1],"b":2,"k":"b"}' '.["a","b"], .["\(.k)"]'
+#   dates         strptime keeps unset fields and leftover input; jv2tm reads a
+#                 short array; gmtime truncates; strftime's %s is UTC.
+jq_probe 'null'   '"10:30" | strptime("%H:%M"), ("2024 x" | strptime("%Y"))'
+jq_probe 'null'   '[2024,2,15] | mktime, ([2024] | mktime)'
+jq_probe 'null'   '-1.5 | gmtime, (1710496800 | strftime("%s %Z"))'
+jq_probe 'null'   'try nth(-1; 1,2) catch .'
+#   input         in.json reads JSON texts, not lines; input_line_number counts
+#                 the whole stream.
+jq_probe $'{\n  "a": 1,\n  "b": [1,\n 2]\n}\n{"a":2}' '.a, .b'
+jq_probe '1 2 {"a":3}{"a":4}' '.'
+jq_probe $'1\n2\n3\n4' '[., input, input_line_number]'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
