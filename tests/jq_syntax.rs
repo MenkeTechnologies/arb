@@ -1,0 +1,52 @@
+//! jq source text that has to survive arb's lexer intact to reach the engine.
+//!
+//! A jq program inside `out { … }` is one verbatim atom, but `;` is both jq's
+//! definition/argument separator and arb's command terminator. Each case below
+//! was cut in half by the lexer before it was fixed. Expectations were measured
+//! against jq 1.8.2 (`jq -rc`); headless, no jq needed.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+/// Run `out { in.json; FILTER }` over `input`; (stdout, stderr, exit status).
+fn arb(filter: &str, input: &str) -> (String, String, i32) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_arb"))
+        .args(["-e", &format!("out {{ in.json; {filter} }}")])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn arb");
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = stdin.write_all(input.as_bytes());
+    drop(stdin);
+    let out = child.wait_with_output().expect("arb output");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[track_caller]
+fn answers(filter: &str, input: &str, stdout: &str) {
+    assert_eq!(
+        arb(filter, input),
+        (stdout.to_string(), String::new(), 0),
+        "`{filter}` over {input:?}"
+    );
+}
+
+/// jq's grammar takes a `def` wherever a term may start, not only at the front
+/// of the program. The lexer only kept the `;` of a LEADING `def`, so a `def`
+/// after a pipe was cut at its `;`.
+#[test]
+fn a_def_after_a_pipe_is_one_program() {
+    answers(". | def s: .[0]; s", "[1,2]\n", "1\n");
+    answers(".[] | def f: . * 2; f", "[1,2]\n", "2\n4\n");
+    answers("1 as $x | def f: $x; f", "null\n", "1\n");
+    answers(".[0] as $a | def f: $a; f", "[1,2]\n", "1\n");
+    // `def` as a key or inside a string is not the keyword.
+    answers(r#"{"def": 1} | .def"#, "null\n", "1\n");
+    answers(r#"[.[] | tostring] | join("def ")"#, "[1,2]\n", "1def 2\n");
+}

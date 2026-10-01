@@ -95,12 +95,17 @@ pub fn lex_opts(
                 let mut in_str = false;
                 // `def NAME: BODY;` ends its definition with a `;` at depth 0 —
                 // the same character arb uses to end a command. A jq program that
-                // OPENS with `def` therefore runs to end of line (or to the
-                // block's `}`), which is the only reading under which
+                // holds a top-level `def` therefore runs to end of line (or to
+                // the block's `}`), which is the only reading under which
                 // `def f: . * 2; map(f)` is one program rather than two commands.
-                let def_led = cs[i..].starts_with(&['d', 'e', 'f'])
-                    && cs.get(i + 3).is_some_and(|c| matches!(c, ' ' | '\t'));
+                // jq's grammar allows a `def` after a pipe too (`. | def f: 1;
+                // f`, `1 as $x | def f: $x; f`), so the keyword counts wherever
+                // it starts a term, not only at the front.
+                let mut def_led = false;
                 while i < n {
+                    if !in_str && depth == 0 && !def_led {
+                        def_led = def_keyword_at(&cs, i);
+                    }
                     match cs[i] {
                         '\\' if in_str => i += 1,
                         '"' => in_str = !in_str,
@@ -643,6 +648,18 @@ fn slash_is_division(before: &[char]) -> bool {
     }
     let tok = &before[start..end];
     matches!(tok[0], '.' | '$') || tok.iter().all(|c| c.is_ascii_digit() || *c == '.')
+}
+
+/// Does the jq keyword `def` start a term at `cs[i]`? It must be a whole word
+/// followed by a blank, and not the tail of a path, variable or name (`.def`,
+/// `$def`, `undef`).
+fn def_keyword_at(cs: &[char], i: usize) -> bool {
+    let after = cs.get(i + 3).is_some_and(|c| matches!(c, ' ' | '\t'));
+    let before = i
+        .checked_sub(1)
+        .map(|k| cs[k])
+        .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | '@')));
+    after && before && cs[i..].starts_with(&['d', 'e', 'f'])
 }
 
 fn jq_literal_at(cs: &[char], i: usize) -> bool {
