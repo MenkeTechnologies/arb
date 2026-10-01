@@ -4959,7 +4959,7 @@ fn builtin(
             let t = input
                 .as_f64()
                 .ok_or_else(|| JqErr::msg(format!("{name}() requires numeric inputs")))?;
-            out(broken_down(t, name == "localtime"))
+            out(broken_down(t, name == "localtime")?)
         }
         ("strftime", 1) | ("strflocaltime", 1) => {
             let f = one(it, &args[0], input, env)?;
@@ -5383,65 +5383,97 @@ fn unix_now() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// jq's broken-down time: `[year, month0, mday, hour, min, sec, wday, yday]`,
-/// where `sec` carries the sub-second fraction of the input.
-fn broken_down(t: f64, local: bool) -> JqVal {
-    let secs = t.floor() as i64;
-    let frac = t - t.floor();
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let tt = secs as libc::time_t;
-    unsafe {
-        if local {
-            libc::localtime_r(&tt, &mut tm);
-        } else {
-            libc::gmtime_r(&tt, &mut tm);
-        }
-    }
+/// jq's `tm2jv`: `[year, month0, mday, hour, min, sec, wday, yday]`, where
+/// `sec` carries the sub-second fraction `fsecs - floor(fsecs)`.
+fn tm2jv(tm: &libc::tm, fsecs: f64) -> JqVal {
     JqVal::arr(vec![
         JqVal::num(f64::from(tm.tm_year) + 1900.0),
         JqVal::num(f64::from(tm.tm_mon)),
         JqVal::num(f64::from(tm.tm_mday)),
         JqVal::num(f64::from(tm.tm_hour)),
         JqVal::num(f64::from(tm.tm_min)),
-        JqVal::num(f64::from(tm.tm_sec) + frac),
+        JqVal::num(f64::from(tm.tm_sec) + (fsecs - fsecs.floor())),
         JqVal::num(f64::from(tm.tm_wday)),
         JqVal::num(f64::from(tm.tm_yday)),
     ])
 }
 
-fn to_tm(v: &JqVal) -> R<libc::tm> {
-    let JqVal::Arr(a) = v.bare() else {
-        return Err(JqErr::msg("not a valid time"));
-    };
-    if a.len() < 6 {
-        return Err(JqErr::msg("not a valid time"));
-    }
-    let g = |i: usize| a[i].as_f64().unwrap_or(0.0);
+/// jq's `f_gmtime`/`f_localtime`. The whole seconds are the input TRUNCATED
+/// (`time_t secs = fsecs`), and the fraction is taken against the floor, so
+/// `-1.5` is `23:59:59.5`, as jq answers.
+fn broken_down(t: f64, local: bool) -> R<JqVal> {
+    let tt = t as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = (g(0) - 1900.0) as i32;
-    tm.tm_mon = g(1) as i32;
-    tm.tm_mday = g(2) as i32;
-    tm.tm_hour = g(3) as i32;
-    tm.tm_min = g(4) as i32;
-    tm.tm_sec = g(5) as i32;
-    tm.tm_wday = a.get(6).and_then(JqVal::as_f64).unwrap_or(0.0) as i32;
-    tm.tm_yday = a.get(7).and_then(JqVal::as_f64).unwrap_or(0.0) as i32;
-    Ok(tm)
+    let ok = unsafe {
+        if local {
+            !libc::localtime_r(&tt, &mut tm).is_null()
+        } else {
+            !libc::gmtime_r(&tt, &mut tm).is_null()
+        }
+    };
+    if !ok {
+        return Err(JqErr::msg(
+            "error converting number of seconds since epoch to datetime",
+        ));
+    }
+    Ok(tm2jv(&tm, t))
+}
+
+/// jq's `jv2tm`: up to eight numeric fields in `tm` order — a missing one stays
+/// 0, each is clamped to `int` — then normalized the way jq does, through
+/// `timegm` for UTC or `mktime` (DST unknown) for local time. `None` when a
+/// field is not a number, or is NaN.
+fn jv2tm(v: &JqVal, local: bool) -> Option<libc::tm> {
+    let JqVal::Arr(a) = v.bare() else {
+        return None;
+    };
+    let mut f = [0i32; 8];
+    for (i, (slot, x)) in f.iter_mut().zip(a.iter()).enumerate() {
+        let d = x.as_f64().filter(|d| !d.is_nan())?;
+        // The year is offset BEFORE the clamp; `as` saturates, which is jq's
+        // INT_MIN/INT_MAX clamp.
+        *slot = if i == 0 { d - 1900.0 } else { d } as i32;
+    }
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = f[0];
+    tm.tm_mon = f[1];
+    tm.tm_mday = f[2];
+    tm.tm_hour = f[3];
+    tm.tm_min = f[4];
+    tm.tm_sec = f[5];
+    tm.tm_wday = f[6];
+    tm.tm_yday = f[7];
+    unsafe {
+        if local {
+            tm.tm_isdst = -1;
+            libc::mktime(&mut tm);
+        } else {
+            libc::timegm(&mut tm);
+        }
+    }
+    Some(tm)
 }
 
 fn mktime(v: &JqVal) -> R<i64> {
     if !matches!(v, JqVal::Arr(_)) {
         return Err(JqErr::msg("mktime requires array inputs"));
     }
-    let mut tm = to_tm(v)?;
+    let mut tm =
+        jv2tm(v, false).ok_or_else(|| JqErr::msg("mktime requires parsed datetime inputs"))?;
     // `timegm` is the UTC counterpart of `mktime`; jq uses it so a broken-down
     // time round-trips through `gmtime` exactly.
-    Ok(unsafe { libc::timegm(&mut tm) })
+    match unsafe { libc::timegm(&mut tm) } {
+        -1 => Err(JqErr::msg("invalid gmtime representation")),
+        t => Ok(t),
+    }
 }
 
-/// Rewrite `%Z`/`%z` to their UTC expansions, leaving `%%` and every other
-/// directive for libc.
-fn utc_zone_directives(fmt: &str) -> String {
+/// Expand the directives libc would answer from the process's LOCAL zone, for
+/// `strftime`, which formats UTC: `%Z`/`%z` read `UTC`/`+0000` and `%s` is the
+/// UTC epoch. jq gets the same by switching `TZ` to UTC around the call on
+/// macOS; changing the environment is not thread-safe here, so the three are
+/// expanded instead. `%%` and every other directive are left for libc.
+fn utc_zone_directives(fmt: &str, epoch: i64) -> String {
     let mut out = String::with_capacity(fmt.len());
     let mut cs = fmt.chars();
     while let Some(c) = cs.next() {
@@ -5452,6 +5484,7 @@ fn utc_zone_directives(fmt: &str) -> String {
         match cs.next() {
             Some('Z') => out.push_str("UTC"),
             Some('z') => out.push_str("+0000"),
+            Some('s') => out.push_str(&epoch.to_string()),
             Some(d) => {
                 out.push('%');
                 out.push(d);
@@ -5462,27 +5495,21 @@ fn utc_zone_directives(fmt: &str) -> String {
     out
 }
 
+/// jq's `f_strftime`/`f_strflocaltime`: a number goes through `gmtime` (or
+/// `localtime`) first, an array through `jv2tm`.
 fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
+    let name = if local { "strflocaltime" } else { "strftime" };
+    let bad_input = || JqErr::msg(format!("{name}/1 requires parsed datetime inputs"));
     let tm = match v.bare() {
-        JqVal::Num(n, _) => {
-            let bd = broken_down(*n, local);
-            to_tm(&bd)?
-        }
-        JqVal::Arr(_) => to_tm(v)?,
-        _ => {
-            let name = if local { "strflocaltime" } else { "strftime" };
-            return Err(JqErr::msg(format!(
-                "{name}/1 requires parsed datetime inputs"
-            )));
-        }
-    };
-    // `strftime` formats a UTC broken-down time, so `%Z`/`%z` must read
-    // `UTC`/`+0000` as jq's do. libc would consult the process's local zone for
-    // both (macOS ignores `tm_gmtoff` for `%z`), so they are expanded here.
+        JqVal::Num(n, _) => jv2tm(&broken_down(*n, local)?, local),
+        JqVal::Arr(_) => jv2tm(v, local),
+        _ => return Err(bad_input()),
+    }
+    .ok_or_else(bad_input)?;
     let fmt = if local {
         fmt.to_string()
     } else {
-        utc_zone_directives(fmt)
+        utc_zone_directives(fmt, unsafe { libc::timegm(&mut tm.clone()) })
     };
     let cfmt = std::ffi::CString::new(fmt).map_err(|_| JqErr::msg("bad format string"))?;
     let mut buf = vec![0u8; 512];
@@ -5491,20 +5518,76 @@ fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// jq's `set_tm_wday`: Gauss's day-of-week, from year, month and day alone.
+fn set_tm_wday(tm: &mut libc::tm) {
+    let century = (1900 + tm.tm_year) / 100;
+    let mut year = (1900 + tm.tm_year) % 100;
+    if tm.tm_mon < 2 {
+        year -= 1;
+    }
+    // March is 1, …, January 11, February 12.
+    let mut mon = tm.tm_mon - 1;
+    if mon < 1 {
+        mon += 12;
+    }
+    let mut wday = (tm.tm_mday
+        + (2.6 * f64::from(mon) - 0.2).floor() as i32
+        + year
+        + (f64::from(year) / 4.0).floor() as i32
+        + (f64::from(century) / 4.0).floor() as i32
+        - 2 * century)
+        % 7;
+    if wday < 0 {
+        wday += 7;
+    }
+    tm.tm_wday = wday;
+}
+
+/// jq's `set_tm_yday`: the day of the year from month and day, with jq's
+/// bounds folding of an out-of-range month.
+fn set_tm_yday(tm: &mut libc::tm) {
+    const D: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let year = 1900 + tm.tm_year;
+    let leap = tm.tm_mon > 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0);
+    let mut mon = tm.tm_mon.abs();
+    if mon > 11 {
+        mon %= 12;
+    }
+    tm.tm_yday = D[mon as usize] + i32::from(leap) + tm.tm_mday - 1;
+}
+
+/// jq's `f_strptime`. Fields the format does not set stay as jq zeroes them
+/// (`"10:30" | strptime("%H:%M")` is year 1900, month 0, day 0), and wday/yday
+/// are always derived from year/month/day — jq's macOS branch, which this
+/// follows on every platform so the answer does not depend on the libc. Input
+/// left over after the format is allowed when it starts with whitespace, and is
+/// appended to the result as a string, as jq does.
 fn strptime_val(s: &str, fmt: &str) -> R<JqVal> {
     let cs = std::ffi::CString::new(s).map_err(|_| JqErr::msg("bad date string"))?;
     let cf = std::ffi::CString::new(fmt).map_err(|_| JqErr::msg("bad format string"))?;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let end = unsafe { libc::strptime(cs.as_ptr(), cf.as_ptr(), &mut tm) };
-    if end.is_null() {
+    let rest = (!end.is_null()).then(|| {
+        unsafe { std::ffi::CStr::from_ptr(end) }
+            .to_string_lossy()
+            .into_owned()
+    });
+    let Some(rest) =
+        rest.filter(|r| r.starts_with([' ', '\t', '\n', '\x0b', '\x0c', '\r']) || r.is_empty())
+    else {
         return Err(JqErr::msg(format!(
             "date \"{s}\" does not match format \"{fmt}\""
         )));
+    };
+    set_tm_wday(&mut tm);
+    set_tm_yday(&mut tm);
+    let JqVal::Arr(mut a) = tm2jv(&tm, 0.0) else {
+        unreachable!("tm2jv builds an array")
+    };
+    if !rest.is_empty() {
+        Rc::make_mut(&mut a).push(JqVal::str(rest));
     }
-    // `strptime` leaves wday/yday unset on most platforms; jq normalizes through
-    // `timegm`+`gmtime` so the two trailing fields are always correct.
-    let secs = unsafe { libc::timegm(&mut tm.clone()) };
-    Ok(broken_down(secs as f64, false))
+    Ok(JqVal::Arr(a))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5568,7 +5651,7 @@ def limit($n; f): if $n > 0 then label $out | foreach f as $item (0; .+1; $item,
                   else error("limit doesn't support negative count") end;
 def skip($n; f): if $n < 0 then error("skip doesn't support negative count") else foreach f as $item (-1; . + 1; if . >= $n then $item else empty end) end;
 def nth($n): .[$n];
-def nth($n; f): if $n < 0 then error("Out of bounds negative array index") else first(skip($n; f)) end;
+def nth($n; f): if $n < 0 then error("nth doesn't support negative indices") else first(skip($n; f)) end;
 def until(cond; update): def _until: if cond then . else (update | _until) end; _until;
 def while(cond; update): def _while: if cond then ., (update | _while) else empty end; _while;
 def repeat(f): def _repeat: f, _repeat; _repeat;
