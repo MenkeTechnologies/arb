@@ -280,8 +280,14 @@ fn parse_bracket(
         return Ok(());
     }
     // `["key"]` — a quoted object key (checked before `:` so `["a:b"]` is a key).
-    if let Some(k) = c.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
-        key.push(Seg::Key(k.to_string()));
+    // Only ONE plain string literal is a key here, read with its escapes
+    // (`["a\"b"]` is the key `a"b`). Anything else that opens with a quote —
+    // `["a","b"]`, which generates two lookups, or an interpolation — is left
+    // to the jq engine rather than read as one key spelled with quotes inside.
+    if c.starts_with('"') {
+        let k: String = serde_json::from_str(c)
+            .map_err(|_| format!("jq: subscript `[{content}]` runs on the jq engine"))?;
+        key.push(Seg::Key(k));
         return Ok(());
     }
     // `[a:b]` — a slice; it applies to the value the pending path points at.

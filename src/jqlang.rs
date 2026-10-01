@@ -2070,7 +2070,12 @@ impl Parser {
                 default.ok_or_else(|| "jq: object entry needs a `: value`".to_string())?
             };
             entries.push(ObjEntry::KeyVal(key, val));
+            // `DictPair ',' DictPairs`, where DictPairs may be empty: a trailing
+            // comma is legal (`{a: 1,}`), a leading or doubled one is not.
             if self.eat_op(",") {
+                if self.eat_op("}") {
+                    return Ok(Filter::Object(entries));
+                }
                 continue;
             }
             self.want_op("}")?;

@@ -72,3 +72,21 @@ fn as_binds_a_whole_expression() {
     answers("[1, 2 as $x | $x, 3]", "null\n", "[1,2,3]\n");
     answers("reduce 1 + 2 as $x (0; . + $x)", "null\n", "3\n");
 }
+
+/// A quoted subscript is a key only when it is ONE plain string literal, read
+/// with its escapes; `.["a","b"]` generates two lookups and an interpolated key
+/// is computed, as jq does.
+#[test]
+fn quoted_subscripts_follow_jq() {
+    let doc = "{\"a\":[1],\"b\":2,\"a\\\"b\":3,\"k\":\"b\"}\n";
+    answers(r#".["a","b"]"#, doc, "[1]\n2\n");
+    answers(r#".["a\"b"]"#, doc, "3\n");
+    answers(r#".["\(.k)"]"#, doc, "2\n");
+}
+
+/// jq's `DictPairs` may be empty after a comma, so `{a: 1,}` is legal.
+#[test]
+fn an_object_takes_a_trailing_comma() {
+    answers("{a: 1, b: 2,}", "null\n", "{\"a\":1,\"b\":2}\n");
+    answers("[{a,}]", "{\"a\":7}\n", "[{\"a\":7}]\n");
+}
