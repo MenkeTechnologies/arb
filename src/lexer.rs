@@ -452,6 +452,11 @@ const JQ_CALLS: &[&str] = &[
 /// verbatim atom, so `env | has("PATH")` keeps its quotes. A one-word command
 /// reaches the jq engine either way.
 const JQ_BARE: &[&str] = &[
+    // jq's literal keywords: `null | setpath([0]; 1)` must reach the engine as
+    // one atom, not stop at the `;`. None is an arb verb.
+    "null",
+    "true",
+    "false",
     "env",
     "tostring",
     "tonumber",
@@ -678,6 +683,17 @@ fn jq_literal_at(cs: &[char], i: usize) -> bool {
     // starts with a digit, so nothing is taken from arb here either.
     if cs[i].is_ascii_digit() {
         return true;
+    }
+    // Or with a NEGATED term (`-1 as $x | …`, `- .a`): no arb verb starts with
+    // `-` either.
+    if cs[i] == '-' {
+        let mut k = i + 1;
+        while k < cs.len() && matches!(cs[k], ' ' | '\t') {
+            k += 1;
+        }
+        return cs
+            .get(k)
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '.' | '(' | '$'));
     }
     let mut j = i;
     if cs[i] == '@' {

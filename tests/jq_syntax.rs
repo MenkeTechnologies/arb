@@ -50,3 +50,25 @@ fn a_def_after_a_pipe_is_one_program() {
     answers(r#"{"def": 1} | .def"#, "null\n", "1\n");
     answers(r#"[.[] | tostring] | join("def ")"#, "[1,2]\n", "1def 2\n");
 }
+
+/// A program may open with `null`/`true`/`false` or a negated term; it was
+/// lexed as an arb command and cut at the first `;`.
+#[test]
+fn literal_and_negation_led_programs_are_one_atom() {
+    answers("null | setpath([0]; 5)", "null\n", "[5]\n");
+    answers("true as $x | setpath([0]; $x)", "null\n", "[true]\n");
+    answers("- 1 | [., 1] | setpath([0]; 3)", "null\n", "[3,1]\n");
+    answers("-.a", "{\"a\":2}\n", "-2\n");
+}
+
+/// jq 1.8 binds `Expr "as" Patterns | Query`: the source of `as` is the whole
+/// operator expression, not just the term before it.
+#[test]
+fn as_binds_a_whole_expression() {
+    answers("1 + 2 as $x | $x * 10", "null\n", "30\n");
+    answers("1 // 2 as $x | $x + 10", "null\n", "11\n");
+    answers("1 == 1 as $x | 5", "null\n", "5\n");
+    answers("-1 as $x | [limit(1; $x, 2)]", "null\n", "[-1]\n");
+    answers("[1, 2 as $x | $x, 3]", "null\n", "[1,2,3]\n");
+    answers("reduce 1 + 2 as $x (0; . + $x)", "null\n", "3\n");
+}

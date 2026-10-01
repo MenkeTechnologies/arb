@@ -1419,18 +1419,6 @@ impl Parser {
             return Ok(Filter::Label(name, Box::new(body)));
         }
         let lhs = self.comma()?;
-        // `TERM as PATTERNS | BODY` binds looser than `,` and consumes the rest
-        // of the pipeline as its body.
-        if self.is_kw("as") {
-            self.i += 1;
-            let mut pats = vec![self.pattern()?];
-            while self.eat_op("?//") {
-                pats.push(self.pattern()?);
-            }
-            self.want_op("|")?;
-            let body = self.pipe()?;
-            return Ok(Filter::Bind(Box::new(lhs), pats, Box::new(body)));
-        }
         if self.eat_op("|") {
             let rhs = self.pipe()?;
             return Ok(Filter::Pipe(Box::new(lhs), Box::new(rhs)));
@@ -1564,12 +1552,50 @@ impl Parser {
 
     /// `,` — left-associative, binds tighter than `|`.
     fn comma(&mut self) -> Result<Filter, String> {
-        let mut lhs = self.alt()?;
+        let mut lhs = self.bind()?;
         while self.eat_op(",") {
-            let rhs = self.alt()?;
+            let rhs = self.bind()?;
             lhs = Filter::Comma(Box::new(lhs), Box::new(rhs));
         }
         Ok(lhs)
+    }
+
+    /// `Expr "as" Patterns '|' Query` — jq 1.8's production. The SOURCE is a
+    /// whole operator expression (everything that binds tighter than `,`), and
+    /// the BODY is a full query running to the end of the pipeline. Measured
+    /// against jq 1.8.2: `1 + 2 as $x | $x * 10` is `30`, `-1 as $x | 5` is
+    /// `5`, and `[1, 2 as $x | $x]` is `[1,2]` — the `,` stays outside.
+    fn bind(&mut self) -> Result<Filter, String> {
+        let src = self.alt()?;
+        if !self.is_kw("as") {
+            return Ok(src);
+        }
+        self.i += 1;
+        let mut pats = vec![self.pattern()?];
+        while self.eat_op("?//") {
+            pats.push(self.pattern()?);
+        }
+        // yq's POSTFIX REDUCE: `.[] as $item ireduce (0; . + $item)`, where
+        // jq writes `reduce .[] as $item (0; . + $item)`. Same three parts in
+        // a different order, and `as … ireduce` is not valid jq either — jq
+        // requires a `|` here — so this is another shape with no owner.
+        if matches!(self.peek(), Some(Tok::Ident(n)) if n == "ireduce") {
+            self.i += 1;
+            self.want_op("(")?;
+            let init = self.pipe()?;
+            self.want_op(";")?;
+            let update = self.pipe()?;
+            self.want_op(")")?;
+            return Ok(Filter::Reduce(
+                Box::new(src),
+                pats.remove(0),
+                Box::new(init),
+                Box::new(update),
+            ));
+        }
+        self.want_op("|")?;
+        let body = self.pipe()?;
+        Ok(Filter::Bind(Box::new(src), pats, Box::new(body)))
     }
 
     /// `//` — right-associative (jq's `%right "//"`).
@@ -1683,13 +1709,9 @@ impl Parser {
 }
 
 impl Parser {
-    /// A term plus its postfix chain (`.k`, `[e]`, `[]`, `[a:b]`, `?`) and the
-    /// `as`-binding that may follow it.
-    ///
-    /// `Term "as" Patterns '|' Exp` is jq's own production: the SOURCE is a
-    /// term, and the BODY is a full expression running to the end of the
-    /// pipeline. Measured: `[1, 2 as $x | $x]` is `[1,2]`, so the `,` is outside
-    /// the binding and only `2` is bound.
+    /// A term plus its postfix chain (`.k`, `[e]`, `[]`, `[a:b]`, `?`). An
+    /// `as`-binding is not part of it: its source is a whole expression (see
+    /// `bind`).
     fn postfix(&mut self) -> Result<Filter, String> {
         let mut f = self.term()?;
         loop {
@@ -1744,34 +1766,6 @@ impl Parser {
                 }
             }
             break;
-        }
-        if self.is_kw("as") {
-            self.i += 1;
-            let mut pats = vec![self.pattern()?];
-            while self.eat_op("?//") {
-                pats.push(self.pattern()?);
-            }
-            // yq's POSTFIX REDUCE: `.[] as $item ireduce (0; . + $item)`, where
-            // jq writes `reduce .[] as $item (0; . + $item)`. Same three parts in
-            // a different order, and `as … ireduce` is not valid jq either — jq
-            // requires a `|` here — so this is another shape with no owner.
-            if matches!(self.peek(), Some(Tok::Ident(n)) if n == "ireduce") {
-                self.i += 1;
-                self.want_op("(")?;
-                let init = self.pipe()?;
-                self.want_op(";")?;
-                let update = self.pipe()?;
-                self.want_op(")")?;
-                return Ok(Filter::Reduce(
-                    Box::new(f),
-                    pats.remove(0),
-                    Box::new(init),
-                    Box::new(update),
-                ));
-            }
-            self.want_op("|")?;
-            let body = self.pipe()?;
-            return Ok(Filter::Bind(Box::new(f), pats, Box::new(body)));
         }
         Ok(f)
     }
@@ -1933,7 +1927,8 @@ impl Parser {
             "reduce" | "foreach" => {
                 let is_reduce = name == "reduce";
                 self.i += 1;
-                let src = self.postfix_no_bind()?;
+                // `"reduce" Expr "as" Patterns …`: the source runs up to `as`.
+                let src = self.alt()?;
                 self.want_kw("as")?;
                 let pat = self.pattern()?;
                 self.want_op("(")?;
@@ -2008,38 +2003,6 @@ impl Parser {
                 Ok(Filter::Call(Rc::from(name), args))
             }
         }
-    }
-
-    /// `reduce`/`foreach` take a Term as their SOURCE, and that term must not
-    /// swallow the `as` that follows it — which `postfix` would, since `as` is
-    /// part of its own production. Same chain, `as` handling removed.
-    fn postfix_no_bind(&mut self) -> Result<Filter, String> {
-        let save_as = self.t.len();
-        let _ = save_as;
-        let mut f = self.term()?;
-        loop {
-            if self.eat_op("?") {
-                f = Filter::Optional(Box::new(f));
-                continue;
-            }
-            if let Some(Tok::Field(name)) = self.peek() {
-                let name: Rc<str> = Rc::from(name.as_str());
-                self.i += 1;
-                f = Filter::Field(Box::new(f), name);
-                continue;
-            }
-            if self.is_op(".") && matches!(self.t.get(self.i + 1), Some(Tok::Op("["))) {
-                self.i += 1;
-                continue;
-            }
-            if self.is_op("[") {
-                self.i += 1;
-                f = self.bracket_suffix(f)?;
-                continue;
-            }
-            break;
-        }
-        Ok(f)
     }
 
     /// `{ … }` construction. Entries are `k: v`, `"k": v`, `(e): v`, `$v`,
