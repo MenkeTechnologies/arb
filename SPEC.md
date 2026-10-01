@@ -357,7 +357,14 @@ a match, `{$name: P}` patterns, and jq's refusals for `unique`/`min`/`max`/
 reader — what it accepts and its positioned refusals, and jq 1.8's decNumber
 number model: two literals compare as decimals, a computed `-0` keeps its sign,
 `have_decnum` is true) measured 759 pass, 0 diverged, 159 skipped (729 pass /
-30 diverged on the same corpus before the fixes).
+30 diverged on the same corpus before the fixes). The round-6 additions (`as`
+binding jq 1.8's whole expression, a `def` after a pipe, literal- and
+negation-led programs, a trailing comma in an object, quoted subscripts that
+generate or interpolate, `strptime`/`mktime`/`gmtime`/`strftime %s` as jq's C,
+`in.json` reading JSON texts rather than lines, and `input_line_number` over the
+whole stream) measured 772 pass, 0 diverged, 159 skipped (760 pass / 12 diverged
+on the same corpus before the fixes). The 825 above is the last run WITH `yq`;
+it was not re-measured this round.
 
 | leg | reference | containment | status |
 |---|---|---|---|
