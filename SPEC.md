@@ -640,7 +640,15 @@ expression language (§6):
 * a TYPE mismatch is a hard error, not an answer. `null | .[]`, `3 | .a`,
   `"hello" | .[1]`, `true | length`, `{"a":1} | . + 3`, `.n / 0` and `.n % 0` all
   refuse with `jq: …` on stderr and a non-zero exit, matching what `jq` itself
-  does on the same input (exit 5, as jq uses).
+  does on the same input (exit 5, as jq uses);
+* an uncaught error ends its INPUT, not the stream, as jq's main loop does: the
+  values that input produced before the error are printed, the error goes to
+  stderr, the next line still runs, and the exit status is the LAST line's (5
+  when it raised, else 0). A non-string error value is reported as jq words it,
+  `jq: (not a string): {"a":1}`. `halt` and `halt_error` end the whole run with
+  their own status, and `halt_error` writes its message unprefixed — a string
+  raw with no newline, any other value as JSON plus a newline, `null` not at all.
+  The TUI, REPL, `serve` and `--test` still show the first error as a refusal.
 
 Those type rules apply to a line that PARSES as JSON. arb's stream is TEXT and
 `jq` has no reading of a non-JSON line at all (it refuses the whole input), so

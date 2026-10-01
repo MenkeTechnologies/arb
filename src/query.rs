@@ -438,8 +438,92 @@ pub enum QueryResult {
     Error(String),
 }
 
+/// What a jq program reported besides its output lines — the part of jq's
+/// `process()` (main.c) that is not stdout.
+///
+/// jq does not stop at an uncaught error: the values the input produced BEFORE
+/// it are printed, the error goes to stderr, and the next input runs. The exit
+/// status is the LAST input's (5 when it raised, else 0). `halt`/`halt_error`
+/// end the whole run with their own status and stderr text instead.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct JqReport {
+    /// Every uncaught error, in input order, already `jq: …`-anchored.
+    pub errors: Vec<String>,
+    /// The last input a jq program ran on raised, so jq would exit 5.
+    pub last_failed: bool,
+    /// `halt`/`halt_error`: the exit status and the exact stderr text (no
+    /// prefix; jq adds a newline only after a non-string message).
+    pub halt: Option<(i32, String)>,
+}
+
+/// An uncaught jq error as jq's main.c words it, minus the `error (at …)`
+/// position: a string message as-is, anything else as `(not a string): JSON`.
+fn uncaught(e: &crate::jqlang::JqErr) -> String {
+    match e {
+        crate::jqlang::JqErr::Err(crate::jqlang::JqVal::Str(s)) => format!("jq: {s}"),
+        crate::jqlang::JqErr::Err(v) => {
+            format!("jq: (not a string): {}", crate::jqlang::render(v))
+        }
+        other => format!("jq: {}", other.to_message()),
+    }
+}
+
+/// The stderr text of `halt_error`, transcribed from main.c: a string is written
+/// raw with no newline, `null` writes nothing, anything else is its compact JSON
+/// plus a newline.
+fn halt_text(msg: Option<&crate::jqlang::JqVal>) -> String {
+    match msg {
+        None | Some(crate::jqlang::JqVal::Null) => String::new(),
+        Some(crate::jqlang::JqVal::Str(s)) => s.to_string(),
+        Some(v) => format!("{}\n", crate::jqlang::render(v)),
+    }
+}
+
+/// Fold one input's run into `rep` the way jq's main loop does. `true` means
+/// the program halted, which ends the whole run, not just this input.
+fn record_run(rep: &mut JqReport, r: Result<(), crate::jqlang::JqErr>) -> bool {
+    match r {
+        Ok(()) => {
+            rep.last_failed = false;
+            false
+        }
+        Err(crate::jqlang::JqErr::Halt(code, msg)) => {
+            rep.halt = Some((code, halt_text(msg.as_ref())));
+            true
+        }
+        Err(e) => {
+            rep.errors.push(uncaught(&e));
+            rep.last_failed = true;
+            false
+        }
+    }
+}
+
 /// Evaluate `ops` against `lines`. `elapsed_secs` feeds `rate`.
+///
+/// A jq program's uncaught error REFUSES the pipeline here: the TUI, the REPL,
+/// `serve` and `--test` show a refusal rather than a partial answer. The `out`
+/// filter path wants jq's stream semantics instead and calls [`eval_reporting`].
 pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult {
+    let mut rep = JqReport::default();
+    let r = eval_reporting(ops, lines, elapsed_secs, &mut rep);
+    match (rep.errors.into_iter().next(), rep.halt) {
+        (Some(e), _) => QueryResult::Error(e),
+        (None, Some((_, msg))) if !msg.is_empty() => {
+            QueryResult::Error(format!("jq: {}", msg.trim_end_matches('\n')))
+        }
+        _ => r,
+    }
+}
+
+/// [`eval`] with jq's uncaught-error model: a jq program's errors and `halt`
+/// land in `rep` and the lines produced before them are kept.
+pub fn eval_reporting(
+    ops: &[QueryOp],
+    lines: &[String],
+    elapsed_secs: f64,
+    rep: &mut JqReport,
+) -> QueryResult {
     let mut cur: Vec<String> = lines.to_vec();
     // The YAML NODE channel. `cur` is text, so a YAML node's comments, anchors
     // and quoting cannot survive it — this carries the composed documents beside
@@ -567,24 +651,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                             next.push(v);
                             Ok(())
                         });
-                        if let Err(e) = r {
-                            match e {
-                                crate::jqlang::JqErr::Halt(_, msg) => {
-                                    if let Some(m) = msg {
-                                        return QueryResult::Error(format!(
-                                            "jq: {}",
-                                            crate::jqlang::render_raw(&m)
-                                        ));
-                                    }
-                                    break;
-                                }
-                                other => {
-                                    return QueryResult::Error(format!(
-                                        "jq: {}",
-                                        other.to_message()
-                                    ))
-                                }
-                            }
+                        if record_run(rep, r) {
+                            break;
                         }
                     }
                     nodes = Some(next);
@@ -601,21 +669,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                         out.push(crate::jqlang::render_raw(&v));
                         Ok(())
                     });
-                    if let Err(e) = r {
-                        match e {
-                            crate::jqlang::JqErr::Halt(_, msg) => {
-                                if let Some(m) = msg {
-                                    return QueryResult::Error(format!(
-                                        "jq: {}",
-                                        crate::jqlang::render_raw(&m)
-                                    ));
-                                }
-                                break;
-                            }
-                            other => {
-                                return QueryResult::Error(format!("jq: {}", other.to_message()))
-                            }
-                        }
+                    if record_run(rep, r) {
+                        break;
                     }
                 }
                 cur = out;

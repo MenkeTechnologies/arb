@@ -1718,41 +1718,69 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
     let mut out = LineOut::new();
     let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
     let (mut buf, mut line) = (Vec::new(), String::new());
+    // jq's main loop: an input that raises prints what it produced, reports
+    // the error, and the NEXT input still runs; the exit status is the last
+    // input's (5 when it raised). `halt`/`halt_error` end the run.
+    let mut failed = false;
     while read_line_into(&mut r, &mut buf, &mut line) {
-        match query::eval(ops, std::slice::from_ref(&line), 0.0) {
+        let mut rep = query::JqReport::default();
+        match query::eval_reporting(ops, std::slice::from_ref(&line), 0.0, &mut rep) {
             QueryResult::Lines(ls) => {
                 for l in ls {
                     if let Err(e) = out.line(&l) {
                         return ok_on_broken_pipe(Err(e));
                     }
                 }
+                failed = rep.last_failed;
             }
             // SPEC §8: a construct outside the documented subset is a hard error,
             // never a silent reinterpretation. `5` is jq's own status for a
-            // filter that raised. Flush first so the lines already produced reach
-            // the consumer before the diagnostic.
+            // filter that raised.
             QueryResult::Error(msg) => {
-                let _ = out.finish();
-                eprintln!("arb: {msg}");
-                crate::hosted::exit(5);
+                rep.errors.push(msg);
+                failed = true;
             }
-            _ => {}
+            _ => failed = false,
+        }
+        if !rep.errors.is_empty() || rep.halt.is_some() {
+            // Flush first so the lines already produced reach the consumer
+            // before the diagnostic.
+            let _ = out.finish();
+            report_jq(&rep);
+        }
+        if let Some((code, _)) = rep.halt {
+            crate::hosted::exit(code);
         }
         if let Err(e) = out.sync(!r.buffer().is_empty()) {
             return ok_on_broken_pipe(Err(e));
         }
     }
-    ok_on_broken_pipe(out.finish())
+    let done = ok_on_broken_pipe(out.finish());
+    if failed {
+        crate::hosted::exit(5);
+    }
+    done
+}
+
+/// Write a jq program's stderr: each uncaught error under arb's `arb: ` prefix,
+/// then `halt_error`'s message exactly as jq writes it (no prefix, and a
+/// trailing newline only where jq adds one).
+fn report_jq(rep: &query::JqReport) {
+    for e in &rep.errors {
+        eprintln!("arb: {e}");
+    }
+    if let Some((_, msg)) = &rep.halt {
+        eprint!("{msg}");
+    }
 }
 
 fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
     let st = state.lock().unwrap();
     let raw: Vec<String> = st.lines.iter().map(|l| l.to_string()).collect();
     let elapsed = st.start.elapsed().as_secs_f64();
-    let result = query::eval(ops, &raw, elapsed);
     let mut out = io::stdout().lock();
     if json {
-        let v = match result {
+        let v = match query::eval(ops, &raw, elapsed) {
             QueryResult::Lines(ls) => {
                 serde_json::Value::Array(ls.into_iter().map(serde_json::Value::String).collect())
             }
@@ -1774,7 +1802,9 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
         writeln!(out, "{}", serde_json::to_string(&v).unwrap_or_default())?;
         return Ok(());
     }
-    match result {
+    // The line output keeps jq's stream semantics, as `stream_out` does.
+    let mut rep = query::JqReport::default();
+    match query::eval_reporting(ops, &raw, elapsed, &mut rep) {
         QueryResult::Lines(ls) => {
             for l in ls {
                 writeln!(out, "{l}")?;
@@ -1797,7 +1827,15 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
             crate::hosted::exit(5);
         }
     }
-    Ok(())
+    if !rep.errors.is_empty() || rep.halt.is_some() {
+        out.flush()?;
+        report_jq(&rep);
+    }
+    match rep.halt {
+        Some((code, _)) => crate::hosted::exit(code),
+        None if rep.last_failed => crate::hosted::exit(5),
+        None => Ok(()),
+    }
 }
 
 /// Validate a spec and copy it into `~/.arb/lib/NAME.arb` so it can later be run
