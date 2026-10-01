@@ -344,7 +344,11 @@ parity.
 
 One containment probe per reference, each enumerating that reference's own
 surface and reporting what arb is missing. Current run: **825 probes, 825 pass,
-0 diverged, no allowlist.**
+0 diverged, no allowlist.** The round-4 jq additions (`repeat`, positional
+`sub`/`gsub` generators, code-point `indices`, the `s`/`p` regex flags, UTC
+`strftime` zones, string repetition, and jq's fixed refusal wordings) were
+measured on a machine without `yq`: 728 pass, 0 diverged, 159 yq probes skipped
+(703 pass / 24 diverged on the same corpus before the fixes).
 
 | leg | reference | containment | status |
 |---|---|---|---|

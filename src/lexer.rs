@@ -179,6 +179,11 @@ pub fn lex_opts(
                         // not miscount depth — but only when it actually closes
                         // before end-of-line. A non-closing `/` (division, a path)
                         // is treated as an ordinary char, matching the main lexer.
+                        // A `/` that follows an OPERAND is jq division, never a
+                        // regex: `. / "/"` must not swallow the `"` as pattern
+                        // text (which left the string open and the block
+                        // "unterminated").
+                        '/' if slash_is_division(&cs[start..i]) => {}
                         '/' => {
                             let mut j = i + 1;
                             let mut closed = false;
@@ -612,6 +617,34 @@ use crate::jqlang::FORMAT_NAMES as JQ_FORMATS;
 ///
 /// A bare alphanumeric word is still arb's NATIVE verb, per SPEC §8 — only the
 /// jq keywords, the `name(` call spelling and the `@format` names are claimed.
+/// Whether a `/` whose preceding block text is `before` is jq DIVISION rather
+/// than the start of a `/regex/` literal. Division follows an operand: a closing
+/// `)`/`]`, a bare `.`, a number, or a jq path/variable token (`.a.b`, `$x`). A
+/// regex literal is a verb ARGUMENT, so it follows an arb word (`grep /x/`,
+/// `in.json /x/`) — those words never begin with `.` or `$`.
+fn slash_is_division(before: &[char]) -> bool {
+    let mut end = before.len();
+    while end > 0 && matches!(before[end - 1], ' ' | '\t') {
+        end -= 1;
+    }
+    let Some(&last) = end.checked_sub(1).map(|k| &before[k]) else {
+        return false;
+    };
+    if matches!(last, '.' | ')' | ']') {
+        return true;
+    }
+    let is_tok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '$');
+    if !is_tok(last) {
+        return false;
+    }
+    let mut start = end;
+    while start > 0 && is_tok(before[start - 1]) {
+        start -= 1;
+    }
+    let tok = &before[start..end];
+    matches!(tok[0], '.' | '$') || tok.iter().all(|c| c.is_ascii_digit() || *c == '.')
+}
+
 fn jq_literal_at(cs: &[char], i: usize) -> bool {
     if matches!(cs[i], '.' | '[' | '(' | '$' | '"') {
         return true;

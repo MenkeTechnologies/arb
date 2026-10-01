@@ -336,7 +336,11 @@ fn parse_json_with(src: &str, lax: bool) -> Result<JqVal, String> {
 /// Parse a stream of whitespace-separated JSON documents (jq's own input model).
 pub fn parse_json_stream(src: &str) -> Result<Vec<JqVal>, String> {
     let b = src.as_bytes();
-    let mut p = JsonParser { b, i: 0, lax: false };
+    let mut p = JsonParser {
+        b,
+        i: 0,
+        lax: false,
+    };
     let mut out = Vec::new();
     loop {
         p.ws();
@@ -2683,19 +2687,22 @@ fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
 /// `parse_slice` computes it: a negative bound counts from the end, both are
 /// clamped to `0..=len`, a fractional start is truncated and a fractional end
 /// rounded UP (`[1,2,3,4,5] | .[1.2:3.5]` is `[2,3,4]`), and an end before the
-/// start is the start. A bound that is not a number is open. Reading, assigning
+/// start is the start. A `null` bound is open;
+/// any other non-number is jq's "slice indices must be integers" error. Reading, assigning
 /// and deleting a slice all go through here.
-fn slice_bounds(lo: Option<&JqVal>, hi: Option<&JqVal>, len: usize) -> (usize, usize) {
+fn slice_bounds(lo: Option<&JqVal>, hi: Option<&JqVal>, len: usize) -> R<(usize, usize)> {
     let conv = |b: Option<&JqVal>, open: f64| match b.map(JqVal::bare) {
         Some(JqVal::Num(n, _)) => {
             let n = if *n < 0.0 { n + len as f64 } else { *n };
-            n.clamp(0.0, len as f64)
+            Ok(n.clamp(0.0, len as f64))
         }
-        _ => open,
+        Some(JqVal::Null) => Ok(open),
+        // A path segment object MISSING `start`/`end` is refused too.
+        _ => Err(JqErr::msg("Array/string slice indices must be integers")),
     };
-    let s = conv(lo, 0.0) as usize;
-    let e = conv(hi, len as f64).ceil() as usize;
-    (s, e.max(s))
+    let s = conv(lo, 0.0)? as usize;
+    let e = conv(hi, len as f64)?.ceil() as usize;
+    Ok((s, e.max(s)))
 }
 
 /// jq's slice: clamped, negative-from-the-end, over arrays and strings, with
@@ -2705,13 +2712,13 @@ fn slice_value(v: &JqVal, lo: &JqVal, hi: &JqVal) -> R<JqVal> {
     match v.bare() {
         JqVal::Null => Ok(JqVal::Null),
         JqVal::Arr(a) => {
-            let (s, e) = bounds(a.len());
+            let (s, e) = bounds(a.len())?;
             Ok(JqVal::arr(a[s..e].to_vec()))
         }
         JqVal::Str(s) => {
             // jq slices a string by CODE POINT, not by byte.
             let cs: Vec<char> = s.chars().collect();
-            let (a, b) = bounds(cs.len());
+            let (a, b) = bounds(cs.len())?;
             Ok(JqVal::str(cs[a..b].iter().collect::<String>()))
         }
         other => Err(JqErr::msg(format!(
@@ -2783,7 +2790,16 @@ fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
         BinOp::Mul => match (a, b) {
             (JqVal::Num(x, _), JqVal::Num(y, _)) => Ok(JqVal::num(x * y)),
             (JqVal::Str(s), JqVal::Num(n, _)) | (JqVal::Num(n, _), JqVal::Str(s)) => {
-                let times = if *n <= 0.0 { 0 } else { *n as usize };
+                // jq 1.8.2: a negative or NaN count is `null`, otherwise the
+                // count is truncated (`"ab" * 0.5` is `""`), and a result past
+                // `INT_MAX` bytes is refused rather than allocated.
+                if n.is_nan() || *n < 0.0 {
+                    return Ok(JqVal::Null);
+                }
+                let times = *n as usize;
+                if s.len().saturating_mul(times) > i32::MAX as usize {
+                    return Err(JqErr::msg("Repeat string result too long"));
+                }
                 Ok(JqVal::str(s.repeat(times)))
             }
             (JqVal::Obj(_), JqVal::Obj(_)) => Ok(deep_merge(a, b)),
@@ -2995,7 +3011,7 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
         "csv" | "tsv" => {
             let JqVal::Arr(a) = v else {
                 return Err(JqErr::msg(format!(
-                    "{}{} cannot be {}-formatted, only an array can be",
+                    "{}{} cannot be {}-formatted, only array",
                     v.type_name(),
                     paren_of(v),
                     name
@@ -3015,10 +3031,11 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
                         .replace('\r', "\\r"),
                     other => {
                         return Err(JqErr::msg(format!(
-                            "{}{} is not valid in a {name} row",
+                            // jq 1.8.2 words this "csv row" for `@tsv` too.
+                            "{}{} is not valid in a csv row",
                             other.type_name(),
                             paren_of(other)
-                        )))
+                        )));
                     }
                 });
             }
@@ -3098,7 +3115,10 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
     let mut out = Vec::with_capacity(s.len() / 4 * 3 + 2);
     let (mut code, mut held) = (0u32, 0u32);
     for c in s.bytes().take_while(|&c| c != b'=') {
-        let v = B64.iter().position(|&x| x == c).ok_or("is not valid base64 data")? as u32;
+        let v = B64
+            .iter()
+            .position(|&x| x == c)
+            .ok_or("is not valid base64 data")? as u32;
         code = (code << 6) | v;
         held += 1;
         if held == 4 {
@@ -3154,7 +3174,9 @@ fn jq_utf8_lossy(b: &[u8]) -> String {
                 out.push('\u{FFFD}');
                 // Consume up to the first byte that is not a continuation; an
                 // overlong or surrogate sequence of whole length goes entirely.
-                let bad = (1..length).find(|&k| b[i + k] & 0xC0 != 0x80).unwrap_or(length);
+                let bad = (1..length)
+                    .find(|&k| b[i + k] & 0xC0 != 0x80)
+                    .unwrap_or(length);
                 i += bad;
             }
         }
@@ -3701,8 +3723,9 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                 JqVal::Null => Vec::new(),
                 other => {
                     return Err(JqErr::msg(format!(
-                        "Cannot index {} with \"{k}\"",
-                        other.type_name()
+                        "Cannot index {} with string{}",
+                        other.type_name(),
+                        paren_of(seg)
                     )))
                 }
             };
@@ -3723,8 +3746,9 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                 JqVal::Null => Vec::new(),
                 other => {
                     return Err(JqErr::msg(format!(
-                        "Cannot index {} with number",
-                        other.type_name()
+                        "Cannot index {} with number{}",
+                        other.type_name(),
+                        paren_of(seg)
                     )))
                 }
             };
@@ -3761,7 +3785,7 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                     )))
                 }
             };
-            let (s, e) = slice_bounds(Some(&lo), Some(&hi), a.len());
+            let (s, e) = slice_bounds(seg.obj_get("start"), seg.obj_get("end"), a.len())?;
             let cur = JqVal::arr(a[s..e].to_vec());
             let sub = set_path(&cur, rest, newv)?;
             let JqVal::Arr(repl) = sub else {
@@ -3817,13 +3841,22 @@ fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
                 )))
             }
             (JqVal::Arr(a), JqVal::Obj(_)) => {
-                let (s, e) = slice_bounds(seg.obj_get("start"), seg.obj_get("end"), a.len());
+                let (s, e) = slice_bounds(seg.obj_get("start"), seg.obj_get("end"), a.len())?;
                 let mut out = a[..s].to_vec();
                 out.extend(a[e..].iter().cloned());
                 Ok(rebox(JqVal::arr(out)))
             }
+            // jq's `jv_dels` refusals, worded per container.
+            (JqVal::Obj(_), k) => Err(JqErr::msg(format!(
+                "Cannot delete {} field of object",
+                k.type_name()
+            ))),
+            (JqVal::Arr(_), k) => Err(JqErr::msg(format!(
+                "Cannot delete {} element of array",
+                k.type_name()
+            ))),
             (other, _) => Err(JqErr::msg(format!(
-                "Cannot delete field at index of {}",
+                "Cannot delete fields from {}",
                 other.type_name()
             ))),
         };
@@ -4046,6 +4079,35 @@ fn one(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<JqVal> {
     got.ok_or_else(|| JqErr::msg("argument produced no value"))
 }
 
+/// A string input, or jq's FIXED message for this builtin — the C builtins that
+/// say e.g. "trim input must be a string" do not name the offending value.
+fn str_or(v: &JqVal, msg: &str) -> R<Rc<str>> {
+    match v.bare() {
+        JqVal::Str(s) => Ok(s.clone()),
+        _ => Err(JqErr::msg(msg)),
+    }
+}
+
+/// A libm argument, refused with jq's `<type> (<value>) number required`.
+fn num_required(v: &JqVal) -> R<f64> {
+    v.as_f64().ok_or_else(|| {
+        let b = v.bare();
+        JqErr::msg(format!("{}{} number required", b.type_name(), paren_of(b)))
+    })
+}
+
+/// `utf8bytelength`, with jq's "only strings have UTF-8 byte length" refusal.
+fn utf8_len_input(v: &JqVal) -> R<f64> {
+    match v.bare() {
+        JqVal::Str(s) => Ok(s.len() as f64),
+        other => Err(JqErr::msg(format!(
+            "{}{} only strings have UTF-8 byte length",
+            other.type_name(),
+            paren_of(other)
+        ))),
+    }
+}
+
 fn want_str(v: &JqVal, who: &str) -> R<Rc<str>> {
     match v.bare() {
         JqVal::Str(s) => Ok(s.clone()),
@@ -4129,7 +4191,7 @@ fn builtin(
             JqVal::Obj(m) => JqVal::num(m.len() as f64),
             JqVal::Node(_) => unreachable!("bare() never returns a Node"),
         }),
-        ("utf8bytelength", 0) => out(JqVal::num(want_str(input, "counted in bytes")?.len() as f64)),
+        ("utf8bytelength", 0) => out(JqVal::num(utf8_len_input(input)?)),
 
         ("keys", 0) | ("keys_unsorted", 0) => {
             let mut ks = match input {
@@ -4195,7 +4257,7 @@ fn builtin(
             ))),
         },
         ("explode", 0) => out(JqVal::arr(
-            want_str(input, "exploded")?
+            str_or(input, "explode input must be a string")?
                 .chars()
                 .map(|c| JqVal::num(c as u32 as f64))
                 .collect(),
@@ -4221,9 +4283,11 @@ fn builtin(
             out(JqVal::str(s))
         }
         ("ascii_downcase", 0) => out(JqVal::str(
-            want_str(input, "downcased")?.to_ascii_lowercase(),
+            str_or(input, "explode input must be a string")?.to_ascii_lowercase(),
         )),
-        ("ascii_upcase", 0) => out(JqVal::str(want_str(input, "upcased")?.to_ascii_uppercase())),
+        ("ascii_upcase", 0) => out(JqVal::str(
+            str_or(input, "explode input must be a string")?.to_ascii_uppercase(),
+        )),
         ("startswith", 1) | ("endswith", 1) => {
             let pre = one(it, &args[0], input, env)?;
             match (input, &pre) {
@@ -4235,13 +4299,19 @@ fn builtin(
                 _ => Err(JqErr::msg(format!("{name}() requires string inputs"))),
             }
         }
-        ("ltrim", 0) => out(JqVal::str(want_str(input, "trimmed")?.trim_start())),
-        ("rtrim", 0) => out(JqVal::str(want_str(input, "trimmed")?.trim_end())),
-        ("trim", 0) => out(JqVal::str(want_str(input, "trimmed")?.trim())),
+        ("ltrim", 0) => out(JqVal::str(
+            str_or(input, "trim input must be a string")?.trim_start(),
+        )),
+        ("rtrim", 0) => out(JqVal::str(
+            str_or(input, "trim input must be a string")?.trim_end(),
+        )),
+        ("trim", 0) => out(JqVal::str(
+            str_or(input, "trim input must be a string")?.trim(),
+        )),
         ("split", 1) => {
             let sep = one(it, &args[0], input, env)?;
-            let s = want_str(input, "split")?;
-            let sep = want_str(&sep, "used as a separator")?;
+            let s = str_or(input, "split input and separator must be strings")?;
+            let sep = str_or(&sep, "split input and separator must be strings")?;
             out(JqVal::arr(split_str(&s, &sep)))
         }
         ("_strindices", 1) => {
@@ -4253,9 +4323,13 @@ fn builtin(
             let mut hits = Vec::new();
             if !n.is_empty() {
                 let mut from = 0usize;
+                // jq 1.8 reports CODE-POINT offsets (1.7 reported bytes), and
+                // overlapping hits count, so the scan resumes one character —
+                // not one byte — past each hit.
                 while let Some(off) = h[from..].find(&*n) {
-                    hits.push(JqVal::num((from + off) as f64));
-                    from += off + 1;
+                    let at = from + off;
+                    hits.push(JqVal::num(cp_index(&h, at) as f64));
+                    from = at + h[at..].chars().next().map_or(1, char::len_utf8);
                 }
             }
             out(JqVal::arr(hits))
@@ -4535,12 +4609,8 @@ fn builtin(
         | ("scalbln", 2)
         | ("jn", 2)
         | ("yn", 2) => {
-            let a = one(it, &args[0], input, env)?
-                .as_f64()
-                .ok_or_else(|| JqErr::msg(format!("{name} requires numbers")))?;
-            let b = one(it, &args[1], input, env)?
-                .as_f64()
-                .ok_or_else(|| JqErr::msg(format!("{name} requires numbers")))?;
+            let a = num_required(&one(it, &args[0], input, env)?)?;
+            let b = num_required(&one(it, &args[1], input, env)?)?;
             out(JqVal::num(match name {
                 "pow" => a.powf(b),
                 "atan2" => a.atan2(b),
@@ -4563,11 +4633,7 @@ fn builtin(
             }))
         }
         ("fma", 3) => {
-            let g = |i: usize| -> R<f64> {
-                one(it, &args[i], input, env)?
-                    .as_f64()
-                    .ok_or_else(|| JqErr::msg("fma requires numbers"))
-            };
+            let g = |i: usize| -> R<f64> { num_required(&one(it, &args[i], input, env)?) };
             out(JqVal::num(g(0)?.mul_add(g(1)?, g(2)?)))
         }
         ("infinite", 0) => out(JqVal::num(f64::INFINITY)),
@@ -4610,7 +4676,12 @@ fn builtin(
             for e in list.iter() {
                 match e {
                     JqVal::Arr(segs) => paths.push(segs.as_ref().clone()),
-                    _ => return Err(JqErr::msg("Path must be specified as an array")),
+                    other => {
+                        return Err(JqErr::msg(format!(
+                            "Path must be specified as array, not {}",
+                            other.type_name()
+                        )))
+                    }
                 }
             }
             out(del_paths(input, paths)?)
@@ -4722,12 +4793,12 @@ fn builtin(
         ("gmtime", 0) | ("localtime", 0) => {
             let t = input
                 .as_f64()
-                .ok_or_else(|| JqErr::msg(format!("{name}() requires a number")))?;
+                .ok_or_else(|| JqErr::msg(format!("{name}() requires numeric inputs")))?;
             out(broken_down(t, name == "localtime"))
         }
         ("strftime", 1) | ("strflocaltime", 1) => {
             let f = one(it, &args[0], input, env)?;
-            let f = want_str(&f, "used as a strftime format")?;
+            let f = str_or(&f, &format!("{name}/1 requires a string format"))?;
             out(JqVal::str(strftime_val(
                 input,
                 &f,
@@ -4736,8 +4807,8 @@ fn builtin(
         }
         ("strptime", 1) => {
             let f = one(it, &args[0], input, env)?;
-            let f = want_str(&f, "used as a strptime format")?;
-            let s = want_str(input, "parsed as a date")?;
+            let f = str_or(&f, "strptime/1 requires string inputs and arguments")?;
+            let s = str_or(input, "strptime/1 requires string inputs and arguments")?;
             out(strptime_val(&s, &f)?)
         }
 
@@ -4759,6 +4830,15 @@ fn want_arr(v: &JqVal, who: &str) -> R<Rc<Vec<JqVal>>> {
 /// Pair every element of the input array with `[f]` evaluated over it — the key
 /// array jq's `_sort_by_impl` family sorts on.
 fn keyed_elements(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<Vec<(JqVal, JqVal)>> {
+    // jq runs `map([f])` first, so a scalar input fails as an ITERATION.
+    if !matches!(input.bare(), JqVal::Arr(_) | JqVal::Obj(_)) {
+        let b = input.bare();
+        return Err(JqErr::msg(format!(
+            "Cannot iterate over {}{}",
+            b.type_name(),
+            paren_of(b)
+        )));
+    }
     let a = want_arr(input, "sorted")?;
     let mut keyed = Vec::with_capacity(a.len());
     for e in a.iter() {
@@ -4858,9 +4938,12 @@ fn compile_re(pat: &str, flags: &str) -> R<(Rc<regex::Regex>, bool)> {
             'g' => global = true,
             'i' => prefix.push('i'),
             'x' => prefix.push('x'),
-            's' => prefix.push('s'),
-            'm' => prefix.push('s'),
-            'p' => prefix.push_str("sm"),
+            // Oniguruma's SINGLELINE: `^`/`$` anchor to the whole string,
+            // which is already this engine's default — so `s` adds nothing
+            // (it is NOT dot-matches-newline; that is `m`, Oniguruma's
+            // MULTILINE). `p` is both, i.e. just dot-all here.
+            's' => {}
+            'm' | 'p' => prefix.push('s'),
             'n' => {}
             'l' => {}
             other => {
@@ -4938,20 +5021,30 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
         let whole = caps.get(0).expect("group 0 always participates");
         let mut cap_list = Vec::new();
         for (gi, name) in names.iter().enumerate().skip(1) {
-            let (off, len, text) = match caps.get(gi) {
-                Some(m) => (
-                    cp_index(&s, m.start()) as f64,
-                    m.as_str().chars().count() as f64,
-                    JqVal::str(m.as_str()),
-                ),
-                None => (-1.0, 0.0, JqVal::Null),
-            };
-            cap_list.push(JqVal::obj(vec![
-                (Rc::from("offset"), JqVal::num(off)),
-                (Rc::from("length"), JqVal::num(len)),
-                (Rc::from("string"), text),
-                (Rc::from("name"), name.map_or(JqVal::Null, JqVal::str)),
-            ]));
+            let name = (Rc::from("name"), name.map_or(JqVal::Null, JqVal::str));
+            // jq builds a non-participating group's object in a different key
+            // order (`offset, string, length`) than a matched one, and key
+            // order is visible in the output.
+            cap_list.push(JqVal::obj(match caps.get(gi) {
+                Some(m) => vec![
+                    (
+                        Rc::from("offset"),
+                        JqVal::num(cp_index(&s, m.start()) as f64),
+                    ),
+                    (
+                        Rc::from("length"),
+                        JqVal::num(m.as_str().chars().count() as f64),
+                    ),
+                    (Rc::from("string"), JqVal::str(m.as_str())),
+                    name,
+                ],
+                None => vec![
+                    (Rc::from("offset"), JqVal::num(-1.0)),
+                    (Rc::from("string"), JqVal::Null),
+                    (Rc::from("length"), JqVal::num(0.0)),
+                    name,
+                ],
+            }));
         }
         hits.push(JqVal::obj(vec![
             (
@@ -4974,7 +5067,7 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
 
 /// jq's regex `split/2`: the pieces BETWEEN matches, always global.
 fn regex_split(input: &JqVal, re: &JqVal, flags: &JqVal) -> R<JqVal> {
-    let s = want_str(input, "split, as it is not a string")?;
+    let s = want_str(input, "matched, as it is not a string")?;
     let (pat, fl) = re_args(re, flags)?;
     let (rx, _) = compile_re(&pat, &fl)?;
     let mut parts = Vec::new();
@@ -4987,19 +5080,13 @@ fn regex_split(input: &JqVal, re: &JqVal, flags: &JqVal) -> R<JqVal> {
     Ok(JqVal::arr(parts))
 }
 
-/// Everything a `sub`/`gsub` rebuild carries unchanged from match to match.
-struct SubBuild<'a> {
-    it: &'a Interp,
-    s: &'a str,
-    spans: &'a [(usize, usize, JqVal)],
-    repl: &'a Filter,
-    env: &'a Env,
-}
-
-/// jq's `sub`/`gsub`. The replacement is a FILTER evaluated with the capture
-/// object as `.`, and it is a generator — `"ab" | [sub("a"; "x","y")]` is
-/// `["xb","yb"]` — so the matches are walked recursively and every combination
-/// is emitted.
+/// jq's `sub`/`gsub`, transcribed from jq 1.8's `def sub($re; s; $flags)`. The
+/// replacement is a FILTER evaluated with the named-capture object as `.`, and
+/// it is a generator — but its outputs are combined POSITIONALLY across
+/// matches, not as a cartesian product: output `k` of every match feeds result
+/// `k`, so `"aaa" | [gsub("a"; "b","c")]` is `["bbb","ccc"]`. A match that yields
+/// fewer outputs than an earlier one leaves the extra results un-extended, and
+/// no result at all falls back to the input (jq's trailing `// $in`).
 fn regex_sub(
     it: &Interp,
     input: &JqVal,
@@ -5030,30 +5117,34 @@ fn regex_sub(
             break;
         }
     }
-    fn go(b: &SubBuild, i: usize, cursor: usize, acc: &str, out: Sink) -> R<()> {
-        let Some((start, end, caps)) = b.spans.get(i) else {
-            return out(JqVal::str(format!("{acc}{}", &b.s[cursor..])));
-        };
-        let head = format!("{acc}{}", &b.s[cursor..*start]);
-        eval(b.it, b.repl, caps, b.env, &mut |r| {
-            let piece = want_str(&r, "used as a replacement")?;
-            let next = format!("{head}{piece}");
-            go(b, i + 1, *end, &next, out)
-        })
+    let mut results: Vec<String> = Vec::new();
+    let mut previous = 0usize;
+    for (start, end, caps) in &spans {
+        let gap = &s[previous..*start];
+        let mut inserts = Vec::new();
+        eval(it, repl, caps, env, &mut |r| {
+            inserts.push(r);
+            Ok(())
+        })?;
+        // jq joins with `$gap + $inserts[$ix]`, so a non-string replacement
+        // fails as that ADDITION does (`string ("") and number (1) cannot be
+        // added`); a successful `string + x` is always a string.
+        for (ix, r) in inserts.iter().enumerate() {
+            let piece = render_raw(&binop(BinOp::Add, &JqVal::str(gap), r)?);
+            match results.get_mut(ix) {
+                Some(acc) => acc.push_str(&piece),
+                None => results.push(piece),
+            }
+        }
+        previous = *end;
     }
-    go(
-        &SubBuild {
-            it,
-            s: &s,
-            spans: &spans,
-            repl,
-            env,
-        },
-        0,
-        0,
-        "",
-        out,
-    )
+    if results.is_empty() {
+        return out(input.clone());
+    }
+    for r in results {
+        out(JqVal::str(format!("{r}{}", &s[previous..])))?;
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5114,12 +5205,35 @@ fn to_tm(v: &JqVal) -> R<libc::tm> {
 
 fn mktime(v: &JqVal) -> R<i64> {
     if !matches!(v, JqVal::Arr(_)) {
-        return Err(JqErr::msg("mktime requires array of 6 numbers"));
+        return Err(JqErr::msg("mktime requires array inputs"));
     }
     let mut tm = to_tm(v)?;
     // `timegm` is the UTC counterpart of `mktime`; jq uses it so a broken-down
     // time round-trips through `gmtime` exactly.
     Ok(unsafe { libc::timegm(&mut tm) })
+}
+
+/// Rewrite `%Z`/`%z` to their UTC expansions, leaving `%%` and every other
+/// directive for libc.
+fn utc_zone_directives(fmt: &str) -> String {
+    let mut out = String::with_capacity(fmt.len());
+    let mut cs = fmt.chars();
+    while let Some(c) = cs.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match cs.next() {
+            Some('Z') => out.push_str("UTC"),
+            Some('z') => out.push_str("+0000"),
+            Some(d) => {
+                out.push('%');
+                out.push(d);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
 }
 
 fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
@@ -5129,13 +5243,20 @@ fn strftime_val(v: &JqVal, fmt: &str, local: bool) -> R<String> {
             to_tm(&bd)?
         }
         JqVal::Arr(_) => to_tm(v)?,
-        other => {
+        _ => {
+            let name = if local { "strflocaltime" } else { "strftime" };
             return Err(JqErr::msg(format!(
-                "strftime/1 requires parsed datetime inputs, got {}{}",
-                other.type_name(),
-                paren_of(other)
-            )))
+                "{name}/1 requires parsed datetime inputs"
+            )));
         }
+    };
+    // `strftime` formats a UTC broken-down time, so `%Z`/`%z` must read
+    // `UTC`/`+0000` as jq's do. libc would consult the process's local zone for
+    // both (macOS ignores `tm_gmtoff` for `%z`), so they are expanded here.
+    let fmt = if local {
+        fmt.to_string()
+    } else {
+        utc_zone_directives(fmt)
     };
     let cfmt = std::ffi::CString::new(fmt).map_err(|_| JqErr::msg("bad format string"))?;
     let mut buf = vec![0u8; 512];
@@ -5224,7 +5345,7 @@ def nth($n): .[$n];
 def nth($n; f): if $n < 0 then error("Out of bounds negative array index") else first(skip($n; f)) end;
 def until(cond; update): def _until: if cond then . else (update | _until) end; _until;
 def while(cond; update): def _while: if cond then ., (update | _while) else empty end; _while;
-def repeat(f): def _repeat: f | (., _repeat); _repeat;
+def repeat(f): def _repeat: f, _repeat; _repeat;
 def in(xs): . as $x | xs | has($x);
 def inside(xs): . as $x | xs | contains($x);
 def combinations: if length == 0 then [] else .[0][] as $x | (.[1:] | combinations) as $w | [$x] + $w end;
@@ -5249,7 +5370,8 @@ def JOIN($idx; idx_expr): [.[] | [., $idx[idx_expr]]];
 def JOIN($idx; stream; idx_expr): stream | [., $idx[idx_expr]];
 def JOIN($idx; stream; idx_expr; join_expr): stream | [., $idx[idx_expr]] | join_expr;
 def bsearch($target):
-  if length == 0 then -1
+  if type != "array" then error("\(type) (\(tojson)) cannot be searched from")
+  elif length == 0 then -1
   elif length == 1 then (if $target > .[0] then -2 elif $target == .[0] then 0 else -1 end)
   else . as $in
     | (length - 1) as $rhs
@@ -5269,8 +5391,8 @@ def abs: if . < 0 then - . else . end;
 def isvalid(f): try (f|true) catch false;
 def indices($i): if type == "array" and ($i|type) == "array" then .[$i]
                  elif type == "array" then .[[$i]]
-                 elif ($i|type) == "string" then _strindices($i)
-                 else .[[$i]] end;
+                 elif type == "string" and ($i|type) == "string" then _strindices($i)
+                 else .[$i] end;
 def index($i): indices($i) | .[0];
 def rindex($i): indices($i) | .[-1:][0];
 def tostream: path(def r: (.[]?|r), .; r) as $p | getpath($p)

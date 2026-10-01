@@ -71,6 +71,10 @@
 #   9075ed5f57 (the YAML literal fixed)       676 pass /  0 diverged / 0 skipped
 #   HEAD       (THIS corpus, with the three
 #               containment probes below)     676 pass / 10 diverged / 0 skipped
+#   3ca3acf052 (round 4 corpus, before; yq absent,
+#               the `* 1e9` probe excluded — it
+#               OOMs the harness on that binary) 703 pass / 24 diverged / 159 skipped
+#   HEAD       (round 4 corpus, after; yq absent) 728 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1509,6 +1513,47 @@ type_probe '0.5'     'bsearch(1)'
 type_probe '0.5'     'format("csv")'
 type_probe '{"a":1}' 'trimstr("x")'
 type_probe '"x"'     'modulemeta'
+
+# ── round 4: semantics the corpus had never exercised ───────────────────────
+# Each of these diverged on the binary before this round, against jq 1.8.2.
+#   repeat(f)     jq's `def _repeat: f, _repeat` re-applies f to the SAME input
+#                 (`1 | repeat(.*3)` is 3,3,3…); arb iterated it like recurse.
+#   sub/gsub      a generator replacement combines POSITIONALLY across matches
+#                 (output k of every match feeds result k), not as a product.
+#   indices("s")  string hits are CODE-POINT offsets in 1.8, not byte offsets.
+#   regex `s`     Oniguruma SINGLELINE (anchors), not dot-all; `p` is dot-all.
+#   strftime      formats UTC, so `%Z`/`%z` are `UTC`/`+0000`, never local.
+#   "s" * n       negative/NaN count is null; a fractional count truncates.
+#   `. / "/"`     a `/` after an operand is division, not a regex literal.
+jq_probe 'null'   '[limit(4; 1 | repeat(. * 3))], [limit(3; [1] | repeat(. + [2]))]'
+jq_probe '"aaa"'  '[gsub("a"; "b", "c")], [sub("a"; "b", "c")]'
+jq_probe '"abab"' '[gsub("(?<x>a)"; "\(.x)1", "\(.x)2", "3")]'
+jq_probe '"a-b"'  '[gsub("-"; empty)], gsub("-"; null)'
+jq_probe '"aéaé"' 'indices("a"), indices("é"), index("é"), rindex("é")'
+jq_probe '"ééé"'  'indices("éé")'
+jq_probe '"a\nb"' 'test("a.b"; "s"), test("a.b"; "p"), test("^b"; "p"), test("a.b"; "m")'
+jq_probe '"abc"'  'match("(b)(z)?(c)").captures'
+jq_probe '1425599507' 'strftime("%Z %z %%Z"), (gmtime | strftime("%Z"))'
+jq_probe '"ab"'   '[. * -1, . * 0, . * 0.5, . * 2.7, . * nan, -1 * .]'
+jq_probe '"a/b/c"' '. / "/"'
+jq_probe '[1,2,3]' '.[null:2], .[1:null]'
+
+# Refusals jq raises with a FIXED wording. `try … catch .` puts the message on
+# stdout, so these are byte-compared like any other answer.
+jq_probe 'null'   'try ([1] | .["a":]) catch ., try ([1,2] | .[1:true] = [9]) catch .'
+jq_probe 'null'   'try ([1] | delpaths([[{}]])) catch ., try ({} | delpaths([1])) catch .'
+jq_probe 'null'   'try ({} | delpaths([[0]])) catch ., try ([1] | delpaths([["a"]])) catch ., try ("x" | delpaths([[0]])) catch .'
+jq_probe 'null'   'try (1 | setpath(["a"]; 1)) catch ., try (1 | setpath([0]; 1)) catch .'
+jq_probe 'null'   'try pow("a"; 1) catch ., try atan2(1; {}) catch ., try fma(1; 2; "a") catch .'
+jq_probe '1'      'try ltrim catch ., try trim catch ., try ascii_upcase catch ., try explode catch .'
+jq_probe '1'      'try utf8bytelength catch ., try split("a") catch ., try mktime catch ., try splits("a") catch .'
+jq_probe '"x"'    'try strflocaltime("%Y") catch ., try gmtime catch ., try strptime(1) catch .'
+jq_probe '{}'     'try @csv catch ., try @tsv catch .'
+jq_probe '[[1]]'  'try @tsv catch .'
+jq_probe '1'      'try indices(1) catch ., try index("a") catch ., try bsearch(1) catch .'
+jq_probe '1'      'try sort_by(.) catch ., try group_by(.) catch ., try min_by(.) catch .'
+jq_probe '"abc"'  'try sub("b"; 1) catch .'
+jq_probe '"abc"'  'try (. * 1e9) catch .'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
