@@ -2201,8 +2201,8 @@ pub struct Interp {
     /// per input by the pipeline; `None` when nothing set it, and `parent` then
     /// answers `null` rather than guessing.
     doc: RefCell<Option<JqVal>>,
-    /// What `input_line_number` reports: the 1-based index of the line being
-    /// evaluated, which is what jq reports while reading a multi-line stream.
+    /// What `input_line_number` reports: how many input lines have been taken,
+    /// which is what jq reports while reading a line-per-document stream.
     line: std::cell::Cell<f64>,
 }
 
@@ -2226,11 +2226,17 @@ impl Interp {
 
     /// Take the next document, or `None` at end of stream. A line that is not
     /// JSON is jq's STRING — the reading SPEC §8 gives a text line.
+    ///
+    /// Taking a line advances `input_line_number`, whoever takes it: jq's count
+    /// is the parser's position, so `input` moves it too (`[., input,
+    /// input_line_number]` over `1`, `2` is `[1,2,2]`).
     pub fn next_input(&self) -> Option<JqVal> {
         let line = self.inputs.borrow_mut().pop_front()?;
+        self.line.set(self.line.get() + 1.0);
         Some(parse_json(&line).unwrap_or_else(|_| JqVal::str(line.as_str())))
     }
-    /// Set what `input_line_number` reports for the value about to be run.
+    /// Set what `input_line_number` reports for the value about to be run, or
+    /// (before the first `next_input`) how many lines precede this batch.
     pub fn set_line(&self, n: usize) {
         self.line.set(n as f64);
     }

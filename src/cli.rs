@@ -1722,9 +1722,12 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
     // the error, and the NEXT input still runs; the exit status is the last
     // input's (5 when it raised). `halt`/`halt_error` end the run.
     let mut failed = false;
+    let mut lineno = 0usize;
     while read_line_into(&mut r, &mut buf, &mut line) {
+        lineno += 1;
         let mut rep = query::JqReport::default();
-        match query::eval_reporting(ops, std::slice::from_ref(&line), 0.0, &mut rep) {
+        let one = std::slice::from_ref(&line);
+        match query::eval_reporting(ops, one, 0.0, lineno, &mut rep) {
             QueryResult::Lines(ls) => {
                 for l in ls {
                     if let Err(e) = out.line(&l) {
@@ -1804,7 +1807,7 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
     }
     // The line output keeps jq's stream semantics, as `stream_out` does.
     let mut rep = query::JqReport::default();
-    match query::eval_reporting(ops, &raw, elapsed, &mut rep) {
+    match query::eval_reporting(ops, &raw, elapsed, 1, &mut rep) {
         QueryResult::Lines(ls) => {
             for l in ls {
                 writeln!(out, "{l}")?;

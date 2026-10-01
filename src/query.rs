@@ -506,7 +506,7 @@ fn record_run(rep: &mut JqReport, r: Result<(), crate::jqlang::JqErr>) -> bool {
 /// filter path wants jq's stream semantics instead and calls [`eval_reporting`].
 pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult {
     let mut rep = JqReport::default();
-    let r = eval_reporting(ops, lines, elapsed_secs, &mut rep);
+    let r = eval_reporting(ops, lines, elapsed_secs, 1, &mut rep);
     match (rep.errors.into_iter().next(), rep.halt) {
         (Some(e), _) => QueryResult::Error(e),
         (None, Some((_, msg))) if !msg.is_empty() => {
@@ -517,11 +517,14 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
 }
 
 /// [`eval`] with jq's uncaught-error model: a jq program's errors and `halt`
-/// land in `rep` and the lines produced before them are kept.
+/// land in `rep` and the lines produced before them are kept. `first_line` is
+/// the 1-based number of `lines[0]` in the whole input, so a caller that feeds
+/// one line at a time still gets jq's `input_line_number`.
 pub fn eval_reporting(
     ops: &[QueryOp],
     lines: &[String],
     elapsed_secs: f64,
+    first_line: usize,
     rep: &mut JqReport,
 ) -> QueryResult {
     let mut cur: Vec<String> = lines.to_vec();
@@ -660,10 +663,8 @@ pub fn eval_reporting(
                     continue;
                 }
                 interp.set_input_lines(std::mem::take(&mut cur));
-                let mut lineno = 0usize;
+                interp.set_line(first_line.saturating_sub(1));
                 while let Some(input) = interp.next_input() {
-                    lineno += 1;
-                    interp.set_line(lineno);
                     interp.set_doc(&input);
                     let r = prog.run_with(&interp, &input, &mut |v| {
                         out.push(crate::jqlang::render_raw(&v));
