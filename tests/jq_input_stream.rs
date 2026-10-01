@@ -44,3 +44,23 @@ fn input_line_number_counts_the_whole_stream() {
         "[1,1,2,3]\n"
     );
 }
+
+/// `in.json` reads JSON TEXTS the way jq does: a pretty-printed document is one
+/// input, and several values on a line are several. Before, every line was its
+/// own input, so `.a` over a pretty object answered `null` once per line.
+#[test]
+fn in_json_reads_documents_not_lines() {
+    let pretty = "{\n  \"a\": 1,\n  \"b\": [1,\n 2]\n}\n{\"a\":2}\n";
+    assert_eq!(stdout_of(".a", pretty), "1\n2\n");
+    assert_eq!(stdout_of(".", "{\n  \"a\": 1.50\n}\n"), "{\"a\":1.50}\n");
+    assert_eq!(stdout_of(".", "1 2 3\n"), "1\n2\n3\n");
+    assert_eq!(stdout_of(".a", "{\"a\":1}{\"a\":2}\n"), "1\n2\n");
+    assert_eq!(
+        stdout_of("input_line_number", "{\n\"a\":1}\n{\"b\":\n2}\n"),
+        "2\n4\n"
+    );
+    // The batch path (`inputs` needs the whole stream) regroups the same way.
+    assert_eq!(stdout_of("[., inputs]", "[1,\n2]\n3 4\n"), "[[1,2],3,4]\n");
+    // A line that is no part of a document keeps SPEC §8's text reading.
+    assert_eq!(stdout_of(". | length", "200 OK\n"), "6\n");
+}

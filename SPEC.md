@@ -648,7 +648,15 @@ expression language (§6):
   `jq: (not a string): {"a":1}`. `halt` and `halt_error` end the whole run with
   their own status, and `halt_error` writes its message unprefixed — a string
   raw with no newline, any other value as JSON plus a newline, `null` not at all.
-  The TUI, REPL, `serve` and `--test` still show the first error as a refusal.
+  The TUI, REPL, `serve` and `--test` still show the first error as a refusal;
+* `in.json` reads JSON TEXTS, as jq's parser does, not one document per line: a
+  pretty-printed document spanning lines is ONE input (rendered compactly), and
+  several values on one line (`1 2 3`, `{"a":1}{"a":2}`) are one input each. A
+  line holding exactly one value passes through untouched. A line that is no
+  part of a document — or an opened document that never balances, or balances
+  but does not parse — keeps the text reading below, line by line.
+  `input_line_number` counts lines, so a multi-line document reports the line it
+  ends on.
 
 Those type rules apply to a line that PARSES as JSON. arb's stream is TEXT and
 `jq` has no reading of a non-JSON line at all (it refuses the whole input), so

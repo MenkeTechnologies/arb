@@ -1975,7 +1975,11 @@ fn pipeline_from_body(
                 return Ok(());
             }
             match c.name.as_str() {
-                "in" | "in.json" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
+                "in" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
+                "in.json" => {
+                    saw_in = true;
+                    ops.push(QueryOp::JsonDocs);
+                }
                 "in.csv" => {
                     saw_in = true;
                     ops.push(QueryOp::Csv);

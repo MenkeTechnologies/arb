@@ -418,7 +418,7 @@ fn hover(src: &str, line: u32, ch: u32) -> Option<String> {
 const CORPUS: &[(&str, &str, &str, &str)] = &[
     // ── Input ──
     ("in", "Input", "Begin the pipeline, reading the raw stdin stream line by line.", "source .log { in }"),
-    ("in.json", "Input", "Begin the pipeline reading stdin (JSON-lines intent; a marker, same as in).", "source .s { in.json; field status; tally }"),
+    ("in.json", "Input", "Begin the pipeline reading stdin as JSON documents: a pretty-printed document spanning lines is one item, several values on a line are one each; a non-JSON line stays a text line.", "source .s { in.json; field status; tally }"),
     ("in.html", "Input", "Begin the pipeline reading stdin as HTML (marker, same as in; use with sel/find).", "source .s { in.html; find a; attr href }"),
     ("in.xml", "Input", "Begin the pipeline reading stdin as XML (marker, same as in).", "source .s { in.xml; find item; text }"),
     ("in.logfmt", "Input", "Begin the pipeline reading stdin as logfmt (marker, same as in).", "source .s { in.logfmt; field level; tally }"),

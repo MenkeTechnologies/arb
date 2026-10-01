@@ -1718,41 +1718,64 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
     let mut out = LineOut::new();
     let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
     let (mut buf, mut line) = (Vec::new(), String::new());
+    // `in.json` reads DOCUMENTS, which may span lines or share one, so its
+    // regrouping runs here, ahead of the per-item pipeline.
+    let (mut docs, ops) = match ops.split_first() {
+        Some((QueryOp::JsonDocs, rest)) => (Some(crate::jsondocs::JsonDocs::default()), rest),
+        _ => (None, ops),
+    };
+    let mut items = Vec::new();
     // jq's main loop: an input that raises prints what it produced, reports
     // the error, and the NEXT input still runs; the exit status is the last
     // input's (5 when it raised). `halt`/`halt_error` end the run.
     let mut failed = false;
     let mut lineno = 0usize;
-    while read_line_into(&mut r, &mut buf, &mut line) {
-        lineno += 1;
-        let mut rep = query::JqReport::default();
-        let one = std::slice::from_ref(&line);
-        match query::eval_reporting(ops, one, 0.0, lineno, &mut rep) {
-            QueryResult::Lines(ls) => {
-                for l in ls {
-                    if let Err(e) = out.line(&l) {
-                        return ok_on_broken_pipe(Err(e));
-                    }
-                }
-                failed = rep.last_failed;
-            }
-            // SPEC §8: a construct outside the documented subset is a hard error,
-            // never a silent reinterpretation. `5` is jq's own status for a
-            // filter that raised.
-            QueryResult::Error(msg) => {
-                rep.errors.push(msg);
-                failed = true;
-            }
-            _ => failed = false,
+    loop {
+        let more = read_line_into(&mut r, &mut buf, &mut line);
+        if more {
+            lineno += 1;
         }
-        if !rep.errors.is_empty() || rep.halt.is_some() {
-            // Flush first so the lines already produced reach the consumer
-            // before the diagnostic.
-            let _ = out.finish();
-            report_jq(&rep);
+        let run = match (&mut docs, more) {
+            (Some(d), true) if d.passes_through(&line) => stream_item(
+                ops,
+                std::slice::from_ref(&line),
+                lineno,
+                &mut out,
+                &mut failed,
+            ),
+            (Some(d), true) => {
+                d.push(&line, &mut items);
+                Ok(())
+            }
+            (Some(d), false) => {
+                d.finish(&mut items);
+                Ok(())
+            }
+            (None, true) => stream_item(
+                ops,
+                std::slice::from_ref(&line),
+                lineno,
+                &mut out,
+                &mut failed,
+            ),
+            (None, false) => Ok(()),
+        };
+        let run = run.and_then(|()| {
+            items.drain(..).try_for_each(|item| {
+                stream_item(
+                    ops,
+                    std::slice::from_ref(&item),
+                    lineno,
+                    &mut out,
+                    &mut failed,
+                )
+            })
+        });
+        if let Err(e) = run {
+            return ok_on_broken_pipe(Err(e));
         }
-        if let Some((code, _)) = rep.halt {
-            crate::hosted::exit(code);
+        if !more {
+            break;
         }
         if let Err(e) = out.sync(!r.buffer().is_empty()) {
             return ok_on_broken_pipe(Err(e));
@@ -1763,6 +1786,45 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
         crate::hosted::exit(5);
     }
     done
+}
+
+/// Run one stream item (a one-element slice) through `ops`, writing its lines
+/// and diagnostics. `failed` becomes this item's jq status; `halt` ends the
+/// process here.
+fn stream_item(
+    ops: &[QueryOp],
+    item: &[String],
+    lineno: usize,
+    out: &mut LineOut,
+    failed: &mut bool,
+) -> io::Result<()> {
+    let mut rep = query::JqReport::default();
+    match query::eval_reporting(ops, item, 0.0, lineno, &mut rep) {
+        QueryResult::Lines(ls) => {
+            for l in ls {
+                out.line(&l)?;
+            }
+            *failed = rep.last_failed;
+        }
+        // SPEC §8: a construct outside the documented subset is a hard error,
+        // never a silent reinterpretation. `5` is jq's own status for a filter
+        // that raised.
+        QueryResult::Error(msg) => {
+            rep.errors.push(msg);
+            *failed = true;
+        }
+        _ => *failed = false,
+    }
+    if !rep.errors.is_empty() || rep.halt.is_some() {
+        // Flush first so the lines already produced reach the consumer before
+        // the diagnostic.
+        let _ = out.finish();
+        report_jq(&rep);
+    }
+    if let Some((code, _)) = rep.halt {
+        crate::hosted::exit(code);
+    }
+    Ok(())
 }
 
 /// Write a jq program's stderr: each uncaught error under arb's `arb: ` prefix,

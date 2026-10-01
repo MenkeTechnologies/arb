@@ -294,6 +294,12 @@ pub enum QueryOp {
     /// pipeline typed into the `input .name` widget (the megafilter/map binding).
     /// Left in a pipeline unsubstituted it is a no-op.
     Apply(String),
+    /// `in.json`: regroup the line stream into one item per JSON document — a
+    /// pretty-printed document spanning lines becomes one compact line, and
+    /// several values on one line become one each, as jq reads its input. A
+    /// line that is no part of a document stays the line it was. See
+    /// [`crate::jsondocs`].
+    JsonDocs,
     /// Treat the stream as CSV: the first line is the header; each data row
     /// becomes a JSON object keyed by the header, so `field NAME` works.
     Csv,
@@ -879,6 +885,7 @@ pub fn eval_reporting(
                     }
                 }
             }
+            QueryOp::JsonDocs => cur = crate::jsondocs::documents(&cur),
             QueryOp::Csv => cur = to_json_records(&cur, ','),
             QueryOp::Tsv => cur = to_json_records(&cur, '\t'),
             QueryOp::Yaml => {
@@ -1900,7 +1907,8 @@ pub fn is_line_streamable(ops: &[QueryOp]) -> bool {
         }
         matches!(
             op,
-            QueryOp::Match(_)
+            QueryOp::JsonDocs
+                | QueryOp::Match(_)
                 | QueryOp::Reject(_)
                 | QueryOp::Field(_)
                 | QueryOp::Fields(_)
