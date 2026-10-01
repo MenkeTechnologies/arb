@@ -765,7 +765,10 @@ fn a_number_may_start_or_end_with_its_point() {
 #[test]
 fn abs_slices_and_implode_answer_as_jq_does() {
     run_table(&[
-        ("[.[] | try abs catch .]", &[r#"[null,true,false,"a",[],{},-2,-0]"#]),
+        (
+            "[.[] | try abs catch .]",
+            &[r#"[null,true,false,"a",[],{},-2,-0]"#],
+        ),
         (".[1.2:3.5], .[:2.1], .[-2.5:]", &["[1,2,3,4,5]"]),
         (".[1.5:3.5]", &[r#""abcdef""#]),
         (".[1.2:3.5] = [\"x\"]", &["[1,2,3,4,5]"]),
@@ -785,8 +788,14 @@ fn abs_slices_and_implode_answer_as_jq_does() {
 #[test]
 fn tonumber_keeps_the_literal() {
     run_table(&[
-        ("map(tonumber)", &[r#"["1.000","1e2","0.10","-0","1.5e300","5.",".5","+1"]"#]),
-        ("tonumber, (tonumber + 1), (tonumber | tostring)", &[r#""1.000""#]),
+        (
+            "map(tonumber)",
+            &[r#"["1.000","1e2","0.10","-0","1.5e300","5.",".5","+1"]"#],
+        ),
+        (
+            "tonumber, (tonumber + 1), (tonumber | tostring)",
+            &[r#""1.000""#],
+        ),
         ("tonumber", &[r#""123456789012345678901234567890""#]),
     ]);
 }
@@ -798,9 +807,18 @@ fn tonumber_keeps_the_literal() {
 #[test]
 fn nan_compares_below_every_number_itself_included() {
     run_table(&[
-        ("[nan < nan, nan > nan, nan == nan, nan != nan, nan < 1, nan >= 1, nan < -infinite]", &["null"]),
-        ("[nan < null, nan > null, [nan] == [nan], {a: nan} == {a: nan}]", &["null"]),
-        ("[nan, 1, nan, -1] | sort, unique, (min | isnan), max", &["null"]),
+        (
+            "[nan < nan, nan > nan, nan == nan, nan != nan, nan < 1, nan >= 1, nan < -infinite]",
+            &["null"],
+        ),
+        (
+            "[nan < null, nan > null, [nan] == [nan], {a: nan} == {a: nan}]",
+            &["null"],
+        ),
+        (
+            "[nan, 1, nan, -1] | sort, unique, (min | isnan), max",
+            &["null"],
+        ),
         ("[nan, nan, 1] | group_by(.) | length", &["null"]),
         ("[{a: nan}, {a: 1}] | sort_by(.a) | map(.a)", &["null"]),
     ]);
@@ -846,7 +864,10 @@ fn base64d_decodes_and_refuses_as_jq_does() {
             &[r#"["YW=Jj","YWJj\n","YW Jj","Y","hello","!!!","YQ=","YWJj===="]"#],
         ),
         ("@base64d | explode", &["null"]),
-        (r#"map(@base64d | explode)"#, &[r#"["/w==","wKA=","7aCA","4oKs"]"#]),
+        (
+            r#"map(@base64d | explode)"#,
+            &[r#"["/w==","wKA=","7aCA","4oKs"]"#],
+        ),
     ]);
 }
 
@@ -870,5 +891,85 @@ fn a_dot_digit_is_a_number_and_any_format_string_is_jq() {
         (r#"@foo  "x""#, obj),
         (r#"[@foo "lit", 1]"#, obj),
         (r#"@foo "a\(.)b""#, obj),
+    ]);
+}
+
+/// A builtin whose parameter is a jq VALUE runs once per value its argument
+/// yields. C builtins (`has`, `split/1`, `setpath`, libm) vary their LAST
+/// argument slowest; `range`, a `def` with `$` parameters, varies its FIRST
+/// slowest. arb took only the first value of every argument, and an empty
+/// argument raised `argument produced no value` where jq yields nothing.
+#[test]
+fn value_parameters_enumerate_every_combination() {
+    let nil: &[&str] = &["null"];
+    run_table(&[
+        (r#". | {"a":1} | [has("a","b")]"#, nil),
+        (r#". | "a,b;c" | [split(",",";")]"#, nil),
+        (r#". | {"a":1} | [setpath(["a"],["b"]; 5,6)]"#, nil),
+        (". | [pow(2,3;2,4)]", nil),
+        (". | [fma(1,2;3;4,5)]", nil),
+        (". | [range(1,2;3,4)]", nil),
+        (". | [range(0;4,6;2,3)]", nil),
+        (r#". | [0 | strftime("%Y","%m")]"#, nil),
+        (r#". | [{"a":1} | has(empty)]"#, nil),
+        (r#". | [[1,2] | contains([1],[3])]"#, nil),
+    ]);
+}
+
+/// The translator's container stages (`.[]`, `map`, `to_entries`, `flatten`,
+/// `add`) read lines through serde, which re-sorted an object's keys and
+/// reprinted every number literal from its double: `map(.)` over
+/// `{"b":1.50,"a":2.0}` was `[2.0,1.5]` where jq prints `[1.50,2.0]`.
+#[test]
+fn container_stages_keep_key_order_and_number_literals() {
+    let obj: &[&str] = &[r#"{"b":1.50,"a":2.0}"#];
+    let arr: &[&str] = &["[1.50,2.0,1E1000,100000000000000000001]"];
+    run_table(&[
+        (".[]", obj),
+        ("map(.)", obj),
+        (". | to_entries", obj),
+        (".[]", arr),
+        ("map(.)", arr),
+        (". | flatten", arr),
+        (". | add", &["[1.50]"]),
+        (". | add", &[r#"[[1.50],[2.0]]"#]),
+    ]);
+}
+
+/// jq 1.8 negates a number that still carries its literal as a decNumber, so
+/// the literal survives the minus and a zero stays unsigned.
+#[test]
+fn negation_keeps_the_number_literal() {
+    run_table(&[
+        (
+            ". | [-0, -0.0, (-1.50|-.), -1E1000, -100000000000000000001]",
+            &["null"],
+        ),
+        (". | map(-.)", &["[0.0, -0.0, 0, 1.0, 13911860366432393]"]),
+    ]);
+}
+
+/// jq's `f_match` resumes at a match's END (one character past an empty one)
+/// while `start <= length`, so an empty match right after a non-empty one, and
+/// at the very end, both count.
+#[test]
+fn global_regex_takes_empty_matches_after_a_match() {
+    let s: &[&str] = &[r#""baaab""#];
+    run_table(&[
+        (r#". | gsub("a*";"X")"#, s),
+        (r#". | [match("a*";"g") | [.offset,.length]]"#, s),
+        (r#". | [splits("a*")]"#, s),
+        (r#". | [match("(?<n>)(x)?";"g")]"#, &[r#""ab""#]),
+    ]);
+}
+
+/// `{$name: P}` binds `$name` to `.name` and ALSO destructures that value with
+/// `P`. arb used the variable's current VALUE as the key.
+#[test]
+fn object_pattern_variable_key_is_its_name() {
+    let obj: &[&str] = &[r#"{"a":[1,2],"k":7}"#];
+    run_table(&[
+        (r#". | "a" as $k | . as {$k:$v} | [$k,$v]"#, obj),
+        (". as {$a: [$x, $y]} | [$a,$x,$y]", obj),
     ]);
 }

@@ -348,7 +348,13 @@ surface and reporting what arb is missing. Current run: **825 probes, 825 pass,
 `sub`/`gsub` generators, code-point `indices`, the `s`/`p` regex flags, UTC
 `strftime` zones, string repetition, and jq's fixed refusal wordings) were
 measured on a machine without `yq`: 728 pass, 0 diverged, 159 yq probes skipped
-(703 pass / 24 diverged on the same corpus before the fixes).
+(703 pass / 24 diverged on the same corpus before the fixes). The round-5 additions
+(value parameters that yield several values run once per combination in jq's
+order, the translator's `.[]`/`map`/`to_entries`/`flatten`/`add` keeping key
+order and number literals, literal-preserving negation, empty regex matches after
+a match, `{$name: P}` patterns, and jq's refusals for `unique`/`min`/`max`/
+`*_by`/`reverse`/`input`/non-path calls) measured 752 pass, 0 diverged, 159
+skipped (729 pass / 23 diverged on the same corpus before the fixes).
 
 | leg | reference | containment | status |
 |---|---|---|---|

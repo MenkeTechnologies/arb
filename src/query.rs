@@ -510,16 +510,26 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
             }
             QueryOp::JqEach => {
                 let mut out = Vec::with_capacity(cur.len());
+                // Through the jq value model, so each element keeps its source
+                // literal (`[1.50,1E1000]` iterates as `1.50`, `1E+1000`, as jq
+                // prints them) and an object yields its values in KEY ORDER.
                 for l in &cur {
-                    match jq_value(l) {
-                        Some(Value::Array(arr)) => out.extend(arr.iter().map(jq_to_string)),
-                        // jq `.[]` over an object iterates its VALUES, in the
-                        // object's own key order.
-                        Some(Value::Object(m)) => {
-                            out.extend(jq_obj_entries(l, &m).iter().map(|(_, v)| jq_to_string(v)))
-                        }
-                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
-                        None => out.push(l.clone()),
+                    use crate::jqlang::JqVal;
+                    match crate::jqlang::parse_json(l) {
+                        Ok(v) => match v.bare() {
+                            JqVal::Arr(a) => out.extend(a.iter().map(crate::jqlang::render_raw)),
+                            JqVal::Obj(m) => {
+                                out.extend(m.iter().map(|(_, e)| crate::jqlang::render_raw(e)))
+                            }
+                            other => {
+                                return QueryResult::Error(format!(
+                                    "jq: Cannot iterate over {}{}",
+                                    other.type_name(),
+                                    crate::jqlang::paren_of(other)
+                                ))
+                            }
+                        },
+                        Err(_) => out.push(l.clone()),
                     }
                 }
                 cur = out;
@@ -633,27 +643,12 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 }
             }
             QueryOp::JqAdd => {
-                for l in cur.iter_mut() {
-                    // jq `add` is `reduce .[] as $x (null; . + $x)`: it starts from
-                    // null (so `[]` is `null`, not ""), folds with the SAME `+` a
-                    // jq expression uses (so `[1,"a"]` raises rather than
-                    // stringifying), and iterates an object's values.
-                    let items: Vec<Value> = match jq_value(l) {
-                        Some(Value::Array(a)) => a,
-                        Some(Value::Object(m)) => {
-                            jq_obj_entries(l, &m).into_iter().map(|(_, v)| v).collect()
-                        }
-                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
-                        None => continue,
-                    };
-                    let mut acc = Value::Null;
-                    for it in &items {
-                        match crate::jqval::binop(crate::jqval::Op::Add, &acc, it) {
-                            Ok(v) => acc = v,
-                            Err(msg) => return QueryResult::Error(format!("jq: {msg}")),
-                        }
-                    }
-                    *l = crate::jqval::render(&acc);
+                // jq `add` is `reduce .[] as $x (null; . + $x)`: it starts from
+                // null (so `[]` is `null`, not ""), folds with jq's `+` (so
+                // `[1,"a"]` raises), iterates an object's values, and keeps a
+                // lone element's literal (`[1.50] | add` is `1.50`).
+                if let Some(e) = jq_builtin_lines(&mut cur, "add") {
+                    return e;
                 }
             }
             QueryOp::JqLen => {
@@ -1131,28 +1126,8 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 cur = out;
             }
             QueryOp::JqEntries => {
-                fn entry(k: Value, v: Value) -> Value {
-                    let mut e = serde_json::Map::new();
-                    e.insert("key".into(), k);
-                    e.insert("value".into(), v);
-                    Value::Object(e)
-                }
-                for l in cur.iter_mut() {
-                    let arr: Vec<Value> = match jq_value(l) {
-                        Some(Value::Object(m)) => jq_obj_entries(l, &m)
-                            .into_iter()
-                            .map(|(k, v)| entry(Value::String(k), v))
-                            .collect(),
-                        // jq's `to_entries` also walks an ARRAY, keying by index.
-                        Some(Value::Array(a)) => a
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, v)| entry(Value::from(i), v))
-                            .collect(),
-                        Some(v) => return QueryResult::Error(has_no_keys(&v)),
-                        None => continue,
-                    };
-                    *l = Value::Array(arr).to_string();
+                if let Some(e) = jq_builtin_lines(&mut cur, "to_entries") {
+                    return e;
                 }
             }
             QueryOp::JqMap(inner) => {
@@ -1162,15 +1137,30 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 // both loses the array and merges the inputs together.
                 let mut out = Vec::with_capacity(cur.len());
                 for l in &cur {
-                    let elems: Vec<String> = match jq_value(l) {
-                        Some(Value::Array(a)) => a.iter().map(jq_to_string).collect(),
-                        // jq `map` over an object maps its VALUES (and still
-                        // returns an array).
-                        Some(Value::Object(m)) => m.values().map(jq_to_string).collect(),
-                        // Not iterable: jq raises, and so does arb now.
-                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
+                    // Through the jq value model: elements keep their source
+                    // literals and an object's values come in its KEY ORDER.
+                    let elems: Vec<String> = match crate::jqlang::parse_json(l) {
+                        Ok(v) => match v.bare() {
+                            crate::jqlang::JqVal::Arr(a) => {
+                                a.iter().map(crate::jqlang::render_raw).collect()
+                            }
+                            // jq `map` over an object maps its VALUES (and still
+                            // returns an array).
+                            crate::jqlang::JqVal::Obj(m) => m
+                                .iter()
+                                .map(|(_, e)| crate::jqlang::render_raw(e))
+                                .collect(),
+                            // Not iterable: jq raises, and so does arb now.
+                            other => {
+                                return QueryResult::Error(format!(
+                                    "jq: Cannot iterate over {}{}",
+                                    other.type_name(),
+                                    crate::jqlang::paren_of(other)
+                                ))
+                            }
+                        },
                         // Not JSON at all: no jq type to check, so it passes.
-                        None => {
+                        Err(_) => {
                             out.push(l.clone());
                             continue;
                         }
@@ -1207,27 +1197,10 @@ pub fn eval(ops: &[QueryOp], lines: &[String], elapsed_secs: f64) -> QueryResult
                 cur = out;
             }
             QueryOp::JqFlatten => {
-                // Same full-depth walk as `Flatten`, re-wrapped as jq's one array.
-                fn leaves(v: &Value, out: &mut Vec<Value>) {
-                    match v {
-                        Value::Array(a) => a.iter().for_each(|e| leaves(e, out)),
-                        other => out.push(other.clone()),
-                    }
-                }
-                for l in cur.iter_mut() {
-                    // jq's `flatten` is defined over `reduce .[] as $x`, so it
-                    // iterates an OBJECT's values too and refuses a scalar.
-                    let items: Vec<Value> = match jq_value(l) {
-                        Some(Value::Array(a)) => a,
-                        Some(Value::Object(m)) => {
-                            jq_obj_entries(l, &m).into_iter().map(|(_, v)| v).collect()
-                        }
-                        Some(v) => return QueryResult::Error(cannot_iterate(&v)),
-                        None => continue,
-                    };
-                    let mut out = Vec::new();
-                    items.iter().for_each(|e| leaves(e, &mut out));
-                    *l = Value::Array(out).to_string();
+                // jq's `flatten` is defined over `reduce .[] as $x`, so it
+                // iterates an OBJECT's values too and refuses a scalar.
+                if let Some(e) = jq_builtin_lines(&mut cur, "flatten") {
+                    return e;
                 }
             }
             QueryOp::Add => {
@@ -1984,11 +1957,6 @@ fn jq_scalar(line: &str) -> Value {
     jq_value(line).unwrap_or_else(|| Value::String(line.to_string()))
 }
 
-/// jq's message for iterating something that is not an array or object.
-fn cannot_iterate(v: &Value) -> String {
-    format!("jq: Cannot iterate over {} ({v})", crate::jqval::tname(v))
-}
-
 /// jq's message for asking a non-container for its keys.
 fn has_no_keys(v: &Value) -> String {
     format!("jq: {} ({v}) has no keys", crate::jqval::tname(v))
@@ -1997,28 +1965,6 @@ fn has_no_keys(v: &Value) -> String {
 /// Render a JSON value the way jq's `-r`/`-c` pair does: a string raw, a null as
 /// the literal `null`, everything else compact. `json_to_string` renders a null
 /// as "" instead, which is right for arb's native text verbs and wrong for jq.
-/// An object line's entries in jq's ITERATION ORDER.
-///
-/// jq iterates an object in INSERTION order and that order is observable:
-/// `{"b":1,"a":2} | to_entries` is `[{"key":"b",…},{"key":"a",…}]`, and `.[]`,
-/// `add` and `flatten` all walk the same sequence. `serde_json::Map` is a
-/// `BTreeMap`, so every one of those came back key-SORTED.
-///
-/// The order comes from [`crate::jqlang`], whose value model preserves it, while
-/// the VALUES stay `serde_json`'s — so the ops that already fold with
-/// `jqval::binop` or render through `jq_to_string` are unchanged apart from the
-/// sequence they see. A line that will not re-parse falls back to the map's own
-/// order rather than dropping entries.
-fn jq_obj_entries(line: &str, m: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
-    match crate::jqlang::parse_json(line) {
-        Ok(crate::jqlang::JqVal::Obj(ordered)) => ordered
-            .iter()
-            .filter_map(|(k, _)| m.get(&**k).map(|v| (k.to_string(), v.clone())))
-            .collect(),
-        _ => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-    }
-}
-
 fn jq_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -2036,10 +1982,12 @@ fn jq_to_string(v: &Value) -> String {
 /// disagreed with `jq -rc` on the same input while the scalar path next to it
 /// agreed — one invariant, applied at one site and reverted at the other.
 ///
-/// So an element that is already a JSON NUMBER is emitted verbatim. Everything
-/// else still goes through `serde_json`, which is what gives an object, a nested
-/// array and a string their escaping, and a line that is not JSON at all becomes
-/// a JSON string. That last rule is lossy in exactly one place — a string whose
+/// So an element that is already a JSON NUMBER is emitted verbatim (`1E+1000`
+/// included, which serde refuses as out of range). Everything else is rendered
+/// by the jq value model, which gives an object, a nested array and a string
+/// their escaping while keeping KEY ORDER and nested number literals (serde's
+/// `BTreeMap` re-sorted `[{"b":1,"a":2}] | map(.)`), and a line that is not
+/// JSON at all becomes a JSON string. That last rule is lossy in exactly one place — a string whose
 /// text is itself valid JSON (`"123"`) comes back as the number — which is
 /// inherent to a raw line stream and is probed, not hidden, by
 /// `scripts/jq_parity.sh`.
@@ -2049,9 +1997,9 @@ fn jq_array_json(elems: &[String]) -> String {
         if i > 0 {
             out.push(',');
         }
-        match serde_json::from_str::<Value>(e) {
-            Ok(Value::Number(_)) => out.push_str(e),
-            Ok(v) => out.push_str(&v.to_string()),
+        match crate::jqlang::parse_json(e) {
+            Ok(crate::jqlang::JqVal::Num(..)) => out.push_str(e),
+            Ok(v) => out.push_str(&crate::jqlang::render(&v)),
             Err(_) => out.push_str(&Value::String(e.clone()).to_string()),
         }
     }
@@ -2725,6 +2673,35 @@ thread_local! {
     static JQ_PROGRAMS: std::cell::RefCell<
         std::collections::HashMap<String, std::rc::Rc<crate::jqlang::Program>>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Replace every JSON line of `cur` with the one value jq's builtin `name`
+/// answers for it, through [`crate::jqlang`] so key order and number literals
+/// are jq's. A line that is not JSON has no jq type and PASSES THROUGH, which
+/// is the documented carve-out these stages always had. `Some` is the
+/// refusal that ends the pipeline.
+fn jq_builtin_lines(cur: &mut Vec<String>, name: &str) -> Option<QueryResult> {
+    let prog = match jq_program(name) {
+        Ok(p) => p,
+        Err(msg) => return Some(QueryResult::Error(format!("jq: {msg}"))),
+    };
+    let interp = crate::jqlang::Interp::default();
+    let mut out = Vec::with_capacity(cur.len());
+    for l in cur.iter() {
+        let Ok(v) = crate::jqlang::parse_json(l) else {
+            out.push(l.clone());
+            continue;
+        };
+        let r = prog.run_with(&interp, &v, &mut |r| {
+            out.push(crate::jqlang::render_raw(&r));
+            Ok(())
+        });
+        if let Err(e) = r {
+            return Some(QueryResult::Error(format!("jq: {}", e.to_message())));
+        }
+    }
+    *cur = out;
+    None
 }
 
 /// Compile (or fetch from this thread's cache) the jq program `src`.

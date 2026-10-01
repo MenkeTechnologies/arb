@@ -74,7 +74,9 @@
 #   3ca3acf052 (round 4 corpus, before; yq absent,
 #               the `* 1e9` probe excluded — it
 #               OOMs the harness on that binary) 703 pass / 24 diverged / 159 skipped
-#   HEAD       (round 4 corpus, after; yq absent) 728 pass /  0 diverged / 159 skipped
+#   711f0970e3 (round 4 corpus, after; yq absent) 728 pass /  0 diverged / 159 skipped
+#   711f0970e3 (round 5 corpus, before; yq absent) 729 pass / 23 diverged / 159 skipped
+#   HEAD       (round 5 corpus, after; yq absent) 752 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1554,6 +1556,46 @@ jq_probe '1'      'try indices(1) catch ., try index("a") catch ., try bsearch(1
 jq_probe '1'      'try sort_by(.) catch ., try group_by(.) catch ., try min_by(.) catch .'
 jq_probe '"abc"'  'try sub("b"; 1) catch .'
 jq_probe '"abc"'  'try (. * 1e9) catch .'
+
+# ── round 5: generators as arguments, literals through the translator ───────
+# Each of these diverged on the binary before this round, against jq 1.8.2.
+#   value params  a builtin whose parameter is a VALUE runs once per value the
+#                 argument yields: C builtins vary their LAST argument slowest,
+#                 a `def f($a; $b)` (range) its FIRST. arb took the first value.
+#   translator    `.[]`, `map`, `to_entries`, `flatten`, `add` read lines with
+#                 serde: object keys came back sorted, `1.50` as `1.5`, and
+#                 `1E1000` was not JSON at all (the line passed through as text).
+#   negation      `-` keeps a number's literal (decNumber `0 - x`).
+#   regex         a global match resumes at the previous END, so an empty match
+#                 right after a non-empty one (and at end of string) counts.
+#   `{$k: P}`     the key is the variable's NAME, not its value.
+#   refusals      `unique`/`min`/`max`/`*_by` on a non-array, `reverse` as jq
+#                 1.8.2's `[.[length - 1 - range(0;length)]]`, `input` with
+#                 nothing left (`break`), and a non-path call in path context.
+jq_probe '{"a":1}' '[has("a","b")], [setpath(["a"],["b"]; 5,6)], [contains({a:1},{b:2})]'
+jq_probe '"a,b;c"' '[split(",",";")], [startswith("a","b")], [_strindices("b",",")]'
+jq_probe 'null'   '[pow(2,3;2,4)], [fma(1,2;3;4,5)], [range(1,2;3,4)], [range(0;4,6;2,3)]'
+jq_probe 'null'   '[0 | strftime("%Y","%m")], [{"a":1} | has(empty)], [1 | format("text","json")]'
+jq_probe '{"b":1.50,"a":2.0}' '.[]'
+jq_probe '{"b":1.50,"a":2.0}' 'map(.)'
+jq_probe '{"b":1.50,"a":2.0}' '. | to_entries'
+jq_probe '[1.50,2.0,1E1000,100000000000000000001]' '.[]'
+jq_probe '[1.50,2.0,1E1000,100000000000000000001]' 'map(.)'
+jq_probe '[[1.50],[2.0]]' '. | flatten'
+jq_probe '[1.50]' '. | add'
+jq_probe '[{"b":1,"a":[1.50]}]' 'map(.)'
+jq_probe 'null'   '[-0, -0.0, (-1.50|-.), -1E1000, -100000000000000000001]'
+jq_probe '[0.0, -0.0, 0, 1.0, 13911860366432393]' 'map(-.)'
+jq_probe '"baaab"' 'gsub("a*";"X"), [match("a*";"g") | [.offset,.length]], [splits("a*")]'
+jq_probe '"ab"'   '[match("(?<n>)(x)?";"g")]'
+jq_probe '{"a":[1,2],"k":7}' '. | "a" as $k | . as {$k:$v} | [$k,$v], (. as {$a: [$x, $y]} | [$a,$x,$y])'
+jq_probe 'null'   '(null|try min catch .), (1|try unique catch .), ({}|try unique catch .), ({"a":3}|try max catch .)'
+jq_probe '{"a":1}' 'try sort_by(.) catch ., try group_by(.) catch ., try unique_by(.) catch ., try min_by(.) catch .'
+jq_probe 'null'   '({"a":1}|try reverse catch .), (true|try reverse catch .), (-2.5|try reverse catch .), ("abc"|try reverse catch .), (""|reverse), ({}|reverse), (0|reverse)'
+jq_probe '[1,1.0,2,1.00,"a",null,"a"]' '. | unique'
+jq_probe 'null'   'try input catch .'
+jq_probe '{"a":[1]}' 'try path(.a | tostring) catch ., try path(.a | length) catch ., try path(tojson) catch ., [path(empty | tostring)]'
+jq_probe '[null]' 'try path(.[0] | abs) catch .'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq

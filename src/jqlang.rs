@@ -697,6 +697,36 @@ fn canonical_num_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// jq's unary minus. jq 1.8 negates a number that still carries its literal
+/// as a decNumber, so the literal survives: `-100000000000000000001` and
+/// `1.50 | -.` print exactly, and `-1E1000` is `-1E+1000` rather than the
+/// clamped double. A zero coefficient negates to itself (`-0.0` is `0.0`),
+/// which is decNumber's `0 - x`. Measured against jq 1.8.2.
+fn negate_num(n: f64, lit: Option<&str>) -> JqVal {
+    let Some(lit) = lit else {
+        return JqVal::num(-n);
+    };
+    let neg = if let Some(rest) = lit.strip_prefix('-') {
+        rest.to_string()
+    } else if lit
+        .split(['E', 'e'])
+        .next()
+        .unwrap_or("")
+        .bytes()
+        .all(|b| b == b'0' || b == b'.')
+    {
+        lit.to_string()
+    } else {
+        format!("-{lit}")
+    };
+    let v = if n == 0.0 { 0.0 } else { -n };
+    if neg == fmt_num(v) {
+        JqVal::Num(v, None)
+    } else {
+        JqVal::Num(v, Some(Rc::from(neg.as_str())))
+    }
+}
+
 /// Build a number value from its source text, keeping the literal only when jq
 /// would print something other than the double's own shortest form.
 pub(crate) fn num_from_literal(n: f64, text: &str) -> JqVal {
@@ -1451,16 +1481,18 @@ impl Parser {
                 let mut out = Vec::new();
                 loop {
                     match self.peek().cloned() {
-                        // `{$a}` — bind `.a` to `$a`.
+                        // `{$a}` — bind `.a` to `$a`. `{$a: P}` binds `$a` to `.a` as
+                        // well and destructures the same value with `P`: the
+                        // key is the variable's NAME, never its value.
                         Some(Tok::Var(v)) => {
                             self.i += 1;
                             let name: Rc<str> = Rc::from(v.as_str());
-                            if self.eat_op(":") {
-                                let sub = self.pattern()?;
-                                out.push((Filter::Var(name), Some(sub), None));
+                            let sub = if self.eat_op(":") {
+                                Some(self.pattern()?)
                             } else {
-                                out.push((Filter::Lit(JqVal::str(v.clone())), None, Some(name)));
-                            }
+                                None
+                            };
+                            out.push((Filter::Lit(JqVal::str(v.clone())), sub, Some(name)));
                         }
                         Some(Tok::Ident(k)) => {
                             self.i += 1;
@@ -2375,7 +2407,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             eval(it, b, input, env, out)
         }
         Filter::Neg(inner) => eval(it, inner, input, env, &mut |v| match v.bare() {
-            JqVal::Num(n, _) => out(JqVal::num(-n)),
+            JqVal::Num(n, lit) => out(negate_num(*n, lit.as_deref())),
             other => Err(JqErr::msg(format!(
                 "{}{} cannot be negated",
                 other.type_name(),
@@ -2536,7 +2568,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
 /// character so the bracket still closes. Measured against jq 1.8.2:
 /// `[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]` reports as
 /// `[1,2,3,4,5,6,7,8,9,10,11,...]`, and a 26-character dump is not truncated.
-fn paren_of(v: &JqVal) -> String {
+pub(crate) fn paren_of(v: &JqVal) -> String {
     let s = render(v.bare());
     let n = s.chars().count();
     if n < 30 {
@@ -3488,26 +3520,24 @@ fn eval_paths(
             })
         }),
         Filter::Call(name, args) => eval_call_paths(it, (name, args), input, pre, val, env, out),
-        // `path(1)` and friends: jq reports the literal it could not turn into a
+        // `path(1)` and friends: jq reports the value it could not turn into a
         // path rather than silently answering.
-        other => Err(JqErr::msg(format!(
-            "Invalid path expression with result {}",
-            path_expr_label(it, other, val, env)
-        ))),
+        other => invalid_path(it, other, val, env),
     }
 }
 
-/// The value jq names in an "Invalid path expression" message: the first thing
-/// the offending filter produces.
-fn path_expr_label(it: &Interp, f: &Filter, val: &JqVal, env: &Env) -> String {
-    let mut first = None;
-    let _ = eval(it, f, val, env, &mut |v| {
-        if first.is_none() {
-            first = Some(v);
-        }
-        Ok(())
-    });
-    first.map_or_else(|| "null".to_string(), |v| render(&v))
+/// A filter that is not a path expression, met where a path is required. jq
+/// RUNS it and refuses at its first output, naming that value — so a filter
+/// that yields nothing is no error (`path(empty | tostring)` is empty), and one
+/// that raises first reports its own error (`null | path(abs)` is `null (null)
+/// cannot be negated`). Measured against jq 1.8.2.
+fn invalid_path(it: &Interp, f: &Filter, val: &JqVal, env: &Env) -> R<()> {
+    eval(it, f, val, env, &mut |v| {
+        Err(JqErr::msg(format!(
+            "Invalid path expression with result {}",
+            render(&v)
+        )))
+    })
 }
 
 /// The remaining arms of an `if` plus its `else`, walked one arm at a time.
@@ -3618,9 +3648,7 @@ fn eval_call_paths(
                 let (body, benv) = bind_call(it, &node, args, env)?;
                 eval_paths(it, &body, input, pre, val, &benv, out)
             }
-            None => Err(JqErr::msg(format!(
-                "Invalid path expression near attempt to call {name}"
-            ))),
+            None => invalid_path(it, &Filter::Call(Rc::from(name), args.to_vec()), val, env),
         },
     }
 }
@@ -4152,6 +4180,70 @@ mod libm {
     }
 }
 
+/// The builtins whose arguments are jq VALUE parameters, and the order jq
+/// enumerates their combinations in. `Some(true)`: a C function, whose LAST
+/// argument varies slowest (`[pow(2,3;2,4)]` is `[4,9,16,81]`, measured against
+/// jq 1.8.2). `Some(false)`: a `def f($a; $b)` from jq's `builtin.jq`, which
+/// binds left to right so the FIRST varies slowest (`[range(1,2;3,4)]` is
+/// `[1,2,1,2,3,2,2,3]`). Builtins whose arguments are closures (`limit`,
+/// `sub`'s replacement, `path`) are not listed: they consume the generator
+/// themselves.
+fn value_param_order(name: &str, arity: usize) -> Option<bool> {
+    match (name, arity) {
+        ("range", 2) | ("range", 3) => Some(false),
+        ("split", 1)
+        | ("startswith", 1)
+        | ("endswith", 1)
+        | ("_strindices", 1)
+        | ("setpath", 2)
+        | ("delpaths", 1)
+        | ("has", 1)
+        | ("contains", 1)
+        | ("bsearch", 1)
+        | ("strftime", 1)
+        | ("strflocaltime", 1)
+        | ("strptime", 1)
+        | ("format", 1)
+        | ("halt_error", 1)
+        | ("_match_impl", 3)
+        | ("fma", 3) => Some(true),
+        (
+            "pow" | "atan2" | "fmin" | "fmax" | "ldexp" | "copysign" | "drem" | "fdim" | "fmod"
+            | "hypot" | "nextafter" | "nexttoward" | "remainder" | "scalb" | "scalbln" | "jn"
+            | "yn",
+            2,
+        ) => Some(true),
+        _ => None,
+    }
+}
+
+/// Bind each argument of a value-parameter builtin in `order` (lazily, so an
+/// argument that raises after yielding still lets the earlier combinations
+/// answer first) and call it once per combination with literal arguments.
+#[allow(clippy::too_many_arguments)]
+fn value_param_product(
+    it: &Interp,
+    name: &str,
+    args: &[Rc<Filter>],
+    order: &[usize],
+    bound: &mut Vec<JqVal>,
+    input: &JqVal,
+    env: &Env,
+    out: Sink,
+) -> R<()> {
+    let Some((&i, rest)) = order.split_first() else {
+        let lits: Vec<Rc<Filter>> = bound
+            .iter()
+            .map(|v| Rc::new(Filter::Lit(v.clone())))
+            .collect();
+        return builtin(it, name, &lits, input, env, out);
+    };
+    eval(it, &args[i], input, env, &mut |v| {
+        bound[i] = v.bare().clone();
+        value_param_product(it, name, args, rest, bound, input, env, out)
+    })
+}
+
 fn builtin(
     it: &Interp,
     name: &str,
@@ -4167,6 +4259,20 @@ fn builtin(
     // `tostring` and `+` exactly as the same scalar read from JSON does.
     if is_yq_builtin(name, args.len()) {
         return yq_builtin(it, name, args, input, env, out);
+    }
+    // A VALUE parameter that yields several values runs the builtin once per
+    // combination, as jq does (`has("a","b")` is `true, false`). Once every
+    // argument is a literal the call proceeds below as a plain one.
+    if let Some(last_outer) = value_param_order(name, args.len()) {
+        if !args.iter().all(|a| matches!(**a, Filter::Lit(_))) {
+            let order: Vec<usize> = if last_outer {
+                (0..args.len()).rev().collect()
+            } else {
+                (0..args.len()).collect()
+            };
+            let mut bound = vec![JqVal::Null; args.len()];
+            return value_param_product(it, name, args, &order, &mut bound, input, env, out);
+        }
     }
     let input = input.bare();
     match (name, args.len()) {
@@ -4341,18 +4447,38 @@ fn builtin(
             v.sort_by(cmp_sort);
             out(JqVal::arr(v))
         }
+        // jq 1.8.2's `def reverse: [.[length - 1 - range(0;length)]];` -- so a
+        // non-array with a length of zero (`null`, `""`, `{}`, `0`) is `[]`, and
+        // any other input fails on its first INDEX (`"abc"` is `Cannot index
+        // string with number (2)`) or on `length` itself (`true`).
         ("reverse", 0) => match input {
             JqVal::Arr(a) => out(JqVal::arr(a.iter().rev().cloned().collect())),
-            JqVal::Str(s) => out(JqVal::str(s.chars().rev().collect::<String>())),
-            JqVal::Null => out(JqVal::arr(Vec::new())),
-            other => Err(JqErr::msg(format!(
-                "Cannot reverse {}{}",
-                other.type_name(),
-                paren_of(other)
-            ))),
+            other => {
+                let mut len = 0.0;
+                builtin(it, "length", &[], other, env, &mut |n| {
+                    len = n.as_f64().unwrap_or(0.0);
+                    Ok(())
+                })?;
+                if len > 0.0 {
+                    index_value(other, &JqVal::num(len - 1.0))?;
+                }
+                out(JqVal::arr(Vec::new()))
+            }
         },
+        ("unique", 0) => {
+            let mut v = want_arr(input, "sorted")?.as_ref().clone();
+            v.sort_by(cmp_sort);
+            v.dedup_by(|b, a| eq_vals(a, b));
+            out(JqVal::arr(v))
+        }
         ("sort_by", 1) | ("group_by", 1) | ("unique_by", 1) => {
-            let mut keyed = keyed_elements(it, &args[0], input, env)?;
+            let mut keyed = keyed_elements(
+                it,
+                &args[0],
+                input,
+                env,
+                "cannot be sorted, as they are not both arrays",
+            )?;
             keyed.sort_by(|a, b| cmp_sort(&a.0, &b.0));
             match name {
                 "sort_by" => out(JqVal::arr(keyed.into_iter().map(|(_, v)| v).collect())),
@@ -4386,7 +4512,7 @@ fn builtin(
             }
         }
         ("min_by", 1) | ("max_by", 1) => {
-            let keyed = keyed_elements(it, &args[0], input, env)?;
+            let keyed = keyed_elements(it, &args[0], input, env, "cannot be iterated over")?;
             // Measured against jq 1.8.2: `min_by` keeps the FIRST minimum and
             // `max_by` the LAST maximum, so the comparisons are not symmetric.
             let best = if name == "min_by" {
@@ -4409,7 +4535,16 @@ fn builtin(
             out(best.map_or(JqVal::Null, |(_, v)| v))
         }
         ("min", 0) | ("max", 0) => {
-            let a = want_arr(input, "reduced")?;
+            // jq's `minmax_by(x, x)` names the input twice.
+            let JqVal::Arr(a) = input else {
+                return Err(JqErr::msg(format!(
+                    "{}{} and {}{} cannot be iterated over",
+                    input.type_name(),
+                    paren_of(input),
+                    input.type_name(),
+                    paren_of(input)
+                )));
+            };
             let best = if name == "min" {
                 a.iter().cloned().reduce(|x, y| {
                     if cmp_vals(&y, &x) == Ordering::Less {
@@ -4738,7 +4873,9 @@ fn builtin(
         )),
         ("input", 0) => match it.next_input() {
             Some(v) => out(v),
-            None => Err(JqErr::msg("No more inputs")),
+            // jq 1.8's `f_input` raises the bare word `break`, which is what
+            // its `def inputs` catches.
+            None => Err(JqErr::msg("break")),
         },
         ("inputs", 0) => loop {
             match it.next_input() {
@@ -4828,8 +4965,16 @@ fn want_arr(v: &JqVal, who: &str) -> R<Rc<Vec<JqVal>>> {
 }
 
 /// Pair every element of the input array with `[f]` evaluated over it — the key
-/// array jq's `_sort_by_impl` family sorts on.
-fn keyed_elements(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<Vec<(JqVal, JqVal)>> {
+/// array jq's `_sort_by_impl` family sorts on. An OBJECT survives jq's
+/// `map([f])` (it maps the values) and is refused by the C implementation with
+/// both operands named: `pair_msg` is that implementation's wording.
+fn keyed_elements(
+    it: &Interp,
+    f: &Filter,
+    input: &JqVal,
+    env: &Env,
+    pair_msg: &str,
+) -> R<Vec<(JqVal, JqVal)>> {
     // jq runs `map([f])` first, so a scalar input fails as an ITERATION.
     if !matches!(input.bare(), JqVal::Arr(_) | JqVal::Obj(_)) {
         let b = input.bare();
@@ -4837,6 +4982,25 @@ fn keyed_elements(it: &Interp, f: &Filter, input: &JqVal, env: &Env) -> R<Vec<(J
             "Cannot iterate over {}{}",
             b.type_name(),
             paren_of(b)
+        )));
+    }
+    if let JqVal::Obj(m) = input.bare() {
+        let mut keys = Vec::with_capacity(m.len());
+        for (_, e) in m.iter() {
+            let mut key = Vec::new();
+            eval(it, f, e, env, &mut |k| {
+                key.push(k);
+                Ok(())
+            })?;
+            keys.push(JqVal::arr(key));
+        }
+        let keys = JqVal::arr(keys);
+        return Err(JqErr::msg(format!(
+            "{}{} and {}{} {pair_msg}",
+            input.bare().type_name(),
+            paren_of(input),
+            keys.type_name(),
+            paren_of(&keys)
         )));
     }
     let a = want_arr(input, "sorted")?;
@@ -4999,6 +5163,33 @@ fn re_args(re: &JqVal, flags: &JqVal) -> R<(Rc<str>, String)> {
 }
 
 /// jq's `_match_impl`: an array of match objects, or a boolean in test mode.
+/// jq's match loop, transcribed from `f_match`: search from `start`, and after
+/// a match resume at its END, or one character past it when it was empty
+/// (`start <= end`, so an empty match AT the end of the string still counts).
+/// This differs from `Regex::captures_iter`, which refuses an empty match
+/// adjacent to the previous one: jq's `"aaa" | gsub("a*";"X")` is `XX` and
+/// `"baaab" | gsub("a*";"X")` is `XbXXbX`. Measured against jq 1.8.2.
+fn jq_match_iter<'h>(rx: &regex::Regex, s: &'h str, global: bool) -> Vec<regex::Captures<'h>> {
+    let mut hits = Vec::new();
+    let mut start = 0usize;
+    while start <= s.len() {
+        let Some(caps) = rx.captures_at(s, start) else {
+            break;
+        };
+        let m = caps.get(0).expect("group 0 always participates");
+        start = if m.is_empty() {
+            m.end() + s[m.end()..].chars().next().map_or(1, char::len_utf8)
+        } else {
+            m.end()
+        };
+        hits.push(caps);
+        if !global {
+            break;
+        }
+    }
+    hits
+}
+
 fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<JqVal> {
     let s = match input {
         JqVal::Str(s) => s.clone(),
@@ -5017,8 +5208,9 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
     }
     let names: Vec<Option<&str>> = rx.capture_names().collect();
     let mut hits = Vec::new();
-    for caps in rx.captures_iter(&s) {
+    for caps in jq_match_iter(&rx, &s, global) {
         let whole = caps.get(0).expect("group 0 always participates");
+        let zero_width = whole.is_empty();
         let mut cap_list = Vec::new();
         for (gi, name) in names.iter().enumerate().skip(1) {
             let name = (Rc::from("name"), name.map_or(JqVal::Null, JqVal::str));
@@ -5026,6 +5218,17 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
             // order (`offset, string, length`) than a matched one, and key
             // order is visible in the output.
             cap_list.push(JqVal::obj(match caps.get(gi) {
+                // A ZERO-WIDTH match builds a participating group in the
+                // non-participating order too (f_match's zero-width branch).
+                Some(m) if zero_width => vec![
+                    (
+                        Rc::from("offset"),
+                        JqVal::num(cp_index(&s, m.start()) as f64),
+                    ),
+                    (Rc::from("string"), JqVal::str("")),
+                    (Rc::from("length"), JqVal::num(0.0)),
+                    name,
+                ],
                 Some(m) => vec![
                     (
                         Rc::from("offset"),
@@ -5058,9 +5261,6 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
             (Rc::from("string"), JqVal::str(whole.as_str())),
             (Rc::from("captures"), JqVal::arr(cap_list)),
         ]));
-        if !global {
-            break;
-        }
     }
     Ok(JqVal::arr(hits))
 }
@@ -5072,7 +5272,8 @@ fn regex_split(input: &JqVal, re: &JqVal, flags: &JqVal) -> R<JqVal> {
     let (rx, _) = compile_re(&pat, &fl)?;
     let mut parts = Vec::new();
     let mut last = 0usize;
-    for m in rx.find_iter(&s) {
+    for caps in jq_match_iter(&rx, &s, true) {
+        let m = caps.get(0).expect("group 0 always participates");
         parts.push(JqVal::str(&s[last..m.start()]));
         last = m.end();
     }
@@ -5101,7 +5302,7 @@ fn regex_sub(
     let (rx, global) = compile_re(&pat, &fl)?;
     let names: Vec<Option<String>> = rx.capture_names().map(|n| n.map(str::to_string)).collect();
     let mut spans = Vec::new();
-    for caps in rx.captures_iter(&s) {
+    for caps in jq_match_iter(&rx, &s, global) {
         let whole = caps.get(0).expect("group 0 always participates");
         let mut obj = Vec::new();
         for (gi, name) in names.iter().enumerate().skip(1) {
@@ -5113,9 +5314,6 @@ fn regex_sub(
             }
         }
         spans.push((whole.start(), whole.end(), JqVal::obj(obj)));
-        if !global {
-            break;
-        }
     }
     let mut results: Vec<String> = Vec::new();
     let mut previous = 0usize;
@@ -5352,7 +5550,6 @@ def combinations: if length == 0 then [] else .[0][] as $x | (.[1:] | combinatio
 def combinations(n): . as $dot | [range(n)] | map($dot) | combinations;
 def map_values(f): .[] |= f;
 def walk(f): def w: if type == "object" then map_values(w) elif type == "array" then map(w) else . end | f; w;
-def unique: unique_by(.);
 def del(f): delpaths([path(f)]);
 def paths: path(..) | select(length > 0);
 def paths(node_filter): path(..|select(node_filter)) | select(length > 0);
@@ -5506,6 +5703,7 @@ fn builtin_names() -> Vec<String> {
         "_strindices/1",
         "sort/0",
         "reverse/0",
+        "unique/0",
         "sort_by/1",
         "group_by/1",
         "unique_by/1",
