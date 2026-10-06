@@ -580,14 +580,22 @@ fn publish_reports_why_a_push_failed() {
     let nowhere = root.join("no-such-remote.git");
     git_ok(
         &reg,
-        &["remote", "set-url", "--push", "origin", &nowhere.to_string_lossy()],
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            &nowhere.to_string_lossy(),
+        ],
     );
     let (outcome, _) =
         publish_with(&pkg, "https://example.com/mypkg.git", &reg, &reg_url, true).unwrap();
     // The commit is made and kept, and the reason travels with it -- it used
     // to be dropped, and every failure was reported as "no write access".
     match outcome {
-        Published::CommittedLocally { push_error: Some(e) } => {
+        Published::CommittedLocally {
+            push_error: Some(e),
+        } => {
             assert!(!e.trim().is_empty(), "an empty reason")
         }
         other => panic!("expected a local commit with a reason, got {other:?}"),

@@ -486,7 +486,12 @@ pub fn publish_with(
         match run_git(&["push"], Some(reg_dir)) {
             Ok(_) => Ok((Published::Pushed, m)),
             // The commit stays local (for a fork + PR when access was denied).
-            Err(e) => Ok((Published::CommittedLocally { push_error: Some(e) }, m)),
+            Err(e) => Ok((
+                Published::CommittedLocally {
+                    push_error: Some(e),
+                },
+                m,
+            )),
         }
     } else {
         Ok((Published::CommittedLocally { push_error: None }, m))
