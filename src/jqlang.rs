@@ -2625,7 +2625,7 @@ pub(crate) fn paren_of(v: &JqVal) -> String {
 pub(crate) fn dump_trunc(v: &JqVal) -> String {
     const BUFSIZE: usize = 30;
     let s = render(v.bare());
-    if s.len() <= BUFSIZE - 1 {
+    if s.len() < BUFSIZE {
         return s;
     }
     let delim = match s.as_bytes()[0] {
@@ -5012,7 +5012,8 @@ fn builtin(
                 let (Some(mut x), Some(u)) = (from.as_f64(), upto.as_f64()) else {
                     return Err(JqErr::msg("Range bounds must be numeric"));
                 };
-                while !(x >= u) {
+                // `!(x >= u)` in C: true for x < u and for NaN on either side.
+                while x < u || x.is_nan() || u.is_nan() {
                     out(JqVal::num(x))?;
                     x += 1.0;
                 }
