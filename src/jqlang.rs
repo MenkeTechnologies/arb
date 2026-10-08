@@ -3058,6 +3058,11 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
             while i < src.len() {
                 if src[i] == b'%' {
                     let hex = src.get(i + 1..i + 3).ok_or_else(bad)?;
+                    // Exactly two hex DIGITS: `from_str_radix` alone also takes
+                    // a sign, so `%+1` decoded to byte 1 where jq refuses.
+                    if !hex.iter().all(u8::is_ascii_hexdigit) {
+                        return Err(bad());
+                    }
                     let hex = std::str::from_utf8(hex).map_err(|_| bad())?;
                     raw.push(u8::from_str_radix(hex, 16).map_err(|_| bad())?);
                     i += 3;
@@ -3082,13 +3087,16 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
                 cells.push(match e {
                     JqVal::Null => String::new(),
                     JqVal::Bool(b) => b.to_string(),
+                    // NaN renders as an empty cell, as null does.
+                    JqVal::Num(n, _) if n.is_nan() => String::new(),
                     JqVal::Num(..) => render(e),
-                    JqVal::Str(s) if name == "csv" => format!("\"{}\"", s.replace('"', "\"\"")),
-                    JqVal::Str(s) => s
-                        .replace('\\', "\\\\")
-                        .replace('\t', "\\t")
-                        .replace('\n', "\\n")
-                        .replace('\r', "\\r"),
+                    JqVal::Str(s) if name == "csv" => {
+                        format!("\"{}\"", escape_string(s, &[('"', "\"\"")]))
+                    }
+                    JqVal::Str(s) => escape_string(
+                        s,
+                        &[('\t', "\\t"), ('\r', "\\r"), ('\n', "\\n"), ('\\', "\\\\")],
+                    ),
                     other => {
                         return Err(JqErr::msg(format!(
                             // jq 1.8.2 words this "csv row" for `@tsv` too.
@@ -3102,24 +3110,19 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
             Ok(cells.join(if name == "csv" { "," } else { "\t" }))
         }
         "html" => {
-            let s = render_raw(v);
-            let mut out = String::with_capacity(s.len());
-            for c in s.chars() {
-                match c {
-                    '&' => out.push_str("&amp;"),
-                    '<' => out.push_str("&lt;"),
-                    '>' => out.push_str("&gt;"),
-                    '\'' => out.push_str("&apos;"),
-                    '"' => out.push_str("&quot;"),
-                    c => out.push(c),
-                }
-            }
-            Ok(out)
+            let table = [
+                ('&', "&amp;"),
+                ('<', "&lt;"),
+                ('>', "&gt;"),
+                ('\'', "&apos;"),
+                ('"', "&quot;"),
+            ];
+            Ok(escape_string(&render_raw(v), &table))
         }
         "sh" => {
             let one = |x: &JqVal| -> R<String> {
                 match x {
-                    JqVal::Str(s) => Ok(format!("'{}'", s.replace('\'', r"'\''"))),
+                    JqVal::Str(s) => Ok(format!("'{}'", escape_string(s, &[('\'', r"'\''")]))),
                     JqVal::Null | JqVal::Bool(_) | JqVal::Num(..) => Ok(render(x)),
                     other => Err(JqErr::msg(format!(
                         "{}{} can not be escaped for shell",
@@ -3135,6 +3138,21 @@ fn apply_format(name: &str, v: &JqVal) -> R<String> {
         }
         other => Err(JqErr::msg(format!("{other} is not a valid format"))),
     }
+}
+
+/// jq's `escape_string` (src/builtin.c), shared by `@csv`, `@tsv`, `@html` and
+/// `@sh`: each listed char is replaced by its escape, and a NUL is ALWAYS
+/// written as the two characters `\0`, whatever the table says.
+fn escape_string(s: &str, table: &[(char, &str)]) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match table.iter().find(|(k, _)| *k == c) {
+            _ if c == '\0' => out.push_str("\\0"),
+            Some((_, esc)) => out.push_str(esc),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
