@@ -1053,3 +1053,21 @@ fn object_variable_key_with_a_value_uses_the_variable_value() {
 fn builtins_omits_underscore_names() {
     run_table(&[("builtins | any(.[:1] == \"_\")", &["null"])]);
 }
+
+/// `jv_delpaths` sorts the paths and `jv_dels` removes every key of one array
+/// at once, against the ORIGINAL indices: a negative index and a slice name
+/// the positions they named before anything was removed, and a NaN index
+/// deletes nothing.
+#[test]
+fn delpaths_removes_keys_against_original_indices() {
+    const TEN: &[&str] = &["[0,1,2,3,4,5,6,7,8,9]"];
+    run_table(&[
+        ("del(.[1], .[-6], .[2], .[-3:9])", TEN),
+        ("del(.[nan])", TEN),
+        ("del(.[nan,nan])", TEN),
+        ("del(.[-1,9], .[1.7], .[-1.5])", TEN),
+        ("del(.[2:4], .[3:5])", TEN),
+        ("delpaths([[5],[0],[-1]])", TEN),
+        ("try delpaths([[\"a\"],[0]]) catch .", &["{\"a\":1}"]),
+    ]);
+}

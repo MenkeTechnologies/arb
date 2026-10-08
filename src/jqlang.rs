@@ -3897,81 +3897,136 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
     }
 }
 
-/// Remove one path. Deleting from `null` is a no-op, as jq's `delpaths` is.
-fn del_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
-    let Some((seg, rest)) = segs.split_first() else {
-        return Ok(JqVal::Null);
-    };
-    // As in `set_path`: the container that survives a deletion keeps its own
-    // comments and anchor.
-    let rebox = |built: JqVal| match v.meta() {
+/// `delpaths` — a port of `jv_delpaths` (src/jv_aux.c). The paths are sorted,
+/// an empty path deletes everything, and `delpaths_sorted` walks them grouped
+/// by their leading key so that every key of one container is removed in a
+/// single `jv_dels` call, against the ORIGINAL indices.
+fn del_paths(v: &JqVal, mut paths: Vec<Vec<JqVal>>) -> R<JqVal> {
+    paths.sort_by(|a, b| cmp_sort(&JqVal::arr(a.clone()), &JqVal::arr(b.clone())));
+    match paths.first() {
+        None => Ok(v.clone()),
+        Some(p) if p.is_empty() => Ok(JqVal::Null),
+        Some(_) => delpaths_sorted(v, &paths, 0),
+    }
+}
+
+/// `delpaths_sorted`: `paths` share their first `start` keys and are sorted,
+/// so the paths through one key are adjacent. A path that ENDS at a key deletes
+/// it whole; the others recurse into the value under it.
+fn delpaths_sorted(object: &JqVal, paths: &[Vec<JqVal>], start: usize) -> R<JqVal> {
+    let mut object = object.clone();
+    let mut delkeys = Vec::new();
+    let mut i = 0;
+    while i < paths.len() {
+        let key = &paths[i][start];
+        let delkey = paths[i].len() == start + 1;
+        let mut j = i + 1;
+        while j < paths.len() && cmp_vals(key, &paths[j][start]) == Ordering::Equal {
+            j += 1;
+        }
+        if delkey {
+            delkeys.push(key.clone());
+        } else {
+            let sub = index_value(&object, key)?;
+            if !matches!(sub.bare(), JqVal::Null) {
+                let newsub = delpaths_sorted(&sub, &paths[i..j], start + 1)?;
+                object = set_path(&object, std::slice::from_ref(key), newsub)?;
+            }
+        }
+        i = j;
+    }
+    jv_dels(&object, &delkeys)
+}
+
+/// `jv_dels`: remove every key in `keys` from one container at once. On an
+/// array the indices all refer to the original positions — a NaN index
+/// deletes nothing, a negative one counts from the end, and a slice object
+/// removes its `parse_slice` range. The container keeps its comments and
+/// anchor, as in `set_path`.
+fn jv_dels(t: &JqVal, keys: &[JqVal]) -> R<JqVal> {
+    let rebox = |built: JqVal| match t.meta() {
         Some(m) => JqVal::wrap(built, m.clone()),
         None => built,
     };
-    let v = v.bare();
-    if rest.is_empty() {
-        return match (v, seg.bare()) {
-            (JqVal::Null, _) => Ok(JqVal::Null),
-            (JqVal::Obj(m), JqVal::Str(k)) => Ok(rebox(JqVal::obj(
-                m.iter().filter(|(ek, _)| ek != k).cloned().collect(),
-            ))),
-            (JqVal::Arr(a), JqVal::Num(n, _)) => {
-                let mut i = n.trunc();
-                if i < 0.0 {
-                    i += a.len() as f64;
+    match t.bare() {
+        _ if keys.is_empty() => Ok(t.clone()),
+        JqVal::Null => Ok(t.clone()),
+        JqVal::Arr(a) => {
+            let len = a.len();
+            let mut neg = Vec::new();
+            let mut nonneg = Vec::new();
+            let mut slices = Vec::new();
+            for key in keys {
+                match key.bare() {
+                    JqVal::Num(n, _) if n.is_nan() => {}
+                    JqVal::Num(n, _) if *n < 0.0 => neg.push(*n),
+                    JqVal::Num(n, _) => nonneg.push(*n),
+                    k @ JqVal::Obj(_) => {
+                        slices.push(slice_bounds(k.obj_get("start"), k.obj_get("end"), len)?)
+                    }
+                    k => {
+                        return Err(JqErr::msg(format!(
+                            "Cannot delete {} element of array",
+                            k.type_name()
+                        )))
+                    }
                 }
-                if i < 0.0 || i >= a.len() as f64 {
-                    return Ok(v.clone());
+            }
+            // The C walks both sorted key lists alongside the array; `(int)`
+            // truncates each index toward zero.
+            let (mut ni, mut pi) = (0, 0);
+            let mut out = Vec::with_capacity(len);
+            for (i, e) in a.iter().enumerate() {
+                let i = i as i64;
+                let mut del = false;
+                while ni < neg.len() {
+                    let delidx = len as i64 + neg[ni] as i64;
+                    del |= i == delidx;
+                    if i < delidx {
+                        break;
+                    }
+                    ni += 1;
                 }
-                let i = i as usize;
-                Ok(rebox(JqVal::arr(
-                    a.iter()
-                        .enumerate()
-                        .filter(|(j, _)| *j != i)
-                        .map(|(_, e)| e.clone())
-                        .collect(),
-                )))
+                while pi < nonneg.len() {
+                    let delidx = nonneg[pi] as i64;
+                    del |= i == delidx;
+                    if i < delidx {
+                        break;
+                    }
+                    pi += 1;
+                }
+                del |= slices.iter().any(|&(s, e)| s as i64 <= i && i < e as i64);
+                if !del {
+                    out.push(e.clone());
+                }
             }
-            (JqVal::Arr(a), JqVal::Obj(_)) => {
-                let (s, e) = slice_bounds(seg.obj_get("start"), seg.obj_get("end"), a.len())?;
-                let mut out = a[..s].to_vec();
-                out.extend(a[e..].iter().cloned());
-                Ok(rebox(JqVal::arr(out)))
+            Ok(rebox(JqVal::arr(out)))
+        }
+        JqVal::Obj(m) => {
+            let mut dead: Vec<&str> = Vec::with_capacity(keys.len());
+            for k in keys {
+                match k.bare() {
+                    JqVal::Str(s) => dead.push(s),
+                    k => {
+                        return Err(JqErr::msg(format!(
+                            "Cannot delete {} field of object",
+                            k.type_name()
+                        )))
+                    }
+                }
             }
-            // jq's `jv_dels` refusals, worded per container.
-            (JqVal::Obj(_), k) => Err(JqErr::msg(format!(
-                "Cannot delete {} field of object",
-                k.type_name()
-            ))),
-            (JqVal::Arr(_), k) => Err(JqErr::msg(format!(
-                "Cannot delete {} element of array",
-                k.type_name()
-            ))),
-            (other, _) => Err(JqErr::msg(format!(
-                "Cannot delete fields from {}",
-                other.type_name()
-            ))),
-        };
+            Ok(rebox(JqVal::obj(
+                m.iter()
+                    .filter(|(ek, _)| !dead.contains(&&**ek))
+                    .cloned()
+                    .collect(),
+            )))
+        }
+        other => Err(JqErr::msg(format!(
+            "Cannot delete fields from {}",
+            other.type_name()
+        ))),
     }
-    let child = index_value(v, seg)?;
-    if matches!(child.bare(), JqVal::Null) {
-        return Ok(v.clone());
-    }
-    Ok(rebox(set_path(v, &segs[..1], del_path(&child, rest)?)?))
-}
-
-/// `delpaths`. Paths are removed LONGEST/LAST first so that deleting `.[0]` does
-/// not shift the index of a sibling path that has not been deleted yet.
-fn del_paths(v: &JqVal, mut paths: Vec<Vec<JqVal>>) -> R<JqVal> {
-    paths.sort_by(|a, b| cmp_sort(&JqVal::arr(b.clone()), &JqVal::arr(a.clone())));
-    paths.dedup_by(|a, b| {
-        cmp_vals(&JqVal::arr(a.clone()), &JqVal::arr(b.clone())) == Ordering::Equal
-    });
-    let mut cur = v.clone();
-    for p in paths {
-        cur = del_path(&cur, &p)?;
-    }
-    Ok(cur)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
