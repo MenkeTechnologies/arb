@@ -4627,25 +4627,36 @@ fn builtin(
         ("range", 2) | ("range", 3) => {
             let from = one(it, &args[0], input, env)?;
             let upto = one(it, &args[1], input, env)?;
-            let by = match args.get(2) {
-                Some(a) => one(it, a, input, env)?,
-                None => JqVal::num(1.0),
-            };
-            let (f, u, b) = (
-                from.as_f64()
-                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
-                upto.as_f64()
-                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
-                by.as_f64()
-                    .ok_or_else(|| JqErr::msg("Range bounds must be numeric"))?,
-            );
-            if b == 0.0 {
+            let Some(by) = args.get(2) else {
+                // range/2 is jq's RANGE opcode (src/execute.c): both bounds must
+                // be numbers, and it stops on the raw C `x >= upto`, so a NaN
+                // on either side never stops (`limit(3; range(0; nan))` is
+                // `[0,1,2]`).
+                let (Some(mut x), Some(u)) = (from.as_f64(), upto.as_f64()) else {
+                    return Err(JqErr::msg("Range bounds must be numeric"));
+                };
+                while !(x >= u) {
+                    out(JqVal::num(x))?;
+                    x += 1.0;
+                }
                 return Ok(());
-            }
-            let mut x = f;
-            while if b > 0.0 { x < u } else { x > u } {
-                out(JqVal::num(x))?;
-                x += b;
+            };
+            // range/3 is jq-coded (src/builtin.jq): `if $by > 0 then
+            // $init|while(. < $upto; . + $by) elif $by < 0 then
+            // $init|while(. > $upto; . + $by) else empty end`. Its compares
+            // and its `+` are jq's, so any types are accepted, NaN orders below
+            // every number, and a bad `$by` raises from the `+`.
+            let by = one(it, by, input, env)?;
+            let zero = JqVal::num(0.0);
+            let keep_going = match cmp_vals(&by, &zero) {
+                Ordering::Greater => Ordering::Less,
+                Ordering::Less => Ordering::Greater,
+                Ordering::Equal => return Ok(()),
+            };
+            let mut x = from;
+            while cmp_vals(&x, &upto) == keep_going {
+                out(x.clone())?;
+                x = binop(BinOp::Add, &x, &by)?;
             }
             Ok(())
         }
@@ -5715,10 +5726,12 @@ def any(y): reduce (.[]|y) as $x (false; . or $x);
 def all(y): reduce (.[]|y) as $x (true; . and $x);
 def any(g; y): isempty(first(g|select(y))) | not;
 def all(g; y): isempty(first(g|y|select(.|not)));
-def limit($n; f): if $n > 0 then label $out | foreach f as $item (0; .+1; $item, if . >= $n then break $out else empty end)
+def limit($n; f): if $n > 0 then label $out | foreach f as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end)
                   elif $n == 0 then empty
                   else error("limit doesn't support negative count") end;
-def skip($n; f): if $n < 0 then error("skip doesn't support negative count") else foreach f as $item (-1; . + 1; if . >= $n then $item else empty end) end;
+def skip($n; f): if $n > 0 then foreach f as $item ($n; . - 1; if . < 0 then $item else empty end)
+                 elif $n == 0 then f
+                 else error("skip doesn't support negative count") end;
 def nth($n): .[$n];
 def nth($n; f): if $n < 0 then error("nth doesn't support negative indices") else first(skip($n; f)) end;
 def until(cond; update): def _until: if cond then . else (update | _until) end; _until;
