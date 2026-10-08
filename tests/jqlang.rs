@@ -1141,3 +1141,31 @@ fn a_broken_path_refuses_where_the_path_is_next_needed() {
         ),
     ]);
 }
+
+/// jq tracks a path through `label`, `reduce`, `foreach` and `try … catch`
+/// as well (gen_label/gen_reduce/gen_foreach/gen_try), which is what makes
+/// the builtin.jq definitions of `limit`, `skip` and `nth` path expressions.
+/// `last(f)` (gen_last_1) backtracks every output, so its value travels with
+/// the state it began in.
+#[test]
+fn label_reduce_foreach_and_try_are_tracked_as_paths() {
+    const AB: &[&str] = &["{\"a\":{\"b\":0},\"b\":2}"];
+    run_table(&[
+        (
+            "[path(label $f | .a, break $f)], [path(label $f | .a, .b)]",
+            AB,
+        ),
+        (
+            "[path(limit(1; .a, .b))], [path(nth(1; .a, .b))], [path(skip(1; .a, .b))]",
+            AB,
+        ),
+        ("del(limit(1; .[]))", AB),
+        ("[path(foreach (.a, .b) as $x (0; . + 1; $x))]", AB),
+        ("try [path(reduce (1, 2) as $x (.; .a))] catch .", AB),
+        ("try [path(reduce 1 as $x (.; .a))] catch .", AB),
+        ("[path(try .a catch .b)]", AB),
+        ("try [path(try error(\"x\") catch .b)] catch .", AB),
+        ("[path(last(.))], (try [path(last(.a, .b))] catch .)", AB),
+        ("try [path(last(1 | .a))] catch .", AB),
+    ]);
+}
