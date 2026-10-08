@@ -1108,3 +1108,36 @@ fn error_values_truncate_by_bytes_as_jv_dump_string_trunc() {
         ("try (\"é\" * 20 | -.) catch .", &["null"]),
     ]);
 }
+
+/// A non-path filter inside `path(…)` does not refuse at once: its value
+/// travels on with the path broken (src/execute.c's `path_intact`), and the
+/// refusal names the step that next needed the path — an index, an
+/// iteration, or the end of `path`. A value identical to the one at the path
+/// keeps the path intact.
+#[test]
+fn a_broken_path_refuses_where_the_path_is_next_needed() {
+    const AB: &[&str] = &["{\"a\":[{\"b\":0}]}"];
+    run_table(&[
+        ("try path(.a | map(select(.b == 0)) | .[0]) catch .", AB),
+        ("try path(.a | map(select(.b == 0)) | .c) catch .", AB),
+        ("try path(.a | map(select(.b == 0)) | .[]) catch .", AB),
+        (
+            "try ((map(select(.a == 1))[].b) = 10) catch .",
+            &["[{\"a\":0},{\"a\":1}]"],
+        ),
+        (
+            "try ((map(select(.a == 1))[].a) |= .+1) catch .",
+            &["[{\"a\":0},{\"a\":1}]"],
+        ),
+        ("[try path(.a, (1|.b)) catch .]", AB),
+        ("try path([range(100)]) catch .", AB),
+        ("try path(\"abc\" | .[0:1]) catch .", AB),
+        ("try path(1 | .a?) catch .", AB),
+        ("try path(1 | ..) catch .", AB),
+        ("[path(1 | select(false) | .a)]", AB),
+        (
+            "[path(.a[0].b | tostring)], [path(.a[0] | true)]",
+            &["{\"a\":[{\"b\":\"s\"}]}"],
+        ),
+    ]);
+}

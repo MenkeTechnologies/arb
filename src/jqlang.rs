@@ -3488,8 +3488,43 @@ fn collect_pattern_vars(p: &Pattern, out: &mut Vec<Rc<str>>) {
 // Path expressions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Where a path expression's results go: the path itself and the value at it.
-type PathSink<'a> = &'a mut dyn FnMut(Vec<JqVal>, JqVal) -> R<()>;
+/// A path being tracked, or `None` once it is no longer INTACT: a filter that
+/// is not a path expression produced a value that is not the value at the
+/// path. jq keeps evaluating such a value and refuses only where the path is
+/// next NEEDED — at an index step, an iteration, or the end of `path(…)` —
+/// which is what its `path_intact` checks in src/execute.c do.
+type TrackedPath = Option<Vec<JqVal>>;
+
+/// Where a path expression's results go: the path and the value at it.
+type PathSink<'a> = &'a mut dyn FnMut(TrackedPath, JqVal) -> R<()>;
+
+/// The path at the END of a path expression (`PATH_END`): a path that is no
+/// longer intact refuses, naming the value it produced.
+fn intact_path(p: TrackedPath, v: &JqVal) -> R<Vec<JqVal>> {
+    p.ok_or_else(|| {
+        JqErr::msg(format!(
+            "Invalid path expression with result {}",
+            dump_trunc(v)
+        ))
+    })
+}
+
+/// jq's `jv_identical`, as far as arb's values can tell: equal null/booleans,
+/// a computed number with the same bits, or the same shared literal, string,
+/// array or object allocation.
+fn identical(a: &JqVal, b: &JqVal) -> bool {
+    match (a, b) {
+        (JqVal::Null, JqVal::Null) => true,
+        (JqVal::Bool(x), JqVal::Bool(y)) => x == y,
+        (JqVal::Num(x, None), JqVal::Num(y, None)) => x.to_bits() == y.to_bits(),
+        (JqVal::Num(_, Some(x)), JqVal::Num(_, Some(y))) => Rc::ptr_eq(x, y),
+        (JqVal::Str(x), JqVal::Str(y)) => Rc::ptr_eq(x, y),
+        (JqVal::Arr(x), JqVal::Arr(y)) => Rc::ptr_eq(x, y),
+        (JqVal::Obj(x), JqVal::Obj(y)) => Rc::ptr_eq(x, y),
+        (JqVal::Node(x), JqVal::Node(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
+}
 
 /// Evaluate `f` as a PATH expression — the subset of jq where every output is
 /// reachable by a sequence of key/index steps from the input. This is what
@@ -3501,13 +3536,13 @@ fn eval_paths(
     it: &Interp,
     f: &Filter,
     input: &JqVal,
-    pre: &[JqVal],
+    pre: &TrackedPath,
     val: &JqVal,
     env: &Env,
     out: PathSink,
 ) -> R<()> {
     match f {
-        Filter::Identity => out(pre.to_vec(), val.clone()),
+        Filter::Identity => out(pre.clone(), val.clone()),
         Filter::RecurseDefault => recurse_paths(pre, val, out),
         Filter::Field(..) | Filter::Index(..) | Filter::Slice(..) | Filter::Iterate(..) => {
             eval_index_paths(it, f, false, input, pre, val, env, out)
@@ -3578,63 +3613,75 @@ fn eval_paths(
             })
         }),
         Filter::Call(name, args) => eval_call_paths(it, (name, args), input, pre, val, env, out),
-        // `path(1)` and friends: jq reports the value it could not turn into a
-        // path rather than silently answering.
-        other => invalid_path(it, other, val, env),
+        other => non_path(it, other, pre, val, env, out),
     }
 }
 
 /// [`eval_index`] as a path expression: each step extends the path by its key
 /// (a slice by its `{"start","end"}` object). Under `opt` the step's own error
-/// yields no path.
+/// yields no path — but a path that is no longer intact refuses either way,
+/// as INDEX_OPT/EACH_OPT do.
 #[allow(clippy::too_many_arguments)]
 fn eval_index_paths(
     it: &Interp,
     f: &Filter,
     opt: bool,
     input: &JqVal,
-    pre: &[JqVal],
+    pre: &TrackedPath,
     val: &JqVal,
     env: &Env,
     out: PathSink,
 ) -> R<()> {
-    let step = |p: &[JqVal], key: JqVal, r: R<JqVal>, out: PathSink| match r {
-        Ok(next) => {
-            let mut np = p.to_vec();
-            np.push(key);
-            out(np, next)
+    let step = |p: &TrackedPath, v: &JqVal, key: JqVal, r: R<JqVal>, out: PathSink| {
+        let Some(p) = p else {
+            return Err(JqErr::msg(format!(
+                "Invalid path expression near attempt to access element {} of {}",
+                dump_trunc(&key),
+                dump_trunc(v)
+            )));
+        };
+        match r {
+            Ok(next) => {
+                let mut np = p.clone();
+                np.push(key);
+                out(Some(np), next)
+            }
+            Err(_) if opt => Ok(()),
+            Err(e) => Err(e),
         }
-        Err(_) if opt => Ok(()),
-        Err(e) => Err(e),
     };
     match f {
         Filter::Field(base, name) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
             let key = JqVal::Str(name.clone());
-            step(&p, key.clone(), index_value(&v, &key), out)
+            let r = index_value(&v, &key);
+            step(&p, &v, key, r, out)
         }),
         Filter::Index(base, idx) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
             eval(it, idx, input, env, &mut |i| {
-                step(&p, i.clone(), index_value(&v, &i), out)
+                let r = index_value(&v, &i);
+                step(&p, &v, i, r, out)
             })
         }),
         Filter::Slice(base, lo, hi) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
             eval_opt(it, lo.as_deref(), input, env, &mut |l| {
                 eval_opt(it, hi.as_deref(), input, env, &mut |h| {
-                    let key = JqVal::obj(vec![
-                        (Rc::from("start"), l.clone()),
-                        (Rc::from("end"), h.clone()),
-                    ]);
-                    step(&p, key, slice_value(&v, &l, &h), out)
+                    let r = slice_value(&v, &l, &h);
+                    let key =
+                        JqVal::obj(vec![(Rc::from("start"), l.clone()), (Rc::from("end"), h)]);
+                    step(&p, &v, key, r, out)
                 })
             })
         }),
-        Filter::Iterate(base) => {
-            eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
+        Filter::Iterate(base) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
+            let Some(p) = p else {
+                return Err(not_intact_iterate(&v));
+            };
+            match v.bare() {
                 JqVal::Arr(a) => {
                     for (i, e) in a.iter().enumerate() {
                         let mut np = p.clone();
                         np.push(JqVal::num(i as f64));
-                        out(np, e.clone())?;
+                        out(Some(np), e.clone())?;
                     }
                     Ok(())
                 }
@@ -3642,7 +3689,7 @@ fn eval_index_paths(
                     for (k, e) in m.iter() {
                         let mut np = p.clone();
                         np.push(JqVal::Str(k.clone()));
-                        out(np, e.clone())?;
+                        out(Some(np), e.clone())?;
                     }
                     Ok(())
                 }
@@ -3653,23 +3700,38 @@ fn eval_index_paths(
                     other.type_name(),
                     paren_of(other)
                 ))),
-            })
-        }
+            }
+        }),
         other => unreachable!("not an index step: {other:?}"),
     }
 }
 
+/// EACH/EACH_OPT over a path that is no longer intact.
+fn not_intact_iterate(v: &JqVal) -> JqErr {
+    JqErr::msg(format!(
+        "Invalid path expression near attempt to iterate through {}",
+        dump_trunc(v)
+    ))
+}
+
 /// A filter that is not a path expression, met where a path is required. jq
-/// RUNS it and refuses at its first output, naming that value — so a filter
-/// that yields nothing is no error (`path(empty | tostring)` is empty), and one
-/// that raises first reports its own error (`null | path(abs)` is `null (null)
-/// cannot be negated`). Measured against jq 1.8.2.
-fn invalid_path(it: &Interp, f: &Filter, val: &JqVal, env: &Env) -> R<()> {
+/// RUNS it: an output identical to the value at the path keeps the path
+/// intact (`path(.a | tostring)` on a string is `["a"]`); any other output
+/// travels on with the path broken, and is refused only where a path is next
+/// needed. A filter that yields nothing is no error (`path(empty | tostring)`
+/// is empty), and one that raises reports its own error (`null | path(abs)`
+/// is `null (null) cannot be negated`).
+fn non_path(
+    it: &Interp,
+    f: &Filter,
+    pre: &TrackedPath,
+    val: &JqVal,
+    env: &Env,
+    out: PathSink,
+) -> R<()> {
     eval(it, f, val, env, &mut |v| {
-        Err(JqErr::msg(format!(
-            "Invalid path expression with result {}",
-            render(&v)
-        )))
+        let p = pre.as_ref().filter(|_| identical(&v, val)).cloned();
+        out(p, v)
     })
 }
 
@@ -3684,7 +3746,7 @@ fn eval_if_paths(
     it: &Interp,
     node: IfNode,
     input: &JqVal,
-    pre: &[JqVal],
+    pre: &TrackedPath,
     val: &JqVal,
     env: &Env,
     out: PathSink,
@@ -3692,7 +3754,7 @@ fn eval_if_paths(
     let Some(((cond, then), rest)) = node.arms.split_first() else {
         return match node.els {
             Some(e) => eval_paths(it, e, input, pre, val, env, out),
-            None => out(pre.to_vec(), val.clone()),
+            None => out(pre.clone(), val.clone()),
         };
     };
     eval(it, cond, val, env, &mut |c| {
@@ -3720,7 +3782,7 @@ fn eval_call_paths(
     it: &Interp,
     call: (&str, &[Rc<Filter>]),
     input: &JqVal,
-    pre: &[JqVal],
+    pre: &TrackedPath,
     val: &JqVal,
     env: &Env,
     out: PathSink,
@@ -3732,17 +3794,22 @@ fn eval_call_paths(
         ("error", 1) => eval(it, &args[0], val, env, &mut |m| Err(JqErr::Err(m))),
         ("select", 1) => eval(it, &args[0], val, env, &mut |c| {
             if c.truthy() {
-                out(pre.to_vec(), val.clone())
+                out(pre.clone(), val.clone())
             } else {
                 Ok(())
             }
         }),
+        // `_jq_path_append`: an intact path grows by the whole array; a broken
+        // one stays broken, carrying the value found.
         ("getpath", 1) => eval(it, &args[0], val, env, &mut |p| {
             let JqVal::Arr(segs) = &p else {
                 return Err(JqErr::msg("Path must be specified as an array"));
             };
-            let mut np = pre.to_vec();
-            np.extend(segs.iter().cloned());
+            let np = pre.as_ref().map(|pre| {
+                let mut np = pre.clone();
+                np.extend(segs.iter().cloned());
+                np
+            });
             out(np, get_path(val, segs)?)
         }),
         ("recurse", 0) => recurse_paths(pre, val, out),
@@ -3781,30 +3848,43 @@ fn eval_call_paths(
                 let (body, benv) = bind_call(it, &node, args, env)?;
                 eval_paths(it, &body, input, pre, val, &benv, out)
             }
-            None => invalid_path(it, &Filter::Call(Rc::from(name), args.to_vec()), val, env),
+            None => non_path(
+                it,
+                &Filter::Call(Rc::from(name), args.to_vec()),
+                pre,
+                val,
+                env,
+                out,
+            ),
         },
     }
 }
 
-fn recurse_paths(pre: &[JqVal], val: &JqVal, out: PathSink) -> R<()> {
+/// `..` as a path expression: `recurse(.[]?)`. The node itself comes out
+/// first; descending through a path that is no longer intact refuses, as
+/// EACH_OPT does.
+fn recurse_paths(pre: &TrackedPath, val: &JqVal, out: PathSink) -> R<()> {
     // The NODE is what comes out, so `.. | anchor` sees the box; the traversal
     // walks the value inside it, so `paths` does not stop at the first commented
     // container.
-    out(pre.to_vec(), val.clone())?;
+    out(pre.clone(), val.clone())?;
+    let Some(pre) = pre else {
+        return Err(not_intact_iterate(val));
+    };
     match val.bare() {
         JqVal::Arr(a) => {
             for (i, e) in a.iter().enumerate() {
-                let mut np = pre.to_vec();
+                let mut np = pre.clone();
                 np.push(JqVal::num(i as f64));
-                recurse_paths(&np, e, out)?;
+                recurse_paths(&Some(np), e, out)?;
             }
             Ok(())
         }
         JqVal::Obj(m) => {
             for (k, e) in m.iter() {
-                let mut np = pre.to_vec();
+                let mut np = pre.clone();
                 np.push(JqVal::Str(k.clone()));
-                recurse_paths(&np, e, out)?;
+                recurse_paths(&Some(np), e, out)?;
             }
             Ok(())
         }
@@ -3816,12 +3896,12 @@ fn recurse_paths_f(
     it: &Interp,
     f: &Filter,
     input: &JqVal,
-    pre: &[JqVal],
+    pre: &TrackedPath,
     val: &JqVal,
     env: &Env,
     out: PathSink,
 ) -> R<()> {
-    out(pre.to_vec(), val.clone())?;
+    out(pre.clone(), val.clone())?;
     eval_paths(it, f, input, pre, val, env, &mut |p, v| {
         recurse_paths_f(it, f, input, &p, &v, env, out)
     })
@@ -4137,7 +4217,8 @@ fn eval_assign(
                 Some(p) => {
                     let mut cur = input.clone();
                     let mut paths = Vec::new();
-                    eval_paths(it, p, input, &[], input, env, &mut |pp, _| {
+                    eval_paths(it, p, input, &Some(Vec::new()), input, env, &mut |pp, v| {
+                        let pp = intact_path(pp, &v)?;
                         paths.push(pp);
                         Ok(())
                     })?;
@@ -4158,10 +4239,19 @@ fn eval_assign(
     if op == AssignOp::Update {
         let mut cur = input.clone();
         let mut paths = Vec::new();
-        eval_paths(it, lhs, input, &[], input, env, &mut |p, _| {
-            paths.push(p);
-            Ok(())
-        })?;
+        eval_paths(
+            it,
+            lhs,
+            input,
+            &Some(Vec::new()),
+            input,
+            env,
+            &mut |p, v| {
+                let p = intact_path(p, &v)?;
+                paths.push(p);
+                Ok(())
+            },
+        )?;
         // jq's `_modify` DELETES a path whose update produced nothing — but it
         // collects those paths and deletes them all at the END. Deleting as it
         // went shifted every later array index down by one, so
@@ -4191,10 +4281,19 @@ fn eval_assign(
     eval(it, rhs, input, env, &mut |rv| {
         let mut cur = input.clone();
         let mut paths = Vec::new();
-        eval_paths(it, lhs, input, &[], input, env, &mut |p, _| {
-            paths.push(p);
-            Ok(())
-        })?;
+        eval_paths(
+            it,
+            lhs,
+            input,
+            &Some(Vec::new()),
+            input,
+            env,
+            &mut |p, v| {
+                let p = intact_path(p, &v)?;
+                paths.push(p);
+                Ok(())
+            },
+        )?;
         for p in paths {
             let newv = match op {
                 AssignOp::Set => rv.clone(),
@@ -4989,17 +5088,17 @@ fn builtin(
         ("isinfinite", 0) => out(JqVal::Bool(input.as_f64().is_some_and(f64::is_infinite))),
         ("isnormal", 0) => out(JqVal::Bool(input.as_f64().is_some_and(f64::is_normal))),
 
-        ("path", 1) => {
-            let mut res = Vec::new();
-            eval_paths(it, &args[0], input, &[], input, env, &mut |p, _| {
-                res.push(JqVal::arr(p));
-                Ok(())
-            })?;
-            for p in res {
-                out(p)?;
-            }
-            Ok(())
-        }
+        // Each path is emitted as it is found, so one that is not intact refuses
+        // AFTER the paths before it have gone out.
+        ("path", 1) => eval_paths(
+            it,
+            &args[0],
+            input,
+            &Some(Vec::new()),
+            input,
+            env,
+            &mut |p, v| out(JqVal::arr(intact_path(p, &v)?)),
+        ),
         ("getpath", 1) => eval(it, &args[0], input, env, &mut |p| {
             let JqVal::Arr(segs) = &p else {
                 return Err(JqErr::msg("Path must be specified as an array"));
@@ -6509,10 +6608,19 @@ fn yq_builtin(
         ("explode", 1) => {
             let mut cur = input.clone();
             let mut paths = Vec::new();
-            eval_paths(it, &args[0], input, &[], input, env, &mut |p, _| {
-                paths.push(p);
-                Ok(())
-            })?;
+            eval_paths(
+                it,
+                &args[0],
+                input,
+                &Some(Vec::new()),
+                input,
+                env,
+                &mut |p, v| {
+                    let p = intact_path(p, &v)?;
+                    paths.push(p);
+                    Ok(())
+                },
+            )?;
             for p in paths {
                 let at = get_path(&cur, &p)?;
                 let flat = explode_node(&at);
