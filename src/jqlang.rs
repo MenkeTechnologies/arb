@@ -2846,6 +2846,11 @@ fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
             _ => Err(bad("divided")),
         },
         BinOp::Mod => match (a, b) {
+            // `binop_mod` (src/builtin.c) answers NaN when either side is NaN,
+            // before the zero-divisor check that a NaN would otherwise trip.
+            (JqVal::Num(x, _), JqVal::Num(y, _)) if x.is_nan() || y.is_nan() => {
+                Ok(JqVal::num(f64::NAN))
+            }
             (JqVal::Num(x, _), JqVal::Num(y, _)) => {
                 // jq truncates BOTH operands to integers first, so `5.9 % 3` is
                 // `2` and not the f64 remainder.
@@ -2859,7 +2864,9 @@ fn binop(op: BinOp, a: &JqVal, b: &JqVal) -> R<JqVal> {
                         paren_of(b)
                     )));
                 }
-                Ok(JqVal::num((xi % yi) as f64))
+                // jq special-cases a `-1` divisor to 0 so `INTMAX_MIN % -1` cannot
+                // overflow; Rust's `%` panics there.
+                Ok(JqVal::num(if yi == -1 { 0.0 } else { (xi % yi) as f64 }))
             }
             _ => Err(bad("divided (remainder)")),
         },
