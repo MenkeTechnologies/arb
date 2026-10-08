@@ -4711,7 +4711,7 @@ fn builtin(
             out(JqVal::num(match name {
                 "floor" => n.floor(),
                 "ceil" => n.ceil(),
-                "round" | "nearbyint" => n.round(),
+                "round" => n.round(),
                 "sqrt" => n.sqrt(),
                 "fabs" => n.abs(),
                 "log" => n.ln(),
@@ -4743,9 +4743,9 @@ fn builtin(
                 "atanh" => n.atanh(),
                 "expm1" => n.exp_m1(),
                 "log1p" => n.ln_1p(),
-                // `rint` rounds half to EVEN under the default rounding mode,
-                // which is not `f64::round`'s half-away-from-zero.
-                "rint" => n.round_ties_even(),
+                // `rint` and `nearbyint` round half to EVEN under the default
+                // rounding mode, which is not `round`'s half-away-from-zero.
+                "rint" | "nearbyint" => n.round_ties_even(),
                 // SAFETY: each of these is a pure `double -> double` libm call.
                 "lgamma" => unsafe { libm::lgamma(n) },
                 // jq's `gamma` is `tgamma`, not the historical C alias for
