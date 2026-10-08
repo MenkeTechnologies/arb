@@ -2660,19 +2660,24 @@ fn index_value(v: &JqVal, idx: &JqVal) -> R<JqVal> {
             }
         }
         // `.[ {"start":s,"end":e} ]` is how jq spells a slice internally, and it
-        // reaches `index` when the object form is written out.
-        (_, JqVal::Obj(m)) if m.len() == 2 && v.obj_get("start").is_none() => {
-            let (s, e) = (
-                m.iter()
-                    .find(|(k, _)| &**k == "start")
-                    .map(|(_, x)| x.clone()),
-                m.iter()
-                    .find(|(k, _)| &**k == "end")
-                    .map(|(_, x)| x.clone()),
-            );
-            match (s, e) {
-                (Some(s), Some(e)) => slice_value(v, &s, &e),
-                _ => Err(index_err(v, idx)),
+        // reaches `index` when the object form is written out. `jv_get` hands
+        // ANY object key on an array or string to `parse_slice`, which reads only
+        // `start` and `end` (extra keys are ignored, a missing one refuses), and
+        // indexes `null` with an object to `null`.
+        (JqVal::Null, JqVal::Obj(_)) => Ok(JqVal::Null),
+        (JqVal::Arr(_) | JqVal::Str(_), JqVal::Obj(_)) => {
+            let (s, e) = (idx.obj_get("start"), idx.obj_get("end"));
+            match v {
+                JqVal::Arr(a) => {
+                    let (s, e) = slice_bounds(s, e, a.len())?;
+                    Ok(JqVal::arr(a[s..e].to_vec()))
+                }
+                JqVal::Str(st) => {
+                    let cs: Vec<char> = st.chars().collect();
+                    let (s, e) = slice_bounds(s, e, cs.len())?;
+                    Ok(JqVal::str(cs[s..e].iter().collect::<String>()))
+                }
+                _ => unreachable!("matched an array or a string above"),
             }
         }
         // `[a] | .[ [x] ]` is jq's "indices of the subarray" form.
@@ -2719,18 +2724,38 @@ fn array_indices(hay: &JqVal, sub: &[JqVal]) -> Vec<JqVal> {
 /// any other non-number is jq's "slice indices must be integers" error. Reading, assigning
 /// and deleting a slice all go through here.
 fn slice_bounds(lo: Option<&JqVal>, hi: Option<&JqVal>, len: usize) -> R<(usize, usize)> {
-    let conv = |b: Option<&JqVal>, open: f64| match b.map(JqVal::bare) {
-        Some(JqVal::Num(n, _)) => {
-            let n = if *n < 0.0 { n + len as f64 } else { *n };
-            Ok(n.clamp(0.0, len as f64))
-        }
+    // A port of `parse_slice` (src/jv_aux.c). A null bound is open; a MISSING
+    // one (jq's INVALID) and any non-number refuse.
+    let bound = |b: Option<&JqVal>, open: f64| match b.map(JqVal::bare) {
+        Some(JqVal::Num(n, _)) => Ok(*n),
         Some(JqVal::Null) => Ok(open),
-        // A path segment object MISSING `start`/`end` is refused too.
         _ => Err(JqErr::msg("Array/string slice indices must be integers")),
     };
-    let s = conv(lo, 0.0)? as usize;
-    let e = conv(hi, len as f64)?.ceil() as usize;
-    Ok((s, e.max(s)))
+    let lenf = len as f64;
+    let (mut ds, mut de) = (bound(lo, 0.0)?, bound(hi, lenf)?);
+    // The start rounds DOWN and a NaN start is 0.
+    if ds.is_nan() {
+        ds = 0.0;
+    }
+    if ds < 0.0 {
+        ds += lenf;
+    }
+    let start = ds.clamp(0.0, lenf) as usize;
+    // The end rounds UP and a NaN end is the length.
+    if de.is_nan() {
+        de = lenf;
+    }
+    if de < 0.0 {
+        de += lenf;
+    }
+    if de < 0.0 {
+        de = start as f64;
+    }
+    let mut end = (de.min(lenf)) as usize;
+    if end < len && (end as f64) < de {
+        end += 1;
+    }
+    Ok((start, end.max(start)))
 }
 
 /// jq's slice: clamped, negative-from-the-end, over arrays and strings, with
