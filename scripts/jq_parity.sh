@@ -83,6 +83,8 @@
 #   HEAD       (round 5 + numbers, after)         759 pass /  0 diverged / 159 skipped
 #   fbcd926c0b (round 6 corpus, before; yq absent) 760 pass / 12 diverged / 159 skipped
 #   HEAD       (round 6 corpus, after;  yq absent) 772 pass /  0 diverged / 159 skipped
+#   7d54d72b40 (round 7 corpus, before; yq absent) 774 pass / 23 diverged / 159 skipped
+#   4851c87668 (round 7 corpus, after;  yq absent) 797 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1636,6 +1638,50 @@ jq_probe 'null'   'try nth(-1; 1,2) catch .'
 jq_probe $'{\n  "a": 1,\n  "b": [1,\n 2]\n}\n{"a":2}' '.a, .b'
 jq_probe '1 2 {"a":3}{"a":4}' '.'
 jq_probe $'1\n2\n3\n4' '[., input, input_line_number]'
+
+# ── round 7 (fusevm parity sweep, round 3) ───────────────────────────────────
+# Edges no earlier probe reached, each checked against jq 1.8.2's C source or
+# builtin.jq. Error-raising cases are wrapped in `try … catch .` so the MESSAGE
+# is byte-compared, not just the refusal.
+#   array set     jv_set/jv_array_set: NaN index, C-int clamp, INT_MAX>>2 cap.
+jq_probe '[1]'    'try (.[nan] = 1) catch .'
+jq_probe 'null'   'try (.[1e10] = 1) catch ., try setpath([536870912]; 1) catch .'
+jq_probe '[1]'    'try (.[-1e300] = 1) catch ., (.[1] = 2)'
+#   contains      f_contains: top-level kinds must match (true/false differ);
+#                 jvp_contains: a nested kind mismatch is just "not contained".
+jq_probe 'true'   'try contains(false) catch ., contains(true)'
+jq_probe '[true]' 'contains([false])'
+jq_probe '[1,[2]]' 'inside([1,[2],3])'
+jq_probe '{"a":[1,{"b":"xy"}]}' 'contains({"a":[{"b":"y"}]}), contains({"a":1})'
+#   regex args    f_match: a non-string regex "is not a string"; split/2 and
+#                 scan/2 join their flags with jq's `+`.
+jq_probe '"a"'    'try sub(1; "x") catch ., try [splits(1)] catch ., try scan(1) catch .'
+jq_probe '"a,b"'  'try split(","; 1) catch ., try scan("a"; false) catch ., split(","; null)'
+#   %             binop_mod: NaN on either side is NaN; a -1 divisor is 0.
+jq_probe 'null'   '[nan % 1, 1 % nan, nan % 0] | map(isnan)'
+jq_probe 'null'   '-1e19 % -1, -9223372036854775808 % -1, -7 % -1'
+#   slices        parse_slice: any object key slices, a missing bound refuses,
+#                 a NaN start is 0 and a NaN end is the length.
+jq_probe '[1,2,3]' 'try .[{"start":1}] catch ., .[{"start":1,"end":2,"x":1}]'
+jq_probe '[1,2,3]' '.[nan:nan], .[{"start":nan,"end":nan}], try (.[{}] = ["x"]) catch .'
+jq_probe '"abc"'  '.[{"start":1,"end":null}], try .[{}] catch .'
+jq_probe 'null'   '.[{}]'
+#   formats       escape_string writes NUL as `\0`; a NaN csv/tsv cell is empty;
+#                 @urid wants two hex DIGITS.
+jq_probe '["a\u0000b","c\td"]' '@tsv'
+jq_probe '["x\u0000\"y"]' '@csv'
+jq_probe '"a\u0000<&b"' '@html, @sh'
+jq_probe 'null'   '[nan, 1, null] | @csv, @tsv'
+jq_probe '"%+1"'  'try @urid catch .'
+#   generators    range/2 is the RANGE opcode (NaN never stops); range/3,
+#                 limit and skip are builtin.jq's, so fractional and
+#                 non-numeric counts behave as jq's arithmetic says.
+jq_probe 'null'   '[limit(3; range(0; nan))], [limit(3; range(nan; 1; 1))]'
+jq_probe 'null'   '[limit(3; range(0; "a"; 1))], [range(0; 3; null)], try [limit(3; range(0; 10; "a"))] catch .'
+jq_probe 'null'   '[nth(1.5; 1,2,3)], [skip(1.5; 1,2,3)], [limit(0.5; 1,2)]'
+jq_probe 'null'   'try [limit("a"; 1,2)] catch ., try [skip(nan; 1,2)] catch .'
+#   math          nearbyint rounds half to even, as C's does.
+jq_probe 'null'   '[1.5, -1.5, 2.5, -2.5, 0.5] | map(nearbyint), map(round)'
 
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
