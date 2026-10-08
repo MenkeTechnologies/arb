@@ -1182,3 +1182,17 @@ fn iterating_null_in_a_path_refuses() {
         ("[path(.[]?)], [paths]", &["null"]),
     ]);
 }
+
+/// jq reads its input with `jv_parse.c`, which takes `nan`/`NaN`/`Infinity`,
+/// `01`, `.5`, `+1` and a leading byte-order mark as JSON — so such a line is
+/// a value, not text.
+#[test]
+fn input_lines_are_read_by_jq_s_own_parser() {
+    run_table(&[
+        (".", &["[1,NaN,nan,Infinity,-Infinity,-NaN]"]),
+        (".[] = 1", &["[1,null,Infinity,-Infinity,NaN,-NaN]"]),
+        ("tojson | fromjson", &["{\"a\":nan}"]),
+        ("[., type]", &[".5", "01", "+1", "1."]),
+        (".", &["\u{feff}\"byte order mark\""]),
+    ]);
+}

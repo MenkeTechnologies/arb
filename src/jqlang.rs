@@ -358,8 +358,14 @@ type Sink<'a> = &'a mut dyn FnMut(JqVal) -> R<()>;
 /// Hand-written rather than delegated to `serde_json` for the reason the module
 /// header gives: the two things this keeps — key ORDER and the number LITERAL —
 /// are precisely the two `serde_json::Value` discards.
+///
+/// This strict reader is the fast path. What it refuses is offered to jq's own
+/// reader ([`crate::jvparse`], the `jv_parse.c` port) before the line counts as
+/// text, because jq reads its input with that parser: a leading byte-order
+/// mark, `nan`/`NaN`/`Infinity`, `01`, `.5` and `+1` are all JSON values to it.
+/// The strict reader's message is kept for the refusal.
 pub fn parse_json(src: &str) -> Result<JqVal, String> {
-    parse_json_with(src)
+    parse_json_with(src).or_else(|e| crate::jvparse::parse(src).map_err(|_| e))
 }
 
 fn parse_json_with(src: &str) -> Result<JqVal, String> {
