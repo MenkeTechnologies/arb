@@ -5693,8 +5693,10 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
             // order is visible in the output.
             cap_list.push(JqVal::obj(match caps.get(gi) {
                 // A ZERO-WIDTH match builds a participating group in the
-                // non-participating order too (f_match's zero-width branch).
-                Some(m) if zero_width => vec![
+                // non-participating order too (f_match's zero-width branch),
+                // and so does an EMPTY group inside a non-empty match
+                // (f_match's "Empty capture" branch).
+                Some(m) if zero_width || m.is_empty() => vec![
                     (
                         Rc::from("offset"),
                         JqVal::num(cp_index(&s, m.start()) as f64),

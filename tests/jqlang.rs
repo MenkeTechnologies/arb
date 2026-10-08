@@ -1214,3 +1214,13 @@ fn an_empty_array_pattern_is_a_syntax_error() {
         (". as [$a, [$b]] | [$a, $b]", &["[1,[2]]"]),
     ]);
 }
+
+/// f_match's "Empty capture" branch builds a group that matched the empty
+/// string inside a non-empty match with `offset, string, length` key order.
+#[test]
+fn an_empty_capture_keeps_f_match_key_order() {
+    run_table(&[
+        ("\"a\",\"b\",\"c\" | match(\"(?<x>a?)?b?\")", &["null"]),
+        ("[match(\"(a*)b\"; \"g\")]", &["\"bab\""]),
+    ]);
+}
