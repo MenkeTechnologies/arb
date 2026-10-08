@@ -1265,3 +1265,19 @@ fn strindices_refuses_with_f_string_indexes_wording() {
         ("_strindices(\"a\")", &["\"banana\""]),
     ]);
 }
+
+/// `length` of a number is `jv_number_abs`, which keeps a literal as a
+/// decNumber: `-1.50 | length` is `1.50` and `-1E+1000 | length` is
+/// `1E+1000`, not the clamped double.
+#[test]
+fn length_of_a_number_keeps_the_literal() {
+    run_table(&[
+        (
+            "[1E+1000,-1E+1000 | length | tojson] | unique == if have_decnum then [\"1E+1000\"] else [\"1.7976931348623157e+308\"] end",
+            &["null"],
+        ),
+        ("[-1.50, 1.50, -100000000000000000001 | length]", &["null"]),
+        ("[.[] | length]", &["[-0, -0.0, 0, -1E-5, -nan, 5, 1.50]"]),
+        ("[(0 * -1), (1 - 3), -0.5 | length]", &["null"]),
+    ]);
+}

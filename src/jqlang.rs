@@ -4715,7 +4715,10 @@ fn builtin(
                     paren_of(input)
                 )))
             }
-            JqVal::Num(n, _) => JqVal::num(n.abs()),
+            // `jv_number_abs`: a literal drops its sign as a decNumber
+            // (`decNumberAbs`), which is what negating it already does.
+            JqVal::Num(n, lit) if n.is_sign_negative() => negate_num(*n, lit.as_deref()),
+            JqVal::Num(..) => input.clone(),
             JqVal::Str(s) => JqVal::num(s.chars().count() as f64),
             JqVal::Arr(a) => JqVal::num(a.len() as f64),
             JqVal::Obj(m) => JqVal::num(m.len() as f64),
