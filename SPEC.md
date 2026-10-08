@@ -370,8 +370,16 @@ slices as `parse_slice` reads them, `escape_string`'s `\0` for NUL in
 `@csv`/`@tsv`/`@html`/`@sh`, `range`/`limit`/`skip` as the RANGE opcode and
 `builtin.jq` define them, and `nearbyint` rounding half to even) measured 797
 pass, 0 diverged, 159 skipped (774 pass / 23 diverged on the same corpus before
-the fixes). The 825 above is the last run WITH `yq`; it was not re-measured
-since.
+the fixes). The round-8 additions (`try`/`catch` bodies that are negations,
+`{$v: e}` keying by the value of `$v`, an empty array pattern refused, `builtins`
+without `_` internals, `delpaths` as `jv_dels`, `?` after an index suppressing only
+that step, jq's `path_intact` tracking through `label`/`reduce`/`foreach`/`try` with
+its "near attempt to …" refusals, `jv_dump_string_trunc` byte truncation, input
+lines read by the `jv_parse.c` port (`NaN`, `Infinity`, `.5`, BOM), `implode` of
+NaN, `jv_get`/`jv_set` refusals, `length` keeping a number literal, `f_match`'s
+empty-capture key order, and `_strindices` wordings) measured 816 pass, 0
+diverged, 159 skipped (797 pass / 19 diverged on the same corpus before the
+fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
 
 | leg | reference | containment | status |
 |---|---|---|---|
