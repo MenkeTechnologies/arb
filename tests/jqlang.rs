@@ -1169,3 +1169,16 @@ fn label_reduce_foreach_and_try_are_tracked_as_paths() {
         ("try [path(last(1 | .a))] catch .", AB),
     ]);
 }
+
+/// EACH on `null` refuses in a path expression exactly as it does on a value
+/// (`Cannot iterate over null`); only `.[]?` (EACH_OPT) yields nothing.
+#[test]
+fn iterating_null_in_a_path_refuses() {
+    run_table(&[
+        ("try [path(.[])] catch .", &["null"]),
+        ("try (.[] |= 1) catch .", &["null"]),
+        ("try del(.[]) catch .", &["null"]),
+        ("try (.a[] = 1) catch .", &["{}"]),
+        ("[path(.[]?)], [paths]", &["null"]),
+    ]);
+}

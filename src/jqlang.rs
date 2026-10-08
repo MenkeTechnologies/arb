@@ -3800,7 +3800,6 @@ fn eval_index_paths(
                     }
                     Ok(())
                 }
-                JqVal::Null => Ok(()),
                 _ if opt => Ok(()),
                 other => Err(JqErr::msg(format!(
                     "Cannot iterate over {}{}",
