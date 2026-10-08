@@ -1266,6 +1266,11 @@ pub(crate) enum Filter {
     Iterate(Box<Filter>),
     /// `f?` — swallow errors raised by `f`, emitting nothing instead.
     Optional(Box<Filter>),
+    /// `.a?`, `.[e]?`, `.[a:b]?`, `.[]?` — parser.y's INDEX_OPT/EACH_OPT. The
+    /// inner filter is a `Field`/`Index`/`Slice`/`Iterate`, and only that
+    /// step's own indexing error is suppressed: an error from its base or its
+    /// key still raises.
+    IndexOpt(Box<Filter>),
     Pipe(Box<Filter>, Box<Filter>),
     Comma(Box<Filter>, Box<Filter>),
     Neg(Box<Filter>),
@@ -1713,12 +1718,28 @@ impl Parser {
     /// `as`-binding is not part of it: its source is a whole expression (see
     /// `bind`).
     fn postfix(&mut self) -> Result<Filter, String> {
+        // parser.y gives `?` two meanings. Directly after an index step
+        // (`Term FIELD '?'`, `Term '[' Query ']' '?'`, `Term '[' ']' '?'`, the
+        // slices) it is INDEX_OPT/EACH_OPT, which suppresses only that step's
+        // own error; anywhere else (`Term '?'`) it is `try`. `index_step` says
+        // whether the term so far ends in such a step.
+        let mut index_step = matches!(
+            (self.peek(), self.t.get(self.i + 1)),
+            (Some(Tok::Field(_)), _) | (Some(Tok::Op(".")), Some(Tok::Str(_) | Tok::Op("[")))
+        );
         let mut f = self.term()?;
         loop {
             if self.eat_op("?") {
-                f = Filter::Optional(Box::new(f));
+                f = if index_step {
+                    Filter::IndexOpt(Box::new(f))
+                } else {
+                    Filter::Optional(Box::new(f))
+                };
+                index_step = false;
                 continue;
             }
+            // Every continuation below but the metadata postfix is an index step.
+            index_step = true;
             if let Some(Tok::Field(name)) = self.peek() {
                 let name: Rc<str> = Rc::from(name.as_str());
                 self.i += 1;
@@ -1762,6 +1783,7 @@ impl Parser {
                     let name: Rc<str> = Rc::from(name.as_str());
                     self.i += 1;
                     f = Filter::Pipe(Box::new(f), Box::new(Filter::Call(name, Vec::new())));
+                    index_step = false;
                     continue;
                 }
             }
@@ -2361,38 +2383,10 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
         Filter::Lit(v) => out(v.clone()),
         Filter::Str(pieces, fmt) => eval_string(it, pieces, fmt.as_deref(), input, env, out),
         Filter::Format(name) => out(JqVal::str(apply_format(name, input)?)),
-        Filter::Field(base, name) => eval(it, base, input, env, &mut |v| {
-            out(index_value(&v, &JqVal::Str(name.clone()))?)
-        }),
-        Filter::Index(base, idx) => eval(it, base, input, env, &mut |v| {
-            eval(it, idx, input, env, &mut |i| out(index_value(&v, &i)?))
-        }),
-        Filter::Slice(base, lo, hi) => eval(it, base, input, env, &mut |v| {
-            eval_opt(it, lo.as_deref(), input, env, &mut |lo_v| {
-                eval_opt(it, hi.as_deref(), input, env, &mut |hi_v| {
-                    out(slice_value(&v, &lo_v, &hi_v)?)
-                })
-            })
-        }),
-        Filter::Iterate(base) => eval(it, base, input, env, &mut |v| match v.bare() {
-            JqVal::Arr(a) => {
-                for e in a.iter() {
-                    out(e.clone())?;
-                }
-                Ok(())
-            }
-            JqVal::Obj(m) => {
-                for (_, val) in m.iter() {
-                    out(val.clone())?;
-                }
-                Ok(())
-            }
-            other => Err(JqErr::msg(format!(
-                "Cannot iterate over {}{}",
-                other.type_name(),
-                paren_of(other)
-            ))),
-        }),
+        Filter::Field(..) | Filter::Index(..) | Filter::Slice(..) | Filter::Iterate(..) => {
+            eval_index(it, f, false, input, env, out)
+        }
+        Filter::IndexOpt(inner) => eval_index(it, inner, true, input, env, out),
         Filter::Optional(inner) => {
             match eval(it, inner, input, env, &mut |v| {
                 out(v).map_err(wrap_downstream)
@@ -2562,6 +2556,54 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             out(JqVal::arr(items))
         }
         Filter::Assign(op, lhs, rhs) => eval_assign(it, *op, lhs, rhs, input, env, out),
+    }
+}
+
+/// One index step — `.k`, `.[e]`, `.[a:b]` or `.[]` — over every output of its
+/// base. Under `opt` (parser.y's INDEX_OPT/EACH_OPT, the `?` written right
+/// after the step) the step's OWN error yields nothing; an error from the
+/// base, from the key, or from downstream still propagates.
+fn eval_index(it: &Interp, f: &Filter, opt: bool, input: &JqVal, env: &Env, out: Sink) -> R<()> {
+    let step = |r: R<JqVal>, out: Sink| match r {
+        Ok(v) => out(v),
+        Err(_) if opt => Ok(()),
+        Err(e) => Err(e),
+    };
+    match f {
+        Filter::Field(base, name) => eval(it, base, input, env, &mut |v| {
+            step(index_value(&v, &JqVal::Str(name.clone())), out)
+        }),
+        Filter::Index(base, idx) => eval(it, base, input, env, &mut |v| {
+            eval(it, idx, input, env, &mut |i| step(index_value(&v, &i), out))
+        }),
+        Filter::Slice(base, lo, hi) => eval(it, base, input, env, &mut |v| {
+            eval_opt(it, lo.as_deref(), input, env, &mut |lo_v| {
+                eval_opt(it, hi.as_deref(), input, env, &mut |hi_v| {
+                    step(slice_value(&v, &lo_v, &hi_v), out)
+                })
+            })
+        }),
+        Filter::Iterate(base) => eval(it, base, input, env, &mut |v| match v.bare() {
+            JqVal::Arr(a) => {
+                for e in a.iter() {
+                    out(e.clone())?;
+                }
+                Ok(())
+            }
+            JqVal::Obj(m) => {
+                for (_, val) in m.iter() {
+                    out(val.clone())?;
+                }
+                Ok(())
+            }
+            _ if opt => Ok(()),
+            other => Err(JqErr::msg(format!(
+                "Cannot iterate over {}{}",
+                other.type_name(),
+                paren_of(other)
+            ))),
+        }),
+        other => unreachable!("not an index step: {other:?}"),
     }
 }
 
@@ -3455,60 +3497,10 @@ fn eval_paths(
     match f {
         Filter::Identity => out(pre.to_vec(), val.clone()),
         Filter::RecurseDefault => recurse_paths(pre, val, out),
-        Filter::Field(base, name) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
-            let key = JqVal::Str(name.clone());
-            let next = index_value(&v, &key)?;
-            let mut np = p;
-            np.push(key);
-            out(np, next)
-        }),
-        Filter::Index(base, idx) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
-            eval(it, idx, input, env, &mut |i| {
-                let next = index_value(&v, &i)?;
-                let mut np = p.clone();
-                np.push(i);
-                out(np, next)
-            })
-        }),
-        Filter::Slice(base, lo, hi) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
-            eval_opt(it, lo.as_deref(), input, env, &mut |l| {
-                eval_opt(it, hi.as_deref(), input, env, &mut |h| {
-                    let next = slice_value(&v, &l, &h)?;
-                    let mut np = p.clone();
-                    np.push(JqVal::obj(vec![
-                        (Rc::from("start"), l.clone()),
-                        (Rc::from("end"), h.clone()),
-                    ]));
-                    out(np, next)
-                })
-            })
-        }),
-        Filter::Iterate(base) => {
-            eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
-                JqVal::Arr(a) => {
-                    for (i, e) in a.iter().enumerate() {
-                        let mut np = p.clone();
-                        np.push(JqVal::num(i as f64));
-                        out(np, e.clone())?;
-                    }
-                    Ok(())
-                }
-                JqVal::Obj(m) => {
-                    for (k, e) in m.iter() {
-                        let mut np = p.clone();
-                        np.push(JqVal::Str(k.clone()));
-                        out(np, e.clone())?;
-                    }
-                    Ok(())
-                }
-                JqVal::Null => Ok(()),
-                other => Err(JqErr::msg(format!(
-                    "Cannot iterate over {}{}",
-                    other.type_name(),
-                    paren_of(other)
-                ))),
-            })
+        Filter::Field(..) | Filter::Index(..) | Filter::Slice(..) | Filter::Iterate(..) => {
+            eval_index_paths(it, f, false, input, pre, val, env, out)
         }
+        Filter::IndexOpt(inner) => eval_index_paths(it, inner, true, input, pre, val, env, out),
         Filter::Pipe(a, b) => eval_paths(it, a, input, pre, val, env, &mut |p, v| {
             eval_paths(it, b, &v, &p, &v, env, out)
         }),
@@ -3577,6 +3569,81 @@ fn eval_paths(
         // `path(1)` and friends: jq reports the value it could not turn into a
         // path rather than silently answering.
         other => invalid_path(it, other, val, env),
+    }
+}
+
+/// [`eval_index`] as a path expression: each step extends the path by its key
+/// (a slice by its `{"start","end"}` object). Under `opt` the step's own error
+/// yields no path.
+#[allow(clippy::too_many_arguments)]
+fn eval_index_paths(
+    it: &Interp,
+    f: &Filter,
+    opt: bool,
+    input: &JqVal,
+    pre: &[JqVal],
+    val: &JqVal,
+    env: &Env,
+    out: PathSink,
+) -> R<()> {
+    let step = |p: &[JqVal], key: JqVal, r: R<JqVal>, out: PathSink| match r {
+        Ok(next) => {
+            let mut np = p.to_vec();
+            np.push(key);
+            out(np, next)
+        }
+        Err(_) if opt => Ok(()),
+        Err(e) => Err(e),
+    };
+    match f {
+        Filter::Field(base, name) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
+            let key = JqVal::Str(name.clone());
+            step(&p, key.clone(), index_value(&v, &key), out)
+        }),
+        Filter::Index(base, idx) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
+            eval(it, idx, input, env, &mut |i| {
+                step(&p, i.clone(), index_value(&v, &i), out)
+            })
+        }),
+        Filter::Slice(base, lo, hi) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
+            eval_opt(it, lo.as_deref(), input, env, &mut |l| {
+                eval_opt(it, hi.as_deref(), input, env, &mut |h| {
+                    let key = JqVal::obj(vec![
+                        (Rc::from("start"), l.clone()),
+                        (Rc::from("end"), h.clone()),
+                    ]);
+                    step(&p, key, slice_value(&v, &l, &h), out)
+                })
+            })
+        }),
+        Filter::Iterate(base) => {
+            eval_paths(it, base, input, pre, val, env, &mut |p, v| match v.bare() {
+                JqVal::Arr(a) => {
+                    for (i, e) in a.iter().enumerate() {
+                        let mut np = p.clone();
+                        np.push(JqVal::num(i as f64));
+                        out(np, e.clone())?;
+                    }
+                    Ok(())
+                }
+                JqVal::Obj(m) => {
+                    for (k, e) in m.iter() {
+                        let mut np = p.clone();
+                        np.push(JqVal::Str(k.clone()));
+                        out(np, e.clone())?;
+                    }
+                    Ok(())
+                }
+                JqVal::Null => Ok(()),
+                _ if opt => Ok(()),
+                other => Err(JqErr::msg(format!(
+                    "Cannot iterate over {}{}",
+                    other.type_name(),
+                    paren_of(other)
+                ))),
+            })
+        }
+        other => unreachable!("not an index step: {other:?}"),
     }
 }
 
@@ -6816,9 +6883,11 @@ fn check_names(
             }
             Ok(())
         }
-        Filter::Field(a, _) | Filter::Iterate(a) | Filter::Optional(a) | Filter::Neg(a) => {
-            check_names(a, funcs, vars)
-        }
+        Filter::Field(a, _)
+        | Filter::Iterate(a)
+        | Filter::Optional(a)
+        | Filter::IndexOpt(a)
+        | Filter::Neg(a) => check_names(a, funcs, vars),
         Filter::Index(a, b)
         | Filter::Pipe(a, b)
         | Filter::Comma(a, b)
@@ -6955,7 +7024,11 @@ fn for_each_child(f: &Filter, visit: &mut dyn FnMut(&Filter)) {
         | Filter::Var(_)
         | Filter::Break(_)
         | Filter::Str(..) => {}
-        Filter::Field(a, _) | Filter::Iterate(a) | Filter::Optional(a) | Filter::Neg(a) => {
+        Filter::Field(a, _)
+        | Filter::Iterate(a)
+        | Filter::Optional(a)
+        | Filter::IndexOpt(a)
+        | Filter::Neg(a) => {
             visit(a);
         }
         Filter::Index(a, b)

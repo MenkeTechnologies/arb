@@ -1071,3 +1071,21 @@ fn delpaths_removes_keys_against_original_indices() {
         ("try delpaths([[\"a\"],[0]]) catch .", &["{\"a\":1}"]),
     ]);
 }
+
+/// parser.y gives `?` two meanings: right after an index step it is
+/// INDEX_OPT/EACH_OPT, which suppresses only that step's own error — an error
+/// in the base or the key still raises — while `Term '?'` anywhere else is a
+/// whole `try`.
+#[test]
+fn a_question_mark_after_an_index_suppresses_only_that_step() {
+    const A1: &[&str] = &["{\"a\":1}"];
+    run_table(&[
+        ("try (.[error(\"x\")]?) catch \"caught\"", A1),
+        ("try (\"x\" | .a.b?) catch \"c\"", A1),
+        ("try (\"x\" | .a[]?) catch \"c\"", A1),
+        ("try (.a[error(\"y\")]?) catch .", A1),
+        ("try (\"x\" | (.a.b)?) catch \"c\"", A1),
+        ("try (\"x\" | .a?.b) catch \"c\"", A1),
+        ("[.[]?.x?], [.a[1:]?], [path(.a?, .x[]?)], .a??", A1),
+    ]);
+}
