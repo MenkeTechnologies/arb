@@ -4850,10 +4850,15 @@ fn builtin(
         }
         ("_strindices", 1) => {
             let needle = one(it, &args[0], input, env)?;
-            let (h, n) = (
-                want_str(input, "searched")?,
-                want_str(&needle, "searched for")?,
-            );
+            // `f_string_indexes`: the input refuses first, then the needle.
+            let h = want_str(input, "searched, as it is not a string")?;
+            let JqVal::Str(n) = needle.bare().clone() else {
+                return Err(JqErr::msg(format!(
+                    "{}{} is not a string",
+                    needle.type_name(),
+                    paren_of(&needle)
+                )));
+            };
             let mut hits = Vec::new();
             if !n.is_empty() {
                 let mut from = 0usize;

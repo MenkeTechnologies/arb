@@ -1254,3 +1254,14 @@ fn indexing_null_refuses_a_null_boolean_or_array_key() {
         ),
     ]);
 }
+
+/// `f_string_indexes` refuses a non-string input as "cannot be searched, as it
+/// is not a string" and a non-string needle as "is not a string".
+#[test]
+fn strindices_refuses_with_f_string_indexes_wording() {
+    run_table(&[
+        ("try _strindices(\"abc\") catch .", &["123"]),
+        ("try _strindices(123) catch .", &["\"abc\""]),
+        ("_strindices(\"a\")", &["\"banana\""]),
+    ]);
+}
