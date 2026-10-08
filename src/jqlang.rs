@@ -3776,12 +3776,22 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
                     )))
                 }
             };
-            let mut i = n.trunc();
+            // `jv_set` + `jv_array_set` (src/jv_aux.c, src/jv.c): NaN refuses, the
+            // index is clamped to C `int` and truncated, a negative one counts
+            // from the end, and one past `INT_MAX >> 2` refuses rather than
+            // allocating the gap.
+            if n.is_nan() {
+                return Err(JqErr::msg("Cannot set array element at NaN index"));
+            }
+            let mut i = n.clamp(f64::from(i32::MIN), f64::from(i32::MAX)).trunc();
             if i < 0.0 {
                 i += a.len() as f64;
                 if i < 0.0 {
                     return Err(JqErr::msg("Out of bounds negative array index"));
                 }
+            }
+            if i > f64::from(i32::MAX >> 2) {
+                return Err(JqErr::msg("Array index too large"));
             }
             let i = i as usize;
             while a.len() <= i {
