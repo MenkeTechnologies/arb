@@ -5188,18 +5188,21 @@ fn cp_index(s: &str, byte: usize) -> usize {
     s[..byte].chars().count()
 }
 
+/// `f_match`'s argument checks (src/builtin.c): the regex and the modifiers
+/// each refuse a non-string with `<type> (<value>) is not a string`; null
+/// modifiers mean none.
 fn re_args(re: &JqVal, flags: &JqVal) -> R<(Rc<str>, String)> {
-    let pat = want_str(re, "matched, as it is not a string")?;
-    let fl = match flags {
+    let not_string = |v: &JqVal| {
+        JqErr::msg(format!("{}{} is not a string", v.type_name(), paren_of(v)))
+    };
+    let pat = match re.bare() {
+        JqVal::Str(s) => s.clone(),
+        other => return Err(not_string(other)),
+    };
+    let fl = match flags.bare() {
         JqVal::Null => String::new(),
         JqVal::Str(s) => s.to_string(),
-        other => {
-            return Err(JqErr::msg(format!(
-                "{}{} is not a string",
-                other.type_name(),
-                paren_of(other)
-            )))
-        }
+        other => return Err(not_string(other)),
     };
     Ok((pat, fl))
 }
@@ -5307,10 +5310,13 @@ fn regex_match(input: &JqVal, re: &JqVal, flags: &JqVal, testmode: bool) -> R<Jq
     Ok(JqVal::arr(hits))
 }
 
-/// jq's regex `split/2`: the pieces BETWEEN matches, always global.
+/// jq's regex `split/2`: the pieces BETWEEN matches, always global. jq spells
+/// it `match($re; $flags + "g")`, so the flags are joined with jq's `+` (and
+/// refused by it) before the input and the regex are checked.
 fn regex_split(input: &JqVal, re: &JqVal, flags: &JqVal) -> R<JqVal> {
+    let flags = binop(BinOp::Add, flags, &JqVal::str("g"))?;
     let s = want_str(input, "matched, as it is not a string")?;
-    let (pat, fl) = re_args(re, flags)?;
+    let (pat, fl) = re_args(re, &flags)?;
     let (rx, _) = compile_re(&pat, &fl)?;
     let mut parts = Vec::new();
     let mut last = 0usize;
@@ -5746,7 +5752,7 @@ def capture($val): ($val|type) as $vt
     elif $vt == "array" and ($val|length) > 1 then capture($val[0]; $val[1])
     elif $vt == "array" and ($val|length) > 0 then capture($val[0]; null)
     else error($vt + " not a string or array") end;
-def scan($re; $flags): match($re; "g" + ($flags // ""))
+def scan($re; $flags): match($re; "g" + $flags)
   | if (.captures | length) > 0 then [.captures | .[] | .string] else .string end;
 def scan($re): scan($re; null);
 def split($re; $flags): _split_re($re; $flags);
