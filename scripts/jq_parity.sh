@@ -85,6 +85,8 @@
 #   HEAD       (round 6 corpus, after;  yq absent) 772 pass /  0 diverged / 159 skipped
 #   7d54d72b40 (round 7 corpus, before; yq absent) 774 pass / 23 diverged / 159 skipped
 #   4851c87668 (round 7 corpus, after;  yq absent) 797 pass /  0 diverged / 159 skipped
+#   9e7db3d52f (round 8 corpus, before; yq absent) 797 pass / 19 diverged / 159 skipped
+#   066d4bdc30 (round 8 corpus, after;  yq absent) 816 pass /  0 diverged / 159 skipped
 #
 # ── the jq-engine wave ──────────────────────────────────────────────────────
 # The 99 `err_probe`s are gone, and that is the measurement, not a change to it.
@@ -1683,6 +1685,40 @@ jq_probe 'null'   'try [limit("a"; 1,2)] catch ., try [skip(nan; 1,2)] catch .'
 #   math          nearbyint rounds half to even, as C's does.
 jq_probe 'null'   '[1.5, -1.5, 2.5, -2.5, 0.5] | map(nearbyint), map(round)'
 
+
+# ── round 8 (fusevm parity sweep, round 4) ───────────────────────────────────
+# Divergences found by running every program in jq 1.8.2's own tests/*.test
+# through both engines; each fix ports parser.y, execute.c, jv_aux.c,
+# jv_print.c or builtin.c. Error cases are wrapped in `try … catch .`.
+#   parser        `try`/`catch` take a Term (`'-' Term` included); `{$v: e}`
+#                 keys by $v's value; an empty array pattern is a syntax error.
+jq_probe '"foo"'  'try -. catch ., (try -.? catch .)'
+jq_probe '{"as":8}' '1 as $x | "2" as $y | "3" as $z | { $x, as, $y: 4, ($z): 5, if: 6, foo: 7 }'
+type_probe '[1]'  '. as [] | null'
+#   builtins      `builtins` omits `_`-prefixed internals.
+jq_probe 'null'   'builtins | any(.[:1] == "_")'
+#   delpaths      jv_dels removes one array's keys against original indices.
+jq_probe '[0,1,2,3,4,5,6,7,8,9]' 'del(.[1], .[-6], .[2], .[-3:9]), del(.[nan])'
+#   INDEX_OPT     `?` after an index suppresses only that step's error.
+jq_probe '{"a":1}' 'try (.[error("x")]?) catch "caught", try ("x" | .a.b?) catch "c"'
+#   path_intact   a non-path value refuses where the path is next needed.
+jq_probe '{"a":[{"b":0}]}' 'try path(.a | map(select(.b == 0)) | .[0]) catch ., try path(.a | map(select(.b == 0)) | .[]) catch .'
+jq_probe '[{"a":0},{"a":1}]' 'try ((map(select(.a == 1))[].b) = 10) catch .'
+jq_probe '{"a":{"b":0},"b":2}' '[path(limit(1; .a, .b))], [path(label $f | .a, break $f)], try [path(reduce (1, 2) as $x (.; .a))] catch .'
+jq_probe 'null'   'try [path(.[])] catch ., try del(.[]) catch .'
+#   truncation    jv_dump_string_trunc cuts by bytes at a UTF-8 boundary.
+jq_probe 'null'   '"x" * range(0; 12; 2) + "☆" * 8 | try -. catch .'
+jq_probe '123456789012345678901234567890' 'try (. + "x") catch .'
+#   input reader  jq reads input with jv_parse.c: NaN/Infinity/.5 are values.
+jq_probe '[1,NaN,nan,Infinity,-Infinity,-NaN]' '.'
+jq_probe '[123,["a"],[nan]]' 'map(try implode catch .)'
+#   jv_get/set    unstorable keys, null under a null key, number length.
+jq_probe '[]'     'try ["OK", setpath([[1]]; 1)] catch ["KO", .]'
+jq_probe 'null'   'try .[null] catch ., try getpath([true]) catch .'
+jq_probe 'null'   '[-1.50, -1E+1000 | length]'
+#   regex/strings f_match's empty-capture key order; _strindices wordings.
+jq_probe 'null'   '"a","b","c" | match("(?<x>a?)?b?")'
+jq_probe '123'    'try _strindices("abc") catch .'
 # ── jq: TYPE errors — the other half of "never silently reinterpreted" ───────
 # Every one of these is an IN-subset construct applied to the wrong type. jq
 # raises on all of them (the probe checks that, so none of these refusals is one
