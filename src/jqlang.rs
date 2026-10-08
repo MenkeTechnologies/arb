@@ -4795,7 +4795,8 @@ fn builtin(
             };
             let mut s = String::with_capacity(a.len());
             for e in a.iter() {
-                let n = e.as_f64().ok_or_else(|| {
+                // `f_string_implode` refuses a NaN code point like a non-number.
+                let n = e.as_f64().filter(|n| !n.is_nan()).ok_or_else(|| {
                     JqErr::msg(format!(
                         "{}{} can't be imploded, unicode codepoint needs to be numeric",
                         e.type_name(),

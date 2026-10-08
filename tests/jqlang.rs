@@ -1196,3 +1196,9 @@ fn input_lines_are_read_by_jq_s_own_parser() {
         (".", &["\u{feff}\"byte order mark\""]),
     ]);
 }
+
+/// `f_string_implode` refuses a NaN code point as it refuses a non-number.
+#[test]
+fn implode_refuses_a_nan_code_point() {
+    run_table(&[("map(try implode catch .)", &["[123,[\"a\"],[nan]]"])]);
+}
