@@ -4,8 +4,8 @@
 //! literal-preserving reader and falls back to this one for what the strict reader
 //! refuses, since jq reads its input with `jv_parse.c` too. `fromjson` needs this
 //! reader outright, because both what it accepts and how it refuses are
-//! observable: `"01"`, `"1."`, `".5"`, `"+1"` and `"Infinity"` parse, `"nan1"` does not, and a refusal is a
-//! fixed sentence with a line and column (`Unfinished JSON term at EOF at line
+//! observable: `"01"`, `"1."`, `".5"`, `"+1"` and `"Infinity"` parse, `"nan1"`
+//! does not, and a refusal is a fixed sentence with a line and column (`Unfinished JSON term at EOF at line
 //! 1, column 4`). This is that reader, transcribed from the non-streaming path
 //! of `jv_parse.c` (`scan`, `parse_token`, `found_string`, `check_literal`,
 //! `jv_parser_next`, `jv_parse_sized_custom_flags`) so the decisions and the
