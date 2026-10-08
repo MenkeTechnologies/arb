@@ -2608,21 +2608,33 @@ fn eval_index(it: &Interp, f: &Filter, opt: bool, input: &JqVal, env: &Env, out:
 }
 
 /// The `(value)` suffix jq appends to a type in an error message.
-///
-/// jq truncates it through `jv_dump_string_trunc` with a 30-byte buffer: a dump
-/// of 30 characters or more keeps its first 25, then `...`, then the dump's LAST
-/// character so the bracket still closes. Measured against jq 1.8.2:
-/// `[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]` reports as
-/// `[1,2,3,4,5,6,7,8,9,10,11,...]`, and a 26-character dump is not truncated.
 pub(crate) fn paren_of(v: &JqVal) -> String {
+    format!(" ({})", dump_trunc(v))
+}
+
+/// A port of `jv_dump_string_trunc` (src/jv_print.c) with the 30-byte buffer
+/// every error message uses. A dump of 30 BYTES or more keeps its first 25
+/// (26 when it does not open with `"`, `[` or `{`), backed up to the start of
+/// the UTF-8 character that byte falls in, then `...` and the closing delimiter.
+pub(crate) fn dump_trunc(v: &JqVal) -> String {
+    const BUFSIZE: usize = 30;
     let s = render(v.bare());
-    let n = s.chars().count();
-    if n < 30 {
-        return format!(" ({s})");
+    if s.len() <= BUFSIZE - 1 {
+        return s;
     }
-    let head: String = s.chars().take(25).collect();
-    let tail = s.chars().last().unwrap_or(' ');
-    format!(" ({head}...{tail})")
+    let delim = match s.as_bytes()[0] {
+        b'"' => Some('"'),
+        b'[' => Some(']'),
+        b'{' => Some('}'),
+        _ => None,
+    };
+    let mut l = BUFSIZE - if delim.is_some() { 5 } else { 4 };
+    while !s.is_char_boundary(l) {
+        l -= 1;
+    }
+    let mut out = format!("{}...", &s[..l]);
+    out.extend(delim);
+    out
 }
 
 fn label_key(name: &str) -> Rc<str> {

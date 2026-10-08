@@ -1089,3 +1089,22 @@ fn a_question_mark_after_an_index_suppresses_only_that_step() {
         ("[.[]?.x?], [.a[1:]?], [path(.a?, .x[]?)], .a??", A1),
     ]);
 }
+
+/// `jv_dump_string_trunc` cuts a 30-BYTE dump at byte 25 (26 without an
+/// opening delimiter), backed up to a UTF-8 character start, then appends
+/// `...` and the closing delimiter — so a multi-byte string loses whole
+/// characters and a long number gets no delimiter.
+#[test]
+fn error_values_truncate_by_bytes_as_jv_dump_string_trunc() {
+    run_table(&[
+        (
+            "\"x\" * range(0; 12; 2) + \"☆\" * 8 | try -. catch .",
+            &["null"],
+        ),
+        (
+            "try (. + \"x\") catch .",
+            &["123456789012345678901234567890"],
+        ),
+        ("try (\"é\" * 20 | -.) catch .", &["null"]),
+    ]);
+}
