@@ -1916,9 +1916,13 @@ impl Parser {
             }
             "try" => {
                 self.i += 1;
-                let body = self.postfix()?;
+                // parser.y: `"try" Expr "catch" Expr`, with `"try"`/`"catch"`
+                // binding tighter than every binary operator, so each side
+                // reduces to one Term — and `'-' Term` is a Term, so
+                // `try -. catch .` negates inside the try.
+                let body = self.unary()?;
                 let handler = if self.eat_kw("catch") {
-                    Some(Box::new(self.postfix()?))
+                    Some(Box::new(self.unary()?))
                 } else {
                     None
                 };

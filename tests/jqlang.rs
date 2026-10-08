@@ -1018,3 +1018,17 @@ fn literals_compare_as_decimals_and_zero_keeps_jq_sign() {
         ("try ({} % 1) catch ., have_decnum", &["null"]),
     ]);
 }
+
+/// parser.y: `"try" Expr "catch" Expr` binds tighter than every binary
+/// operator, so each side is one Term — and `'-' Term` is a Term.
+#[test]
+fn try_and_catch_bodies_may_be_negations() {
+    run_table(&[
+        ("try -. catch .", &["\"foo\""]),
+        ("try -.? catch .", &["\"foo\""]),
+        ("try -1", &["null"]),
+        ("try error catch -.", &["3"]),
+        ("[try -.[] catch .]", &["[1,\"a\",2]"]),
+        ("try -. + 1 catch .", &["5"]),
+    ]);
+}
