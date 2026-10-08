@@ -5192,9 +5192,8 @@ fn cp_index(s: &str, byte: usize) -> usize {
 /// each refuse a non-string with `<type> (<value>) is not a string`; null
 /// modifiers mean none.
 fn re_args(re: &JqVal, flags: &JqVal) -> R<(Rc<str>, String)> {
-    let not_string = |v: &JqVal| {
-        JqErr::msg(format!("{}{} is not a string", v.type_name(), paren_of(v)))
-    };
+    let not_string =
+        |v: &JqVal| JqErr::msg(format!("{}{} is not a string", v.type_name(), paren_of(v)));
     let pat = match re.bare() {
         JqVal::Str(s) => s.clone(),
         other => return Err(not_string(other)),
