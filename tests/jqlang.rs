@@ -1046,3 +1046,10 @@ fn object_variable_key_with_a_value_uses_the_variable_value() {
         ("1 as $y | {$y: 2}", &["null"]),
     ]);
 }
+
+/// `gen_builtin_list` lists with `block_list_funcs(builtins, 1)`, which omits
+/// every name starting with `_`.
+#[test]
+fn builtins_omits_underscore_names() {
+    run_table(&[("builtins | any(.[:1] == \"_\")", &["null"])]);
+}

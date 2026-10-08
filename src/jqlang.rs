@@ -4946,8 +4946,14 @@ fn builtin(
         }
 
         ("env", 0) => out(it.env_object()),
+        // `gen_builtin_list` lists with `block_list_funcs(builtins, 1)`:
+        // names starting with `_` are internal and omitted.
         ("builtins", 0) => out(JqVal::arr(
-            builtin_names().into_iter().map(JqVal::str).collect(),
+            builtin_names()
+                .into_iter()
+                .filter(|n| !n.starts_with('_'))
+                .map(JqVal::str)
+                .collect(),
         )),
         ("input", 0) => match it.next_input() {
             Some(v) => out(v),
