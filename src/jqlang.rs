@@ -5039,49 +5039,79 @@ fn flatten_into(a: &[JqVal], depth: i64, out: &mut Vec<JqVal>) {
     }
 }
 
-/// jq's `contains`: recursive containment. Strings contain substrings, arrays
-/// contain element-wise-contained elements, objects contain per-key.
+/// jq's `contains` builtin (`f_contains`, src/builtin.c): the two TOP-LEVEL
+/// values must share a jv kind — `true` and `false` are DIFFERENT kinds there,
+/// so `true | contains(false)` raises — and only then is the recursive check run.
 fn contains(a: &JqVal, b: &JqVal) -> R<bool> {
     let (a, b) = (a.bare(), b.bare());
-    Ok(match (a, b) {
+    if jv_kind(a) != jv_kind(b) {
+        return Err(JqErr::msg(format!(
+            "{}{} and {}{} cannot have their containment checked",
+            a.type_name(),
+            paren_of(a),
+            b.type_name(),
+            paren_of(b)
+        )));
+    }
+    contains_at(a, b, 0).ok_or_else(|| JqErr::msg("Containment check too deep"))
+}
+
+/// jq's `MAX_CONTAINS_DEPTH` (src/jv.c).
+const MAX_CONTAINS_DEPTH: usize = 10_000;
+
+/// Port of `jvp_contains` (src/jv.c). NESTED values of different kinds are
+/// simply not contained — no error below the top level. `None` is jq's `-1`
+/// ("too deep").
+fn contains_at(a: &JqVal, b: &JqVal, depth: usize) -> Option<bool> {
+    if depth > MAX_CONTAINS_DEPTH {
+        return None;
+    }
+    let (a, b) = (a.bare(), b.bare());
+    if jv_kind(a) != jv_kind(b) {
+        return Some(false);
+    }
+    match (a, b) {
+        // `jvp_object_contains`: every key of `b` must be present in `a` with a
+        // containing value; a missing key reads as jq's INVALID, which no kind
+        // matches.
         (JqVal::Obj(_), JqVal::Obj(bm)) => {
             for (k, bv) in bm.iter() {
                 match a.obj_get(k) {
-                    Some(av) if contains(av, bv)? => {}
-                    _ => return Ok(false),
+                    Some(av) => match contains_at(av, bv, depth + 1) {
+                        Some(true) => {}
+                        r => return r,
+                    },
+                    None => return Some(false),
                 }
             }
-            true
+            Some(true)
         }
+        // `jvp_array_contains`: every element of `b` must be contained by SOME
+        // element of `a`; a too-deep answer stops the scan.
         (JqVal::Arr(aa), JqVal::Arr(ba)) => {
             for bv in ba.iter() {
-                let mut hit = false;
+                let mut hit = Some(false);
                 for av in aa.iter() {
-                    if contains(av, bv)? {
-                        hit = true;
+                    hit = contains_at(av, bv, depth + 1);
+                    if hit != Some(false) {
                         break;
                     }
                 }
-                if !hit {
-                    return Ok(false);
+                if hit != Some(true) {
+                    return hit;
                 }
             }
-            true
+            Some(true)
         }
-        (JqVal::Str(x), JqVal::Str(y)) => x.contains(&**y),
-        (x, y) if x.type_name() == y.type_name() => eq_vals(x, y),
-        (x, y) => {
-            return Err(JqErr::msg(format!(
-                "{}{} and {}{} cannot have their containment checked",
-                x.type_name(),
-                paren_of(x),
-                y.type_name(),
-                paren_of(y)
-            )))
-        }
-    })
+        (JqVal::Str(x), JqVal::Str(y)) => Some(x.contains(&**y)),
+        (x, y) => Some(eq_vals(x, y)),
+    }
 }
 
+/// jq's `jv_kind`: like `type`, except `true` and `false` are distinct kinds.
+fn jv_kind(v: &JqVal) -> (&'static str, bool) {
+    (v.type_name(), matches!(v.bare(), JqVal::Bool(true)))
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // Regex builtins
 // ─────────────────────────────────────────────────────────────────────────────
