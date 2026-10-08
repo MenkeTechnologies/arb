@@ -1224,3 +1224,16 @@ fn an_empty_capture_keeps_f_match_key_order() {
         ("[match(\"(a*)b\"; \"g\")]", &["\"bab\""]),
     ]);
 }
+
+/// `jv_setpath` reads the child with `jv_get` first, then `jv_set` refuses a
+/// key it cannot store (`Cannot update field at array index of array`)
+/// before the rest of the path is set.
+#[test]
+fn setpath_refuses_an_unstorable_key_as_jv_set_does() {
+    run_table(&[
+        ("try [\"OK\", setpath([[1]]; 1)] catch [\"KO\", .]", &["[]"]),
+        ("try setpath([[1], \"a\"]; 1) catch .", &["[]"]),
+        ("try (.[[0]] = 1) catch .", &["[]"]),
+        ("try setpath([true]; 1) catch .", &["[]"]),
+    ]);
+}

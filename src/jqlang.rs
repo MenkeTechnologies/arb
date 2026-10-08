@@ -4162,10 +4162,17 @@ fn set_path(v: &JqVal, segs: &[JqVal], newv: JqVal) -> R<JqVal> {
             out.extend(a[e..].iter().cloned());
             Ok(rebox(JqVal::arr(out)))
         }
-        other => Err(JqErr::msg(format!(
-            "Invalid path component {}",
-            other.type_name()
-        ))),
+        // `jv_setpath`: `jv_get` reads the child first (its refusal wins),
+        // then `jv_set` refuses a key kind it cannot store — before the rest
+        // of the path is ever set.
+        other => {
+            index_value(v, seg)?;
+            Err(JqErr::msg(format!(
+                "Cannot update field at {} index of {}",
+                other.type_name(),
+                v.type_name()
+            )))
+        }
     }
 }
 
