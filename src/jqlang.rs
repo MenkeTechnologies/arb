@@ -2713,7 +2713,9 @@ fn index_value(v: &JqVal, idx: &JqVal) -> R<JqVal> {
     // comment on `a`'s value); the container and the index are read unboxed.
     let (v, idx) = (v.bare(), idx.bare());
     match (v, idx) {
-        (JqVal::Null, JqVal::Str(_) | JqVal::Num(..) | JqVal::Null) => Ok(JqVal::Null),
+        // `jv_get`: `null` reads as `null` under a string, number or slice key
+        // only; a null, boolean or array key refuses like any other.
+        (JqVal::Null, JqVal::Str(_) | JqVal::Num(..)) => Ok(JqVal::Null),
         (JqVal::Obj(_), JqVal::Str(k)) => Ok(v.obj_get(k).cloned().unwrap_or(JqVal::Null)),
         (JqVal::Arr(a), JqVal::Num(n, _)) => {
             if !n.is_finite() {
@@ -4042,14 +4044,11 @@ pub fn get_seg_path(v: &JqVal, segs: &[crate::jqval::Seg]) -> Result<JqVal, Stri
     Ok(cur)
 }
 
-/// `getpath`, as a value operation. A path through a non-container yields
-/// `null` rather than an error, which is jq's rule.
+/// `getpath`, as a value operation: `jv_getpath`, one `jv_get` per key. Through
+/// `null` a string, number or slice key reads `null`; any other key refuses.
 fn get_path(v: &JqVal, segs: &[JqVal]) -> R<JqVal> {
     let mut cur = v.clone();
     for s in segs {
-        if matches!(cur.bare(), JqVal::Null) {
-            return Ok(JqVal::Null);
-        }
         cur = index_value(&cur, s)?;
     }
     Ok(cur)

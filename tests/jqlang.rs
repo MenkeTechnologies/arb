@@ -1237,3 +1237,20 @@ fn setpath_refuses_an_unstorable_key_as_jv_set_does() {
         ("try setpath([true]; 1) catch .", &["[]"]),
     ]);
 }
+
+/// `jv_get` reads `null` as `null` only under a string, number or slice key;
+/// a null, boolean or array key refuses — and `jv_getpath` applies it at
+/// every step, so a `null` midway does not end the walk early.
+#[test]
+fn indexing_null_refuses_a_null_boolean_or_array_key() {
+    run_table(&[
+        ("try (null | .[null]) catch .", &["null"]),
+        ("try (null | path(.[null])) catch .", &["null"]),
+        ("try getpath([\"a\", true]) catch .", &["{\"a\":null}"]),
+        ("try getpath([\"a\", [1]]) catch .", &["{\"a\":null}"]),
+        (
+            "getpath([\"a\", \"b\"]), getpath([\"a\", {\"start\": 0}])",
+            &["{\"a\":null}"],
+        ),
+    ]);
+}
