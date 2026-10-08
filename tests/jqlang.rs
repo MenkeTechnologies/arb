@@ -1032,3 +1032,17 @@ fn try_and_catch_bodies_may_be_negations() {
         ("try -. + 1 catch .", &["5"]),
     ]);
 }
+
+/// parser.y: `BINDING ':' DictExpr` keys the entry by the variable's VALUE;
+/// only the bare `BINDING` form keys by its name.
+#[test]
+fn object_variable_key_with_a_value_uses_the_variable_value() {
+    run_table(&[
+        (
+            "1 as $x | \"2\" as $y | \"3\" as $z | { $x, as, $y: 4, ($z): 5, if: 6, foo: 7 }",
+            &["{\"as\":8}"],
+        ),
+        ("\"k\" as $k | {$k: 1, $k}", &["null"]),
+        ("1 as $y | {$y: 2}", &["null"]),
+    ]);
+}

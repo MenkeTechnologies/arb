@@ -2028,12 +2028,16 @@ impl Parser {
                         )),
                     )
                 }
+                // parser.y: `BINDING ':' DictExpr` keys by the variable's
+                // VALUE (LOADV); a bare `BINDING` keys by its name.
                 Some(Tok::Var(v)) => {
                     self.i += 1;
-                    (
-                        Filter::Lit(JqVal::str(v.clone())),
-                        Some(Filter::Var(Rc::from(v.as_str()))),
-                    )
+                    let var = Filter::Var(Rc::from(v.as_str()));
+                    if self.is_op(":") {
+                        (var, None)
+                    } else {
+                        (Filter::Lit(JqVal::str(v.clone())), Some(var))
+                    }
                 }
                 Some(Tok::Str(pieces)) => {
                     self.i += 1;
