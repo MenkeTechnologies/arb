@@ -363,8 +363,15 @@ negation-led programs, a trailing comma in an object, quoted subscripts that
 generate or interpolate, `strptime`/`mktime`/`gmtime`/`strftime %s` as jq's C,
 `in.json` reading JSON texts rather than lines, and `input_line_number` over the
 whole stream) measured 772 pass, 0 diverged, 159 skipped (760 pass / 12 diverged
-on the same corpus before the fixes). The 825 above is the last run WITH `yq`;
-it was not re-measured this round.
+on the same corpus before the fixes). The round-7 additions (array assignment's
+NaN / too-large index refusals, `contains` comparing jv kinds only at the top
+level, `f_match`'s argument wordings, `%` with NaN or a `-1` divisor, object-key
+slices as `parse_slice` reads them, `escape_string`'s `\0` for NUL in
+`@csv`/`@tsv`/`@html`/`@sh`, `range`/`limit`/`skip` as the RANGE opcode and
+`builtin.jq` define them, and `nearbyint` rounding half to even) measured 797
+pass, 0 diverged, 159 skipped (774 pass / 23 diverged on the same corpus before
+the fixes). The 825 above is the last run WITH `yq`; it was not re-measured
+since.
 
 | leg | reference | containment | status |
 |---|---|---|---|
