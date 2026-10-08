@@ -1484,16 +1484,16 @@ impl Parser {
             Some(Tok::Var(_)) => Ok(Pattern::Var(self.var()?)),
             Some(Tok::Op("[")) => {
                 self.i += 1;
+                // parser.y's `ArrayPats` holds at least one `Pattern`: `[]` is
+                // a syntax error.
                 let mut out = Vec::new();
-                if !self.eat_op("]") {
-                    loop {
-                        out.push(self.pattern()?);
-                        if self.eat_op(",") {
-                            continue;
-                        }
-                        self.want_op("]")?;
-                        break;
+                loop {
+                    out.push(self.pattern()?);
+                    if self.eat_op(",") {
+                        continue;
                     }
+                    self.want_op("]")?;
+                    break;
                 }
                 Ok(Pattern::Arr(out))
             }

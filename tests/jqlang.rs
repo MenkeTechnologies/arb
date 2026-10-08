@@ -1202,3 +1202,15 @@ fn input_lines_are_read_by_jq_s_own_parser() {
 fn implode_refuses_a_nan_code_point() {
     run_table(&[("map(try implode catch .)", &["[123,[\"a\"],[nan]]"])]);
 }
+
+/// parser.y's `ArrayPats` is one or more `Pattern`s, so an empty array
+/// pattern is a syntax error wherever a pattern goes.
+#[test]
+fn an_empty_array_pattern_is_a_syntax_error() {
+    run_table(&[
+        (". as [] | null", &["[1]"]),
+        ("reduce . as [] (0; .)", &["[1]"]),
+        (". as [$a] ?// [] | 1", &["[1]"]),
+        (". as [$a, [$b]] | [$a, $b]", &["[1,[2]]"]),
+    ]);
+}
