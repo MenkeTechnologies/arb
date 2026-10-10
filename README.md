@@ -334,8 +334,12 @@ default, as in fzf), `-q`/`--query`, `-m`/`--multi[=MAX]`, `-f`/`--filter`, `--p
 quitting restores the terminal; anything smaller draws below the cursor,
 scrolling to make room, with fzf's `--min-height=10+` floor on percentages),
 `--preview 'CMD {}'` (run with `$SHELL -c`, or `--with-shell`, so a preview
-written against your shell works). A binding naming an action arb has no equivalent for
-(`execute(…)`, preview control, …) is skipped so the key keeps its built-in
+written against your shell works). The preview pane scrolls like fzf's: the mouse
+wheel over it, `shift-up`/`shift-down`, and the `preview-up`, `preview-down`,
+`preview-page-up`, `preview-page-down`, `preview-half-page-up`,
+`preview-half-page-down`, `preview-top` and `preview-bottom` actions; moving the
+cursor restarts the preview at the top. A binding naming an action arb has no
+equivalent for (`execute(…)`, `toggle-preview`, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.
 

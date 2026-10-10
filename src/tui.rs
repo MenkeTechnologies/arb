@@ -271,6 +271,14 @@ pub struct Controls {
     /// Rows of list currently on screen, published by the renderer so a
     /// `page-up`/`page-down` binding moves by a real screenful.
     pub fzf_page: usize,
+    /// First preview line on screen (`--preview` pane). The wheel over the pane,
+    /// `shift-up`/`shift-down` and the `preview-*` actions move it; the renderer
+    /// clamps it to the output and publishes the result back.
+    pub preview_scroll: usize,
+    /// Where the preview pane's text is on screen and how many rows it has,
+    /// published by the renderer so the wheel can tell which pane it is over and
+    /// `preview-page-*` can size a page. `None` while no pane is drawn.
+    pub preview_view: Option<(Rect, usize)>,
     /// Matches on screen this frame, so `--cycle` can wrap and `last` can land
     /// on the final row.
     pub fzf_count: usize,
@@ -578,6 +586,14 @@ fn fzf_key(buf: &[u8], i: usize) -> Option<(crate::fzf::Key, usize)> {
     if b == 0x1b {
         // CSI: ESC [ …
         if buf.get(i + 1) == Some(&b'[') {
+            // ESC [ 1 ; 2 A/B: Shift-Up / Shift-Down.
+            if buf.get(i + 2..i + 5) == Some(b"1;2".as_slice()) {
+                match buf.get(i + 5) {
+                    Some(b'A') => return Some((Key::ShiftUp, 6)),
+                    Some(b'B') => return Some((Key::ShiftDown, 6)),
+                    _ => {}
+                }
+            }
             let k = match buf.get(i + 2)? {
                 b'A' => Key::Up,
                 b'B' => Key::Down,
@@ -627,6 +643,7 @@ fn fzf_action(c: &mut Controls, acts: &[crate::fzf::Action]) -> bool {
     use crate::fzf::Action;
     // Never zero: a page move must advance even before the first frame lands.
     let page = c.fzf_page.max(1);
+    let preview_page = c.preview_view.map_or(1, |(_, rows)| rows).max(1);
     let count = c.fzf_count;
     let cycle = c.look.cycle;
     // fzf's movement actions are SCREEN directions. In the bottom-up default
@@ -673,6 +690,23 @@ fn fzf_action(c: &mut Controls, acts: &[crate::fzf::Action]) -> bool {
                 let at = c.cursor;
                 c.toggles.push(at);
             }
+            Action::PreviewUp => c.preview_scroll = c.preview_scroll.saturating_sub(1),
+            Action::PreviewDown => c.preview_scroll = c.preview_scroll.saturating_add(1),
+            Action::PreviewPageUp => {
+                c.preview_scroll = c.preview_scroll.saturating_sub(preview_page)
+            }
+            Action::PreviewPageDown => {
+                c.preview_scroll = c.preview_scroll.saturating_add(preview_page)
+            }
+            Action::PreviewHalfPageUp => {
+                c.preview_scroll = c.preview_scroll.saturating_sub(preview_page / 2 + 1)
+            }
+            Action::PreviewHalfPageDown => {
+                c.preview_scroll = c.preview_scroll.saturating_add(preview_page / 2 + 1)
+            }
+            Action::PreviewTop => c.preview_scroll = 0,
+            // The renderer clamps to the last page, so "past the end" IS bottom.
+            Action::PreviewBottom => c.preview_scroll = usize::MAX,
             Action::ToggleAll => c.toggle_all = true,
             Action::Accept => {
                 c.submit = true;
@@ -976,9 +1010,9 @@ fn feed_keys(controls: &Arc<Mutex<Controls>>, buf: &[u8], defer: bool) -> (usize
         // fzf `--bind` wins over arb's built-in picker keys, so the
         // bindings in a user's `$FZF_DEFAULT_OPTS` (`tab:toggle+down`,
         // `ctrl-n:page-down`, …) behave exactly as they do under fzf.
-        if fzf && !c.look.binds.is_empty() {
+        if fzf {
             if let Some((key, used)) = fzf_key(&buf[..n], i) {
-                if let Some(acts) = c.look.bound(key).map(<[_]>::to_vec) {
+                if let Some(acts) = c.look.bound_or_default(key) {
                     if fzf_action(&mut c, &acts) {
                         return (i, true);
                     }
@@ -1717,7 +1751,12 @@ pub fn run(
             let mut c = controls.lock().unwrap();
             // Publish the cursor's ORIGINAL line so a `--preview` thread acts on
             // what would be emitted, not the projected display.
-            c.current = original(rank(sel)).unwrap_or_default().to_string();
+            // A new cursor line restarts its preview at the top, as fzf does.
+            let cursor_line = original(rank(sel)).unwrap_or_default();
+            if c.current != cursor_line {
+                c.preview_scroll = 0;
+                c.current = cursor_line.to_string();
+            }
             // `toggle`: flip each pending row's original in the mark set. Every
             // press queued its own row, so a burst of Tabs marks every one of
             // them, and the cursor move fzf pairs with `toggle+down` has already
@@ -1764,6 +1803,7 @@ pub fn run(
                 break Ok(());
             }
             let marks = c.marks.clone();
+            let preview_scroll = c.preview_scroll;
             let fzf_theme = c.theme; // live theme (Ctrl-T chooser previews it)
             let fzf_help = c.help_open;
             let fzf_picker = c.theme_picker_open.then_some(c.theme_picker_sel);
@@ -1781,6 +1821,7 @@ pub fn run(
                 .map(|(l, lab)| (l.as_slice(), lab.as_str()));
             let mut hitmap: Vec<HitTarget> = Vec::new();
             let mut fzf_rows = 0usize;
+            let mut preview_view = None;
             let draw = terminal.draw(|f| {
                 (fzf_start, fzf_rows) = render_fzf(
                     f,
@@ -1796,11 +1837,13 @@ pub fn run(
                     total,
                     err_ref,
                     prev_ref,
+                    preview_scroll,
                     &fzf_prompt,
                     &fzf_header,
                     fzf_theme,
                     &fzf_look,
                     &mut hitmap,
+                    &mut preview_view,
                 );
                 // Global overlays draw on top of the picker too.
                 if fzf_help {
@@ -1817,6 +1860,12 @@ pub fn run(
                 c.fzf_list_start = fzf_start;
                 // A `page-up`/`page-down` binding moves by what is on screen.
                 c.fzf_page = fzf_rows;
+                // Keep the clamped offset, so scrolling past the end does not
+                // pile up hidden distance to scroll back through.
+                c.preview_view = preview_view.map(|(rect, rows, _)| (rect, rows));
+                if let Some((_, _, scroll)) = preview_view {
+                    c.preview_scroll = scroll;
+                }
             }
             if let Err(e) = draw {
                 break Err(e);
@@ -2514,10 +2563,19 @@ pub fn slider_value_from_x(
 /// then any `bind <Click>` reactions fire. Pure over `Controls` — `now` is passed
 /// in (from the key handler) so double-click stays unit-testable.
 fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
+    let over_preview = fzf
+        && c.preview_view.is_some_and(|(r, _)| {
+            (r.x..r.x + r.width).contains(&ev.col) && (r.y..r.y + r.height).contains(&ev.row)
+        });
     match ev.kind {
         MouseKind::ScrollUp => {
             if fzf {
-                c.cursor = c.cursor.saturating_sub(1);
+                // The wheel scrolls whichever pane it is over, like fzf.
+                if over_preview {
+                    c.preview_scroll = c.preview_scroll.saturating_sub(1);
+                } else {
+                    c.cursor = c.cursor.saturating_sub(1);
+                }
             } else if let Some(name) = hit(&c.hitmap, ev.col, ev.row)
                 .filter(|t| is_scrollable(t.kind))
                 .map(|t| t.control_name.clone())
@@ -2531,7 +2589,11 @@ fn dispatch_mouse(c: &mut Controls, ev: MouseEvent, fzf: bool, now: Instant) {
         }
         MouseKind::ScrollDown => {
             if fzf {
-                c.cursor = c.cursor.saturating_add(1);
+                if over_preview {
+                    c.preview_scroll = c.preview_scroll.saturating_add(1);
+                } else {
+                    c.cursor = c.cursor.saturating_add(1);
+                }
             } else if let Some(name) = hit(&c.hitmap, ev.col, ev.row)
                 .filter(|t| is_scrollable(t.kind))
                 .map(|t| t.control_name.clone())
@@ -3224,11 +3286,15 @@ fn render_fzf(
     total: u64,
     err: Option<(&[String], &str)>,
     preview: Option<(&[String], &str)>,
+    // First preview line to show; the clamped value comes back in `preview_view`.
+    preview_scroll: usize,
     prompt: &str,
     header: &str,
     theme: Option<crate::theme::Palette>,
     look: &crate::fzf::Look,
     hitmap: &mut Vec<HitTarget>,
+    // `(text rect, rows, clamped scroll)` of the preview pane when one is drawn.
+    preview_view: &mut Option<(Rect, usize, usize)>,
 ) -> (usize, usize) {
     // Reserve a bottom strip for the stderr pane when present.
     let (top, err_area) = match err {
@@ -3335,7 +3401,14 @@ fn render_fzf(
             // `hidden`, or a size of zero: fzf keeps running the command and
             // just does not draw the box, so the list takes the whole body.
             if let Some(pane) = pane {
-                render_preview_pane(f, pane, lines, &colors, look.preview_window.wrap);
+                *preview_view = Some(render_preview_pane(
+                    f,
+                    pane,
+                    lines,
+                    preview_scroll,
+                    &colors,
+                    look.preview_window.wrap,
+                ));
             }
             list
         }
@@ -3565,13 +3638,17 @@ fn render_output_pane(f: &mut Frame, area: Rect, label: &str, lines: &[String]) 
 /// colour with no title, its text inset one column. arb's own `-- CMD` pane
 /// (the DSL's downstream view) keeps its label; this one has to look like fzf's,
 /// which labels nothing unless `--preview-label` says so.
+///
+/// Shows `lines` from `scroll`, clamped so the last page stays full. Returns the
+/// text rect, its row count and the clamped offset.
 fn render_preview_pane(
     f: &mut Frame,
     area: Rect,
     lines: &[String],
+    scroll: usize,
     colors: &crate::fzf::Colors,
     wrap: bool,
-) {
+) -> (Rect, usize, usize) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
@@ -3601,24 +3678,29 @@ fn render_preview_pane(
     // can be enabled with wrap flag." The list widget truncates, so `wrap` needs
     // a paragraph instead — and it must take MORE source lines than there are
     // rows, since each wrapped line eats several.
+    let rows = inner.height as usize;
+    // Wrapped, a source line spans several rows, so only the last line is a safe
+    // bound; truncated, the last page stays full.
+    let max_scroll = match wrap {
+        true => lines.len().saturating_sub(1),
+        false => lines.len().saturating_sub(rows),
+    };
+    let scroll = scroll.min(max_scroll);
+    let shown = lines.iter().skip(scroll);
     if wrap {
-        let text: Vec<Line> = lines
-            .iter()
-            .take(inner.height as usize * 4)
-            .map(|l| ansi_line(l))
-            .collect();
+        let text: Vec<Line> = shown.take(rows * 4).map(|l| ansi_line(l)).collect();
         f.render_widget(
             Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }),
             inner,
         );
-        return;
+        return (inner, rows, scroll);
     }
-    let items: Vec<ListItem> = lines
-        .iter()
-        .take(inner.height as usize)
+    let items: Vec<ListItem> = shown
+        .take(rows)
         .map(|l| ListItem::new(ansi_line(l)))
         .collect();
     f.render_widget(List::new(items), inner);
+    (inner, rows, scroll)
 }
 
 /// Map a [`Track`] to its ratatui `Constraint`.
@@ -4647,6 +4729,105 @@ mod fzf_view_tests {
         // Nothing usable yet.
         assert_eq!(parse_cursor_report(b"\x1b[7;3"), None);
         assert_eq!(parse_cursor_report(b""), None);
+    }
+
+    #[test]
+    fn shift_arrows_are_fzf_key_names() {
+        assert_eq!(fzf_key(b"\x1b[1;2A", 0), Some((Key::ShiftUp, 6)));
+        assert_eq!(fzf_key(b"\x1b[1;2B", 0), Some((Key::ShiftDown, 6)));
+        // Ctrl-Up (`;5`) is not Shift-Up.
+        assert_eq!(fzf_key(b"\x1b[1;5A", 0), None);
+    }
+
+    #[test]
+    fn preview_actions_scroll_by_line_page_and_half_page() {
+        use super::{fzf_action, Controls};
+        use crate::fzf::Action;
+        use ratatui::layout::Rect;
+        let mut c = Controls {
+            preview_view: Some((Rect::new(0, 0, 40, 10), 10)),
+            ..Default::default()
+        };
+        fzf_action(&mut c, &[Action::PreviewDown, Action::PreviewDown]);
+        assert_eq!(c.preview_scroll, 2);
+        fzf_action(&mut c, &[Action::PreviewPageDown]);
+        assert_eq!(c.preview_scroll, 12);
+        fzf_action(&mut c, &[Action::PreviewHalfPageUp]);
+        assert_eq!(c.preview_scroll, 6); // 12 - (10 / 2 + 1)
+        fzf_action(&mut c, &[Action::PreviewUp, Action::PreviewTop]);
+        assert_eq!(c.preview_scroll, 0);
+        // Scrolling up from the top stays at the top.
+        fzf_action(&mut c, &[Action::PreviewPageUp]);
+        assert_eq!(c.preview_scroll, 0);
+        // The list cursor is untouched by every preview action.
+        assert_eq!(c.cursor, 0);
+    }
+
+    #[test]
+    fn wheel_over_the_preview_pane_scrolls_it_not_the_list() {
+        use super::{dispatch_mouse, Controls, MouseEvent, MouseKind};
+        use ratatui::layout::Rect;
+        let ev = |kind, col| MouseEvent {
+            kind,
+            col,
+            row: 3,
+            button: 0,
+            press: true,
+        };
+        let mut c = Controls {
+            cursor: 5,
+            preview_scroll: 4,
+            preview_view: Some((Rect::new(20, 1, 20, 8), 8)),
+            ..Default::default()
+        };
+        let now = std::time::Instant::now();
+        // Column 25 is inside the pane (x 20..40): the preview moves.
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollDown, 25), true, now);
+        assert_eq!((c.cursor, c.preview_scroll), (5, 5));
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollUp, 25), true, now);
+        assert_eq!((c.cursor, c.preview_scroll), (5, 4));
+        // Column 5 is over the list: the cursor moves, the preview stays.
+        dispatch_mouse(&mut c, ev(MouseKind::ScrollDown, 5), true, now);
+        assert_eq!((c.cursor, c.preview_scroll), (6, 4));
+    }
+
+    #[test]
+    fn preview_pane_scroll_is_clamped_to_the_last_full_page() {
+        use super::render_preview_pane;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        let lines: Vec<String> = (0..20).map(|i| format!("line{i:02}")).collect();
+        let colors = crate::fzf::Colors::default();
+        let mut term = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        let mut got = None;
+        term.draw(|f| {
+            // 8 rows, 2 taken by the border: 6 text rows.
+            got = Some(render_preview_pane(
+                f,
+                Rect::new(0, 0, 30, 8),
+                &lines,
+                usize::MAX,
+                &colors,
+                false,
+            ));
+        })
+        .unwrap();
+        let (rect, rows, scroll) = got.unwrap();
+        assert_eq!(rows, 6);
+        assert_eq!(scroll, 14); // 20 lines - 6 rows
+        let buf = term.backend().buffer();
+        let text: String = (0..rect.height)
+            .map(|y| {
+                (0..rect.width)
+                    .map(|x| buf[(rect.x + x, rect.y + y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("line14"), "{text}");
+        assert!(text.contains("line19"), "{text}");
+        assert!(!text.contains("line13"), "{text}");
     }
 
     #[test]

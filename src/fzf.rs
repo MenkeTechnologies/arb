@@ -1017,12 +1017,16 @@ pub enum Key {
     Backspace,
     Delete,
     Space,
+    /// `shift-up`: fzf's default for scrolling the preview up.
+    ShiftUp,
+    /// `shift-down`: fzf's default for scrolling the preview down.
+    ShiftDown,
     /// A plain printable key (`--bind=?:toggle-preview`).
     Char(char),
 }
 
 /// The fzf actions arb can carry out. fzf has many more (`execute`,
-/// `reload`, preview control …); a binding naming one of those is dropped whole
+/// `reload`, `toggle-preview` …); a binding naming one of those is dropped whole
 /// so the key keeps its built-in behavior instead of half-working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -1040,6 +1044,14 @@ pub enum Action {
     Abort,
     ClearQuery,
     BackwardDeleteChar,
+    PreviewUp,
+    PreviewDown,
+    PreviewPageUp,
+    PreviewPageDown,
+    PreviewHalfPageUp,
+    PreviewHalfPageDown,
+    PreviewTop,
+    PreviewBottom,
     Ignore,
 }
 
@@ -1071,6 +1083,8 @@ fn parse_key(name: &str) -> Option<Key> {
         "end" => Key::End,
         "bspace" | "bs" | "backspace" => Key::Backspace,
         "del" | "delete" => Key::Delete,
+        "shift-up" => Key::ShiftUp,
+        "shift-down" => Key::ShiftDown,
         "space" => Key::Space,
         s if s.chars().count() == 1 => Key::Char(s.chars().next()?),
         _ => return None,
@@ -1094,6 +1108,14 @@ fn parse_action(name: &str) -> Option<Action> {
         "abort" | "cancel" => Action::Abort,
         "clear-query" | "unix-line-discard" | "kill-line" => Action::ClearQuery,
         "backward-delete-char" => Action::BackwardDeleteChar,
+        "preview-up" => Action::PreviewUp,
+        "preview-down" => Action::PreviewDown,
+        "preview-page-up" => Action::PreviewPageUp,
+        "preview-page-down" => Action::PreviewPageDown,
+        "preview-half-page-up" => Action::PreviewHalfPageUp,
+        "preview-half-page-down" => Action::PreviewHalfPageDown,
+        "preview-top" => Action::PreviewTop,
+        "preview-bottom" => Action::PreviewBottom,
         "ignore" => Action::Ignore,
         _ => return None,
     })
@@ -1433,6 +1455,16 @@ impl Look {
             .find(|(k, _)| *k == key)
             .map(|(_, a)| a.as_slice())
     }
+
+    /// The actions `key` runs: the user's binding, else fzf's built-in preview
+    /// scrolling (`shift-up`/`shift-down`).
+    pub fn bound_or_default(&self, key: Key) -> Option<Vec<Action>> {
+        self.bound(key).map(<[_]>::to_vec).or(match key {
+            Key::ShiftUp => Some(vec![Action::PreviewUp]),
+            Key::ShiftDown => Some(vec![Action::PreviewDown]),
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1536,6 +1568,40 @@ mod tests {
         let look = Look::parse(&args);
         assert_eq!(look.bound(Key::Ctrl('o')), None);
         assert_eq!(look.bound(Key::Ctrl('k')), Some(&[Action::Up][..]));
+    }
+
+    #[test]
+    fn preview_scroll_actions_parse_and_shift_arrows_default_to_them() {
+        let args: Vec<String> = ["--bind=ctrl-d:preview-half-page-down,ctrl-b:preview-page-up,alt-t:preview-top+preview-down"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let look = Look::parse(&args);
+        assert_eq!(
+            look.bound(Key::Ctrl('d')),
+            Some(&[Action::PreviewHalfPageDown][..])
+        );
+        assert_eq!(
+            look.bound(Key::Ctrl('b')),
+            Some(&[Action::PreviewPageUp][..])
+        );
+        assert_eq!(
+            look.bound(Key::Alt('t')),
+            Some(&[Action::PreviewTop, Action::PreviewDown][..])
+        );
+        // fzf's built-in shift-up/shift-down, overridable by a binding.
+        let plain = Look::default();
+        assert_eq!(
+            plain.bound_or_default(Key::ShiftUp),
+            Some(vec![Action::PreviewUp])
+        );
+        assert_eq!(
+            plain.bound_or_default(Key::ShiftDown),
+            Some(vec![Action::PreviewDown])
+        );
+        assert_eq!(plain.bound_or_default(Key::Char('x')), None);
+        let own = Look::parse(&["--bind=shift-up:up".to_string()]);
+        assert_eq!(own.bound_or_default(Key::ShiftUp), Some(vec![Action::Up]));
     }
 
     #[test]

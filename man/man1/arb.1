@@ -222,6 +222,20 @@ Run
 for the line under the cursor
 .RB ( {}
 is the current line, shell\-escaped) and show its output in a right pane.
+The pane scrolls with the mouse wheel over it, with
+.BR shift\-up / shift\-down ,
+and with the
+.BR \-\-bind
+.BR preview\-up ,
+.BR preview\-down ,
+.BR preview\-page\-up ,
+.BR preview\-page\-down ,
+.BR preview\-half\-page\-up ,
+.BR preview\-half\-page\-down ,
+.B preview\-top
+and
+.B preview\-bottom
+actions; moving the cursor restarts it at the top.
 .TP
 .BI \-\-prompt \ STR
 fzf prompt string (default
