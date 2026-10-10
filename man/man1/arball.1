@@ -41,7 +41,8 @@ supplies a spec inline and
 .B \-p \fIPRESET\fR
 selects a built\-in preset;
 .B arb \fIVERB\fR
-runs a named packaged dashboard. With no controlling terminal reachable (piped
+runs a registry verb (\fBinstall\fR, \fBadd\fR, \fBuninstall\fR, \fBsearch\fR,
+\fBupdate\fR, \fBpublish\fR). With no controlling terminal reachable (piped
 onward / CI) arb prints the parsed spec and each source pipeline's evaluated result
 instead of a TUI \(em the correct headless behavior. See
 .BR arb (1)
@@ -67,7 +68,7 @@ blocks reshape a source's result before it reaches a widget; form controls and
 key/mouse binds drive interaction.
 .SH 3. ARCHITECTURE
 .EX
-.arb spec \[->] parser \[->] expressions lower to a fusevm chunk \[->] fusevm VM + Cranelift JIT
+\&.arb spec \[->] parser \[->] expressions lower to a fusevm chunk \[->] fusevm VM + Cranelift JIT
 .EE
 .PP
 Expressions and the
@@ -88,7 +89,7 @@ and diagnostics from the runtime's own parser. It is read\-only; no output reach
 the terminal.
 .SS Debugger (\-\-dap)
 .B arb \-\-dap
-speaks the Debug Adapter Protocol over stdio: line breakpoints, single\-stepping,
+speaks the Debug Adapter Protocol over stdio: regex line breakpoints, single\-stepping,
 a stack trace, and variable inspection. Output is captured and forwarded as
 .B output
 events so it never corrupts the protocol channel.

@@ -108,6 +108,20 @@ Remove a named preset from the library, then exit.
 List only installed (user\-library) presets, then exit. Same two lines per
 preset as
 .BR \-\-list .
+.SS Themes
+.TP
+.BI \-\-theme \ NAME
+Color theme for this run; overrides the spec's \fBtheme\fR directive.
+.TP
+.B \-\-list\-themes
+List the built\-in color themes with swatches and exit.
+.TP
+.BI \-\-set\-theme \ NAME
+Save
+.I NAME
+as the global default theme in
+.IR ~/.arb/config.toml ,
+then exit.
 .SS Modes
 .TP
 .BR \-r ", " \-\-repl
@@ -148,13 +162,15 @@ specs.
 Speak the Debug Adapter Protocol over stdio: step the stream, set regex
 breakpoints, inspect the paused line / stats / controls.
 .SS Introspection
-Each dump resolves the spec source from the
+Each dump flag resolves the spec source from the
 .B FILE
 argument,
 .BR \-e \ SRC ,
 or
 .BR \-p \ NAME ,
 prints the requested stage, and exits without reading stdin.
+.B \-\-tiers
+takes an expression instead of a spec.
 .TP
 .B \-\-dump\-tokens
 Print the Tcl\-flavored lexer token stream, one
@@ -171,8 +187,10 @@ pipeline and each widget's
 .B source
 pipeline as their op vectors.
 .TP
-.B \-\-tiers
-Run it, then report which fusevm execution tier took each of its chunks.
+.BI \-\-tiers \ EXPR
+Evaluate
+.I EXPR
+on fusevm, report which execution tier took its chunk, and exit.
 .TP
 .B \-\-disasm
 Print a flat, numbered disassembly of every compiled pipeline (the listing view of
@@ -400,7 +418,9 @@ User preset library
 .TP
 .I ~/.arb/config.toml
 REPL config
-.RB ( "[repl] mode" ).
+.RB ( "[repl] mode" )
+and default theme
+.RB ( "[ui] theme" ).
 .SH EXIT STATUS
 .TP
 .B 0
@@ -413,6 +433,9 @@ Error during execution, or a failing
 .TP
 .B 2
 Invalid usage (missing required spec / argument).
+.TP
+.B 5
+A query pipeline (\fB\-e\fR / \fBout { \[u2026] }\fR) reported an error.
 .TP
 .B 130
 .B \-\-fzf
