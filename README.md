@@ -581,6 +581,14 @@ and `yq_superset_probe` every yq operator. Each asks the REFERENCE first, so arb
 is never charged for a name the reference does not define either. There is no
 allowlist.
 
+Beyond the fixed corpus, `cargo test` runs a seeded differential fuzz: a
+deterministic generator builds random JSON documents and random jq programs,
+runs each through arb and through the real `jq` (bare, and wrapped in
+`try … catch .` so error messages are compared too), and byte-diffs the
+output. The same seed always yields the same corpus; `ARB_FUZZ_SEED` and
+`ARB_FUZZ_CASES` widen a local run. It skips, loudly, when `jq` is absent or
+is not the 1.8 line.
+
 One deviation runs the other way and is deliberate: for an integer above 2^53,
 jq's own arithmetic loses up to an ULP (`jq` answers `true` to
 `(-516424571754902561 + 0) == -516424571754902500` when the correctly-rounded

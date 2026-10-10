@@ -2388,6 +2388,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
         Filter::RecurseDefault => recurse_all(input, out),
         Filter::Lit(v) => out(v.clone()),
         Filter::Str(pieces, fmt) => eval_string(it, pieces, fmt.as_deref(), input, env, out),
+        Filter::Format(name) if &**name == "text" => out(to_string_val(input)),
         Filter::Format(name) => out(JqVal::str(apply_format(name, input)?)),
         Filter::Field(..) | Filter::Index(..) | Filter::Slice(..) | Filter::Iterate(..) => {
             eval_index(it, f, false, input, env, out)
@@ -3083,6 +3084,15 @@ pub const FORMAT_NAMES: &[&str] = &[
     "base64", "base64d", "csv", "tsv", "json", "text", "html", "uri", "urid", "sh",
 ];
 
+/// `tostring` (and `@text`): a string comes back AS ITSELF — the same value, so
+/// a path through it stays intact — anything else is its JSON text.
+fn to_string_val(v: &JqVal) -> JqVal {
+    match v.bare() {
+        s @ JqVal::Str(_) => s.clone(),
+        other => JqVal::str(render(other)),
+    }
+}
+
 /// jq's `@name` format strings.
 fn apply_format(name: &str, v: &JqVal) -> R<String> {
     let v = v.bare();
@@ -3382,23 +3392,29 @@ fn bind_pattern(
 ) -> R<()> {
     match pat {
         Pattern::Var(name) => k(env.bind(name.clone(), v.clone())),
-        Pattern::Arr(subs) => bind_arr(it, subs, 0, v, env.clone(), k),
+        Pattern::Arr(subs) => bind_arr(it, subs, subs.len(), v, env.clone(), k),
         Pattern::Obj(subs) => bind_obj(it, subs, 0, v, env.clone(), k),
     }
 }
 
+/// Bind the first `n` elements of an array pattern, LAST element first: jq's
+/// array matcher indexes and binds from the end, so on a non-indexable value
+/// `1 as [$a, $b]` refuses at index 1, and a generator in a later element is the
+/// outer loop of one in an earlier element.
 fn bind_arr(
     it: &Interp,
     subs: &[Pattern],
-    i: usize,
+    n: usize,
     v: &JqVal,
     env: Env,
     k: &mut dyn FnMut(Env) -> R<()>,
 ) -> R<()> {
-    let Some(p) = subs.get(i) else { return k(env) };
+    let Some(i) = n.checked_sub(1) else {
+        return k(env);
+    };
     let elem = index_value(v, &JqVal::num(i as f64))?;
-    bind_pattern(it, p, &elem, &env, &mut |e| {
-        bind_arr(it, subs, i + 1, v, e, k)
+    bind_pattern(it, &subs[i], &elem, &env, &mut |e| {
+        bind_arr(it, subs, i, v, e, k)
     })
 }
 
@@ -3708,6 +3724,17 @@ fn eval_paths(
             })
         }
         Filter::Call(name, args) => eval_call_paths(it, (name, args), input, pre, val, env, out),
+        // `[E]`: the body runs with tracking on (so `.[]` over a value that is
+        // no longer at the path refuses), then the collected array travels on
+        // from the state the collection began in.
+        Filter::Array(Some(inner)) => {
+            let mut items = Vec::new();
+            eval_paths(it, inner, input, pre, val, env, &mut |_, v| {
+                items.push(v);
+                Ok(())
+            })?;
+            out(pre.clone(), JqVal::arr(items))
+        }
         other => non_path(it, other, pre, val, env, out),
     }
 }
@@ -3929,6 +3956,16 @@ fn eval_call_paths(
                 found,
             )
         }),
+        // jq defines both as `explode | map(…) | implode`: the codepoint array
+        // is no value at the path, so `map`'s `.[]` refuses to iterate it.
+        ("ascii_downcase", 0) | ("ascii_upcase", 0) => {
+            let s = str_or(val, "explode input must be a string")?;
+            Err(not_intact_iterate(&JqVal::arr(
+                s.chars()
+                    .map(|c| JqVal::num(f64::from(u32::from(c))))
+                    .collect(),
+            )))
+        }
         ("recurse", 0) => recurse_paths(pre, val, out),
         ("recurse", 1) => recurse_paths_f(it, &args[0], input, pre, val, env, out),
         ("first", 1) => {
@@ -4749,6 +4786,8 @@ fn builtin(
         ("has", 1) => {
             let k = one(it, &args[0], input, env)?;
             out(JqVal::Bool(match (input, &k) {
+                // `jv_has`: null has no key of any type, and says so quietly.
+                (JqVal::Null, _) => false,
                 (JqVal::Obj(_), JqVal::Str(s)) => input.obj_get(s).is_some(),
                 (JqVal::Arr(a), JqVal::Num(n, _)) => *n >= 0.0 && (*n as usize) < a.len(),
                 (a, b) => {
@@ -4765,10 +4804,16 @@ fn builtin(
             out(JqVal::Bool(contains(input, &b)?))
         }
 
-        ("tostring", 0) => out(JqVal::str(render_raw(input))),
+        ("tostring", 0) => out(to_string_val(input)),
         ("tojson", 0) => out(JqVal::str(render(input))),
         ("fromjson", 0) => {
-            let s = want_str(input, "parsed as JSON")?;
+            let JqVal::Str(s) = input.bare() else {
+                return Err(JqErr::msg(format!(
+                    "{}{} only strings can be parsed",
+                    input.bare().type_name(),
+                    paren_of(input.bare())
+                )));
+            };
             // jq's own reader (`jv_parse.c`), so what it accepts and the
             // refusal it words are both jq's.
             out(crate::jvparse::parse(&s)
@@ -4836,15 +4881,20 @@ fn builtin(
                 _ => Err(JqErr::msg(format!("{name}() requires string inputs"))),
             }
         }
-        ("ltrim", 0) => out(JqVal::str(
-            str_or(input, "trim input must be a string")?.trim_start(),
-        )),
-        ("rtrim", 0) => out(JqVal::str(
-            str_or(input, "trim input must be a string")?.trim_end(),
-        )),
-        ("trim", 0) => out(JqVal::str(
-            str_or(input, "trim input must be a string")?.trim(),
-        )),
+        ("ltrim", 0) | ("rtrim", 0) | ("trim", 0) => {
+            let s = str_or(input, "trim input must be a string")?;
+            let trimmed = match name {
+                "ltrim" => s.trim_start(),
+                "rtrim" => s.trim_end(),
+                _ => s.trim(),
+            };
+            // Nothing to trim: jq hands back the input string itself.
+            out(if trimmed.len() == s.len() {
+                JqVal::Str(s)
+            } else {
+                JqVal::str(trimmed)
+            })
+        }
         ("split", 1) => {
             let sep = one(it, &args[0], input, env)?;
             let s = str_or(input, "split input and separator must be strings")?;
@@ -6106,12 +6156,12 @@ def first(f): label $out | (f | ., break $out);
 def first: .[0];
 def last(f): reduce f as $x (null; [$x]) | values | .[0];
 def last: .[-1];
-def any: reduce .[] as $x (false; . or $x);
-def all: reduce .[] as $x (true; . and $x);
-def any(y): reduce (.[]|y) as $x (false; . or $x);
-def all(y): reduce (.[]|y) as $x (true; . and $x);
-def any(g; y): isempty(first(g|select(y))) | not;
-def all(g; y): isempty(first(g|y|select(.|not)));
+def any(g; y): isempty(first(g | y or empty)) | not;
+def all(g; y): isempty(first(g | y and empty));
+def any(y): any(.[]; y);
+def all(y): all(.[]; y);
+def any: any(.);
+def all: all(.);
 def limit($n; f): if $n > 0 then label $out | foreach f as $item ($n; . - 1; $item, if . <= 0 then break $out else empty end)
                   elif $n == 0 then empty
                   else error("limit doesn't support negative count") end;
@@ -6134,8 +6184,7 @@ def paths: path(..) | select(length > 0);
 def paths(node_filter): path(..|select(node_filter)) | select(length > 0);
 def leaf_paths: paths(scalars);
 def pick(pathexps): . as $top | reduce path(pathexps) as $p (null; setpath($p; $top | getpath($p)));
-def transpose: if . == [] then [] else . as $in | (map(length) | max) as $max
-  | [range(0; $max) as $j | [range(0; $in|length) as $i | $in[$i][$j]]] end;
+def transpose: [range(0; (map(length) | max) // 0) as $j | map(.[$j])];
 def env: $ENV;
 def isfinite: type == "number" and (isinfinite | not);
 def trimstr($val): ltrimstr($val) | rtrimstr($val);
