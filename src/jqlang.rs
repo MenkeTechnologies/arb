@@ -5714,10 +5714,10 @@ fn builtin(
         ("get_jq_origin", 0) => out(JqVal::str("arb")),
         ("get_prog_origin", 0) => out(JqVal::str(".")),
         ("get_search_list", 0) => out(JqVal::arr(Vec::new())),
-        ("modulemeta", 0) => Err(JqErr::msg(format!(
-            "module not found: {}",
-            render_raw(input)
-        ))),
+        ("modulemeta", 0) => match input {
+            JqVal::Str(s) => Err(JqErr::msg(format!("module not found: {s}"))),
+            _ => Err(JqErr::msg("modulemeta input module name must be a string")),
+        },
         ("have_literal_numbers", 0) => out(JqVal::Bool(true)),
         // jq 1.8.2 is built with decNumber, and arb keeps its number model:
         // literals survive unmodified values, negate exactly and compare as

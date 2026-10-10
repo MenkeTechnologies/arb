@@ -1281,3 +1281,13 @@ fn length_of_a_number_keeps_the_literal() {
         ("[(0 * -1), (1 - 3), -0.5 | length]", &["null"]),
     ]);
 }
+
+/// `modulemeta` names a missing module, and refuses a non-string input with
+/// jq's fixed wording (`f_modulemeta`).
+#[test]
+fn modulemeta_refuses_non_string_input() {
+    run_table(&[(
+        "try modulemeta catch .",
+        &["1", "null", "[\"a\"]", "\"nope\""],
+    )]);
+}
