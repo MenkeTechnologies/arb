@@ -426,32 +426,80 @@ pub fn run() {
     loop {
         let sig = match line_editor.read_line(&prompt) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("repl: {}", e);
+            // The line editor needs the terminal to answer cursor-position
+            // queries (crossterm: ESC[6n, 2s timeout); a terminal, pane or
+            // pipe that does not makes every read_line fail. Input still
+            // works without the editor, so keep the session alive on plain
+            // line reads instead of dropping out of the REPL.
+            Err(_) => {
+                plain_line_loop(&buffer, &cmd_count, start);
                 break;
             }
         };
 
         match sig {
             Signal::Success(line) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if matches!(trimmed, "exit" | "quit") {
+                if let LineFlow::Exit = dispatch_line(&line, &buffer, &cmd_count, start) {
                     break;
                 }
-                if trimmed.starts_with('.') && handle_dot_command(trimmed, &buffer) {
-                    continue;
-                }
-                if let Ok(mut g) = cmd_count.lock() {
-                    *g += 1;
-                }
-                eval_spec(trimmed, &buffer, start);
             }
             Signal::CtrlC => continue,
             Signal::CtrlD => break,
             _ => break,
+        }
+    }
+}
+
+/// Whether the REPL keeps reading after a line.
+enum LineFlow {
+    Continue,
+    Exit,
+}
+
+/// One entered line: `exit`/`quit`, a `.`-command, or a spec to evaluate.
+fn dispatch_line(
+    line: &str,
+    buffer: &Arc<Mutex<Vec<String>>>,
+    cmd_count: &Arc<Mutex<u64>>,
+    start: Instant,
+) -> LineFlow {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return LineFlow::Continue;
+    }
+    if matches!(trimmed, "exit" | "quit") {
+        return LineFlow::Exit;
+    }
+    if trimmed.starts_with('.') && handle_dot_command(trimmed, buffer) {
+        return LineFlow::Continue;
+    }
+    if let Ok(mut g) = cmd_count.lock() {
+        *g += 1;
+    }
+    eval_spec(trimmed, buffer, start);
+    LineFlow::Continue
+}
+
+/// The REPL on bare stdin lines — no editing, history or completion. Used
+/// when the line editor cannot run on this terminal.
+fn plain_line_loop(
+    buffer: &Arc<Mutex<Vec<String>>>,
+    cmd_count: &Arc<Mutex<u64>>,
+    start: Instant,
+) {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    loop {
+        let n = cmd_count.lock().map(|g| *g).unwrap_or(0);
+        print!("arb[{n}]❯ ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if let LineFlow::Exit = dispatch_line(&line, buffer, cmd_count, start) {
+            break;
         }
     }
 }
