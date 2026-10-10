@@ -4816,7 +4816,7 @@ fn builtin(
             };
             // jq's own reader (`jv_parse.c`), so what it accepts and the
             // refusal it words are both jq's.
-            out(crate::jvparse::parse(&s)
+            out(crate::jvparse::parse(s)
                 .map_err(|e| JqErr::msg(format!("{e} (while parsing '{s}')")))?)
         }
         ("tonumber", 0) => match input {
