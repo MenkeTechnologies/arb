@@ -379,7 +379,17 @@ lines read by the `jv_parse.c` port (`NaN`, `Infinity`, `.5`, BOM), `implode` of
 NaN, `jv_get`/`jv_set` refusals, `length` keeping a number literal, `f_match`'s
 empty-capture key order, and `_strindices` wordings) measured 816 pass, 0
 diverged, 159 skipped (797 pass / 19 diverged on the same corpus before the
-fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
+fixes). The seeded differential fuzz rounds that followed (they are a `cargo test`
+of their own, not part of that script's corpus) moved the regex family onto
+Oniguruma — the engine jq links, in its Perl_NG syntax, so look-around,
+backreferences, `\K`, `\h`, the modifier letters and the engine's own refusal
+text are jq's — and followed jq where its bytecode shows through: `path_intact`
+tracking in destructuring patterns, `and`/`or` and the right-hand side of an
+arithmetic assignment, `walk`/`map_values`/`from_entries`/`sub`/`gsub`/`splits`
+as jq's own definitions, a parsed number never being `jv_identical` to one a
+builtin computed from it, an update stopping at its first output, `?//`
+catching what is raised downstream of it (a `break` included), and `reduce`
+re-entered over a `null` input. fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
 
 | leg | reference | containment | status |
 |---|---|---|---|
@@ -1128,7 +1138,7 @@ Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream comma
 
 ## 20. Architecture (fusevm frontend, original — mechanics ported, semantics fresh)
 
-Deps (lean): `fusevm` (`jit`, `jit-disk-cache`, `aot`, `ffi`), `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json` + `saphyr-parser` (YAML, `src/yaml.rs`) + `toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
+Deps (lean): `fusevm` (`jit`, `jit-disk-cache`, `aot`, `ffi`), `ratatui`+`crossterm`, `clap`, `regex`, `onig` (Oniguruma, for jq's regex family), `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json` + `saphyr-parser` (YAML, `src/yaml.rs`) + `toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
 
 Actual tree:
 

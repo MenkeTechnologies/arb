@@ -586,8 +586,19 @@ deterministic generator builds random JSON documents and random jq programs,
 runs each through arb and through the real `jq` (bare, and wrapped in
 `try … catch .` so error messages are compared too), and byte-diffs the
 output. The same seed always yields the same corpus; `ARB_FUZZ_SEED` and
-`ARB_FUZZ_CASES` widen a local run. It skips, loudly, when `jq` is absent or
-is not the 1.8 line.
+`ARB_FUZZ_CASES` widen a local run. The generator covers the generators and
+early exits (`limit`, `first`, `range`, `until`, `repeat`, `label`/`break`),
+`reduce`/`foreach` over several outputs, `try`/`catch` with `error(null)`, every
+`@format`, the regex family with its flags, the path builtins
+(`getpath`/`setpath`/`delpaths`/`paths`/`pick`), number formatting, multi-key
+`sort_by`/`group_by`/`unique_by`, `$__loc__`, and `input`/`inputs` over a
+stream of several documents. It skips, loudly, when `jq` is absent or is not
+the 1.8 line. Every divergence it has found is pinned in a table of measured jq
+outputs that runs without `jq`, so CI checks the fixes on every platform. The
+regex family runs on Oniguruma, the engine jq itself links, so its syntax and
+refusals are jq's. jq's command-line flags (`--stream`, `--seq`, …) are
+not arb's; the filters beneath them (`tostream`, `fromstream`,
+`truncate_stream`, `input`, `inputs`) are.
 
 One deviation runs the other way and is deliberate: for an integer above 2^53,
 jq's own arithmetic loses up to an ULP (`jq` answers `true` to
