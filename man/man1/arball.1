@@ -28,7 +28,7 @@ can grep with `/`:
 .RB "\(em " "\-\-lsp, \-\-dap, inline-Rust FFI, dumps"
 .br
 .B 5.  DIAGNOSTICS
-.RB "\(em " "error format and common messages"
+.RB "\(em " "error output stream and exit status"
 .RE
 .SH 1. INVOCATION
 .B arb
@@ -113,7 +113,7 @@ the parsed AST. Because arb has no whole\-program chunk,
 lists the compiled per\-expression op vectors. Each flag prints its artifact and
 exits.
 .SH 5. DIAGNOSTICS
-Errors are written to standard error. The process exits non\-zero on a spec or
+Errors are written to standard error, prefixed with \fBarb:\fR. The process exits non\-zero on a spec or
 pipeline error and 0 on success.
 .SH SEE ALSO
 .BR arb (1)
