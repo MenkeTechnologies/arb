@@ -24,7 +24,7 @@ machine-checked against its own reference tool, and the numbers are below — an
 interactive megafilter/map over the live passthrough, and an original language
 on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM + three-tier
-Cranelift JIT — the same engine behind `zshrs`, `stryke`, `rubylang`, and `elisp`.
+Cranelift JIT — the same engine behind its sibling language frontends.
 
 ### [`Read the Docs`](https://menketechnologies.github.io/arb/) &middot; [`Engineering Report`](https://menketechnologies.github.io/arb/report.html) &middot; [`Reference`](https://menketechnologies.github.io/arb/reference.html) &middot; [`Language Spec`](SPEC.md)
 
@@ -80,7 +80,7 @@ displays it. Highlights:
   (fusevm embedding, the rkyv script cache, the LSP/DAP stdio shape, the
   package-manager ABI) but the lexer, parser, AST, lowering, and semantics are
   arb's own.
-- **World-first = synthesis + ecosystem** — no single leg is new (Tcl/Tk, Expect,
+- **Synthesis + ecosystem** — no single leg is new (Tcl/Tk, Expect,
   dasel, ratatui, `textual serve` are all prior art); the combination is: a
   pipe-native, dual-target, component-generating UI language with a shareable
   dashboard registry. No registry of installable pipeline TUIs exists today.
@@ -496,7 +496,7 @@ URL/name) plugs into the same resolver next.
 
 The [`examples/`](examples/) directory holds small, self-contained dashboards
 that each demonstrate one idiom, with the exact producer in the header comment.
-Run any of them with `-f`:
+Run any of them by passing the file:
 
 ```sh
 tail -f app.log        | arb examples/error-rate.arb   # errors vs. all, as a gauge + tail
@@ -1064,7 +1064,7 @@ forward-compatible, and unbuilt features are absent, not stubbed.
 - **[Reference](https://menketechnologies.github.io/arb/reference.html)** — every
   widget, control, and query builtin, generated from `src/lsp.rs`.
 - **[Engineering Report](https://menketechnologies.github.io/arb/report.html)**
-  — architecture, world-first positioning, milestones, dependency posture.
+  — architecture, positioning, milestones, dependency posture.
 - **[`SPEC.md`](SPEC.md)** — the full language spec: grammar, widgets, query,
   controls, actors, packages.
 

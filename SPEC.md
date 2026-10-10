@@ -8,7 +8,7 @@ Original language (stryke's class), **not a port**. MIT, standalone crate, lean 
 
 ## 0. Positioning
 
-- **World-first = the synthesis + ecosystem**, not any single leg. Prior art per leg: Tcl'88, Tk'88, Expect'90 (spawn/react), dasel (unified query), ratatui (TUI), Streamlit/Textual-serve (served web UI), filt (interactive pipe grep — *single filter box, filter-only, TUI-only; not comparable*). No tool is a pipe-native, dual-target (terminal+web), component-generating UI language with a shareable dashboard registry.
+- **The synthesis + ecosystem**, not any single leg. Prior art per leg: Tcl'88, Tk'88, Expect'90 (spawn/react), dasel (unified query), ratatui (TUI), Streamlit/Textual-serve (served web UI), filt (interactive pipe grep — *single filter box, filter-only, TUI-only; not comparable*). No tool is a pipe-native, dual-target (terminal+web), component-generating UI language with a shareable dashboard registry.
 - **Not a server-only thing**: terminal-invoked, pipe-driven. Web target spawns a local UI host (like `textual serve`), not a daemon.
 
 ## 1. Invocation
@@ -1122,13 +1122,13 @@ packages remain future work.
 
 ## 19. Ecosystem — "a TUI for every pipeline"
 
-Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream command (or data shape) → resolves the matching package → renders. Every common pipeline (docker/kubectl/psql/nginx/git/systemctl/…) gets a shared, installable dashboard. No registry of shareable pipeline TUIs exists today — this is the world-first ecosystem leg.
+Community publishes `arb-<tool>` packages. `cmd | arb` sniffs the upstream command (or data shape) → resolves the matching package → renders. Every common pipeline (docker/kubectl/psql/nginx/git/systemctl/…) gets a shared, installable dashboard. No registry of shareable pipeline TUIs exists today — this is the ecosystem leg.
 
 **Ships today** — zero-config **data-shape sniffing**: `cmd | arb` (no spec, piped) peeks the first stream lines (via a non-blocking `poll`, so it never delays startup or hangs on an idle producer) and auto-selects the matching stdlib preset — JSON object streams → `json`/`logs`/`nginx`, tool headers → `docker`/`top`/`k8s`, git-log → `git`, CSV/TSV → `table` — replaying the peeked lines so nothing is lost, and falling back to the plain tail on no match. The **upstream-command** leg (identifying the producer process by argv) is deferred: the data-shape leg dominates it cross-platform (macOS pipe-peer matching needs fragile FFI), and covers every motivating producer via its header/shape.
 
 ## 20. Architecture (fusevm frontend, original — mechanics ported, semantics fresh)
 
-Deps (rubyrs-lean): `fusevm{jit}`, `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json`/`serde_yaml`/`toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
+Deps (lean): `fusevm` (`jit`, `jit-disk-cache`, `aot`, `ffi`), `ratatui`+`crossterm`, `clap`, `regex`, `rayon`; the served web dashboard is **std-only** (hand-rolled HTTP + RFC 6455 WebSocket, no async runtime) and renders with the vendored `zgui-core` toolkit (git submodule `lib/zgui-core`, bundled by `build.rs`); REPL: `reedline`+`nu-ansi-term`+`libc`+`toml`; parsers: `serde_json` + `saphyr-parser` (YAML, `src/yaml.rs`) + `toml` + `scraper` (HTML/CSS) + `base64`/`percent-encoding`.
 
 Actual tree:
 
@@ -1139,6 +1139,21 @@ src/ast.rs       AST types (Command / Arg)
 src/spec.rs      spec interpreter: widgets, source/out pipelines, query-verb
                  parse, import resolution, preset library
 src/query.rs     jq/xpath/css/yq engine (pipeline eval over every format)
+src/jq.rs        jq-literal front-end: translates `source`/`out` body stages to query ops
+src/jqlang.rs    complete jq language engine (parse_json, programs, builtins)
+src/jqval.rs     jq value expressions (`select(…)`/`map(…)` bodies, arithmetic stages)
+src/jvparse.rs   jq 1.8 JSON text parser port (fallback reader)
+src/jsondocs.rs  `in.json`: one item per JSON document
+src/xpath.rs     XPath front-end; xpath_syntax.rs (lexer/parser) + xpath_eval.rs (evaluator)
+src/yaml.rs      YAML reader (event stream → jq value model); ynode.rs node metadata + writer; yqfmt.rs yq encoders/decoders
+src/algo.rs      fzf matching algorithm port; pattern.rs fzf extended-query port; fzf.rs fzf option compatibility
+src/sniff.rs     zero-config data-shape sniffing
+src/testrun.rs   in-language test runner (`--test`)
+src/tiers.rs     fusevm execution-tier probe (`--tiers`)
+src/pty.rs       `spawn -pty` pseudo-terminal source
+src/rust_ffi.rs  inline `rust { … }` FFI blocks
+src/hosted.rs    running arb inside a host process (no `exit()`)
+src/err.rs       `SpecError` with source spans
 src/actor.rs     actor system (§15): actor/on/reply parse + handler compiler, mpsc-mailbox threads (spawn/send/ask/pool), `via` parallel stream fan-out
 src/theme.rs     31 built-in color palettes (storageshower, shared with iftoprs/htoprs) + custom palette; theme-aware color resolution
 src/expr.rs      expression layer: fn/lambdas/operators → fusevm::Chunk on the VM
@@ -1154,7 +1169,8 @@ src/lsp.rs       Language Server over stdio (--lsp): diagnostics/symbols/hover/c
 src/dap.rs       Debug Adapter over stdio (--dap): step the stream, regex breakpoints, inspect the paused line/stats/controls
 src/cache.rs     rkyv script cache (~/.arb/scripts.rkyv): outer zero-copy rkyv shard, inner bincode AST blob, FxHash+schema key — skips lex+parse for a seen spec
 src/banner.rs    startup/help art
-src/main.rs      CLI (clap) + dispatch
+src/main.rs      binary entry point; calls `cli::run_argv`
+src/cli.rs       CLI (clap) + dispatch + fzf option handling + `--filter`
 src/lib.rs       crate root
 ```
 
