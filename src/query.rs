@@ -2744,6 +2744,12 @@ thread_local! {
 /// are jq's. A line that is not JSON has no jq type and PASSES THROUGH, which
 /// is the documented carve-out these stages always had. `Some` is the
 /// refusal that ends the pipeline.
+///
+/// The answer is written as compact JSON, never `jq -r`'s raw string: these
+/// stages run MID-pipeline, where `add`'s raw `ab` is not a JSON line, so the
+/// next translated stage (`.[1:]`, `keys`, `.[0]`) took it for plain text and
+/// passed it through instead of slicing or refusing it. `jq::translate`
+/// appends the one final `JqRawString` that `jq -r` owes.
 fn jq_builtin_lines(cur: &mut Vec<String>, name: &str) -> Option<QueryResult> {
     let prog = match jq_program(name) {
         Ok(p) => p,
@@ -2757,7 +2763,7 @@ fn jq_builtin_lines(cur: &mut Vec<String>, name: &str) -> Option<QueryResult> {
             continue;
         };
         let r = prog.run_with(&interp, &v, &mut |r| {
-            out.push(crate::jqlang::render_raw(&r));
+            out.push(crate::jqlang::render(&r));
             Ok(())
         });
         if let Err(e) = r {

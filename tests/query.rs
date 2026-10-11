@@ -2330,6 +2330,26 @@ fn jq_builtins_match_jq_at_their_edges() {
 }
 
 #[test]
+fn jq_add_hands_a_string_on_as_a_string() {
+    // `add` used to render its answer raw mid-pipeline, so a string sum reached
+    // the next translated stage as plain text: `.[1:]` passed `ab` through
+    // unsliced and `keys`/`.[0]` passed it through instead of refusing — exit 0
+    // with an answer jq never gives. Expected values are `jq -rc` 1.8.2's.
+    let recs = [r#"[{"n":"a"},{"n":"b"}]"#];
+    assert_eq!(jq_lines("map(.n) | add | .[1:]", &recs), ["b"]);
+    assert_eq!(jq_lines("map(.n) | add", &recs), ["ab"]);
+    assert_eq!(jq_lines("map([.n]) | map(add)", &recs), [r#"["a","b"]"#]);
+    assert_eq!(
+        jq_err("map(.n) | add | .[0]", &recs),
+        "jq: Cannot index string with number (0)"
+    );
+    assert_eq!(
+        jq_err("map(.n) | add | keys", &recs),
+        r#"jq: string ("ab") has no keys"#
+    );
+}
+
+#[test]
 fn jq_nested_field_path_inside_select_and_map() {
     // Refused outright before ("nested field path (.a.b) … is unsupported"),
     // because the f64 expression parser had no path node. jq accepts it.

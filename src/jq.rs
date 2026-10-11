@@ -38,7 +38,15 @@ pub fn translate(src: &str) -> Result<Vec<QueryOp>, String> {
     //     quotes are DATA, and a second pass would strip them to `q`.
     // `map(…)` bodies build through `translate_stage` directly, so they are
     // untouched by this and keep rebuilding their array through `jq_array_json`.
-    if ops.is_empty() || matches!(ops.last(), Some(QueryOp::NonNull | QueryOp::JqSelect(_))) {
+    // `add` is the fourth: it writes its answer as JSON so a following stage
+    // sees a string as a string (`map(.n) | add | .[1:]`), and so owes the raw
+    // rendering when it is last.
+    if ops.is_empty()
+        || matches!(
+            ops.last(),
+            Some(QueryOp::NonNull | QueryOp::JqSelect(_) | QueryOp::JqAdd)
+        )
+    {
         ops.push(QueryOp::JqRawString);
     }
     Ok(ops)
