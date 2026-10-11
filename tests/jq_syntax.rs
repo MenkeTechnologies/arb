@@ -90,3 +90,21 @@ fn an_object_takes_a_trailing_comma() {
     answers("{a: 1, b: 2,}", "null\n", "{\"a\":1,\"b\":2}\n");
     answers("[{a,}]", "{\"a\":7}\n", "[{\"a\":7}]\n");
 }
+
+/// A native verb spelled like a jq builtin (`length`, `floor`, `first`, …)
+/// takes no argument, so a jq operator after it continues a jq program. Lexed
+/// as verb + args, the verb ran and the rest of the program was dropped:
+/// `length | . + 1` printed `2`, exit 0.
+#[test]
+fn a_native_verb_followed_by_a_jq_operator_is_one_program() {
+    let recs = "[{\"n\":\"a\",\"v\":3},{\"n\":\"b\",\"v\":1}]\n";
+    answers("length | . + 1", recs, "3\n");
+    answers("length as $l | map(.v / $l)", recs, "[1.5,0.5]\n");
+    answers("length > 1", recs, "true\n");
+    answers("length , 1", recs, "2\n1\n");
+    answers("first | .n", recs, "a\n");
+    answers("max | .n", recs, "b\n");
+    // The bare word and `sort`'s own flags are still the native verb.
+    answers("length", recs, "2\n");
+    answers("sort -n", "3\n1\n2\n", "1\n2\n3\n");
+}

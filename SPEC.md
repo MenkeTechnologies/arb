@@ -727,7 +727,11 @@ The rule is CONTEXT, not spelling: a body command that begins with a jq literal
 (`.`, `select(`, `map(`, `has(`) is handed to the jq front-end whole, and inside
 it every builtin answers as jq does. A bare alphanumeric word is looked up in the
 native verb table first, and only a word with no native verb falls through to jq.
-That gating is what separates jq `to_entries` from native `entries`.
+That gating is what separates jq `to_entries` from native `entries`. A shared
+word FOLLOWED by a jq operator (`|`, `,`, `as`, `and`/`or`, arithmetic or a
+comparison) is not bare: none of those verbs (`length`, `add`, `first`, `floor`,
+`max`, …) takes an argument, so `length | . + 1` and `length as $l | …` are jq
+programs. `sort -n` keeps its flags.
 
 **The context rule has one boundary, and `keys` was over it.** The native table is
 matched BEFORE the fall-through, so a native verb spelled exactly like a jq

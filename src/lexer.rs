@@ -729,7 +729,46 @@ fn jq_literal_at(cs: &[char], i: usize) -> bool {
         // Only when the word ENDS here: `envelope` is not `env`.
         return !cs.get(j).is_some_and(|c| c.is_alphanumeric() || *c == '_');
     }
+    if NATIVE_SHARED.contains(&name.as_str()) {
+        return jq_continues_at(cs, j);
+    }
     cs.get(j) == Some(&'(') && JQ_CALLS.contains(&name.as_str())
+}
+
+/// Native verbs spelled exactly like a jq 0-arity builtin. As a bare word each
+/// is arb's verb (SPEC §8's context rule), and none takes an argument except
+/// `sort`'s `-n`/`-r` flags. So a jq operator after one cannot be an argument:
+/// `length | . + 1` and `length as $l | …` are jq programs. Lexed as verb +
+/// args, the verb ran and the ignored args were the rest of the program —
+/// `length | . + 1` printed the length, exit 0.
+const NATIVE_SHARED: &[&str] = &[
+    "abs", "add", "ceil", "first", "flatten", "floor", "last", "length", "max", "min", "round",
+    "sort", "trim",
+];
+
+/// After a word ending at `cs[j]`, does a jq operator continue the program on
+/// the same line? Blanks are skipped; `-` is not counted, since it opens
+/// `sort`'s flags.
+fn jq_continues_at(cs: &[char], j: usize) -> bool {
+    let mut k = j;
+    while k < cs.len() && matches!(cs[k], ' ' | '\t') {
+        k += 1;
+    }
+    if k == j && cs.get(k).is_some_and(|c| c.is_alphanumeric() || *c == '_') {
+        return false;
+    }
+    let word = |w: &str| {
+        let wc: Vec<char> = w.chars().collect();
+        cs[k..].starts_with(&wc)
+            && cs
+                .get(k + wc.len())
+                .is_some_and(|c| matches!(c, ' ' | '\t' | '$' | '[' | '{' | '('))
+    };
+    match cs.get(k) {
+        Some('|' | ',' | '+' | '*' | '/' | '%' | '<' | '>' | '=' | '!' | '?') => true,
+        Some(_) => word("as") || word("and") || word("or"),
+        None => false,
+    }
 }
 
 /// Does `cs[i] == '{'` open a jq OBJECT construction rather than an arb block?
