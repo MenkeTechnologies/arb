@@ -1291,3 +1291,24 @@ fn modulemeta_refuses_non_string_input() {
         &["1", "null", "[\"a\"]", "\"nope\""],
     )]);
 }
+
+/// jq 1.8 moved `bsearch` out of builtin.jq into C: one loop over a half-open
+/// `[start, end)` that stops at the first probe comparing equal and otherwise
+/// answers `-1 - start`. arb kept 1.7's jq definition, which agrees on a
+/// sorted array but probes different midpoints, so an UNSORTED input — where
+/// the answer is defined only by the algorithm — came back different:
+/// `[3,1] | bsearch(1)` was `-1` against jq's `1`. Pinned to `jq -c` 1.8.2.
+#[test]
+fn bsearch_follows_jq_1_8s_c_loop_on_any_input() {
+    let probe = "[bsearch(-1,0,1,2,3,4,5,6)]";
+    assert_eq!(arb_run(probe, &["[1,3,2,5,0]"]).unwrap(), ["[-1,-1,0,2,-6,-6,-6,-6]"]);
+    assert_eq!(arb_run("[bsearch(1,3,0,9)]", &["[3,1]"]).unwrap(), ["[1,-3,-1,-3]"]);
+    // Sorted input and the edges answer as they always did.
+    assert_eq!(arb_run("[bsearch(0,2,4)]", &["[1,2,3]"]).unwrap(), ["[-1,1,-4]"]);
+    assert_eq!(arb_run("bsearch(1)", &["[]"]).unwrap(), ["-1"]);
+    assert_eq!(arb_run("bsearch(nan)", &["[nan,1]"]).unwrap(), ["-1"]);
+    assert_eq!(
+        arb_run("bsearch(1)", &[r#""a""#]).unwrap_err(),
+        r#"jq: string ("a") cannot be searched from"#
+    );
+}

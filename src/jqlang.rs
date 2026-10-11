@@ -6686,20 +6686,14 @@ def JOIN($idx; stream; idx_expr): stream | [., $idx[idx_expr]];
 def JOIN($idx; stream; idx_expr; join_expr): stream | [., $idx[idx_expr]] | join_expr;
 def bsearch($target):
   if type != "array" then error("\(type) (\(tojson)) cannot be searched from")
-  elif length == 0 then -1
-  elif length == 1 then (if $target > .[0] then -2 elif $target == .[0] then 0 else -1 end)
   else . as $in
-    | (length - 1) as $rhs
-    | [0, $rhs]
-    | until(.[0] > .[1];
-        (((.[1] + .[0]) / 2) | floor) as $mid
-        | $in[$mid] as $monkey
-        | if $monkey == $target then [$mid, $mid - 1]
-          elif $monkey < $target then [($mid + 1), .[1]]
-          else [.[0], ($mid - 1)] end)
-    | if $in[.[0]] == $target then .[0]
-      elif .[0] > $rhs then (-2 - $rhs)
-      else (-1 - .[0]) end
+    | {s: 0, e: length, at: null}
+    | until(.s >= .e or .at != null;
+        (.s + ((.e - .s) / 2 | floor)) as $mid
+        | if $target == $in[$mid] then .at = $mid
+          elif $target < $in[$mid] then .e = $mid
+          else .s = $mid + 1 end)
+    | .at // (-1 - .s)
   end;
 def toarray: if type == "array" then . else [.] end;
 def abs: if . < 0 then - . else . end;
