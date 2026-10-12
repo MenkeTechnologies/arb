@@ -736,6 +736,15 @@ impl PreviewWindow {
     /// written, so both separators are taken.
     pub fn parse(spec: &str) -> PreviewWindow {
         let mut w = PreviewWindow::default();
+        w.apply(spec);
+        w
+    }
+
+    /// Apply a spec on top of the current settings: fzf folds repeated
+    /// `--preview-window` options into one, so `--preview-window right:50%
+    /// --preview-window +{2}` keeps the position and size.
+    pub fn apply(&mut self, spec: &str) {
+        let w = self;
         for part in spec.split([',', ':']).map(str::trim) {
             match part {
                 "" => {}
@@ -765,7 +774,6 @@ impl PreviewWindow {
                 }
             }
         }
-        w
     }
 
     /// Split `body` into (list, preview) rectangles. `None` means the preview is
@@ -1345,7 +1353,7 @@ impl Look {
                 "--preview-window" => {
                     let (v, sep) = flag_value(a, next);
                     if let Some(spec) = v {
-                        look.preview_window = PreviewWindow::parse(&spec);
+                        look.preview_window.apply(&spec);
                     }
                     i += usize::from(sep);
                 }
@@ -1768,6 +1776,16 @@ mod tests {
             expand_preview("awk '{print $1}' {}", "z", None, q),
             "awk '{print $1}' <z>"
         );
+    }
+
+    #[test]
+    fn repeated_preview_window_options_fold_together() {
+        let look = Look::parse(
+            &["--preview-window=down:40%:wrap", "--preview-window", "+{2}+3/3"].map(String::from),
+        );
+        let w = look.preview_window;
+        assert_eq!((w.pos, w.size, w.wrap), (PreviewPos::Down, PreviewSize::Percent(40), true));
+        assert!(w.scroll.is_some());
     }
 
     #[test]
