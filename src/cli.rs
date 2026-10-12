@@ -1356,6 +1356,8 @@ fn run(full_argv: &[String]) -> io::Result<()> {
                 spawn_item_preview(
                     pv.clone(),
                     fzf_look.shell(),
+                    fzf_look.delimiter.clone(),
+                    fzf_look.preview_window.scroll.clone(),
                     controls.clone(),
                     pstate.clone(),
                 );
@@ -2544,6 +2546,8 @@ fn shell_escape(s: &str) -> String {
 fn spawn_item_preview(
     template: String,
     shell: Vec<String>,
+    delimiter: Option<String>,
+    scroll: Option<crate::fzf::PreviewScroll>,
     controls: Arc<Mutex<tui::Controls>>,
     pstate: Arc<Mutex<StreamState>>,
 ) {
@@ -2565,7 +2569,8 @@ fn spawn_item_preview(
             if cur.is_empty() {
                 continue;
             }
-            let cmd = template.replace("{}", &shell_escape(&cur));
+            let cmd =
+                crate::fzf::expand_preview(&template, &cur, delimiter.as_deref(), shell_escape);
             // fzf starts children with `$SHELL -c`; a preview using the user's
             // shell (zsh's `print`, one of their functions) needs that shell.
             let mut argv = shell.clone();
@@ -2575,6 +2580,16 @@ fn spawn_item_preview(
             *p = StreamState::new();
             for l in output {
                 p.push(l);
+            }
+            drop(p);
+            // `--preview-window +SCROLL`: hand the start line to the run loop,
+            // which knows the pane's height. Only if the cursor is still here.
+            let target = scroll
+                .as_ref()
+                .and_then(|s| Some((s.target(&cur, delimiter.as_deref())?, s.denom)));
+            let mut c = controls.lock().unwrap();
+            if c.current == cur {
+                c.preview_start = target;
             }
         }
     });

@@ -279,6 +279,10 @@ pub struct Controls {
     /// published by the renderer so the wheel can tell which pane it is over and
     /// `preview-page-*` can size a page. `None` while no pane is drawn.
     pub preview_view: Option<(Rect, usize)>,
+    /// `--preview-window +SCROLL`: `(one-based line, denominator)` the preview
+    /// thread resolved for the cursor line once its output was loaded. The run
+    /// loop turns it into `preview_scroll` when the pane height is known.
+    pub preview_start: Option<(i64, usize)>,
     /// Matches on screen this frame, so `--cycle` can wrap and `last` can land
     /// on the final row.
     pub fzf_count: usize,
@@ -1755,6 +1759,7 @@ pub fn run(
             let cursor_line = original(rank(sel)).unwrap_or_default();
             if c.current != cursor_line {
                 c.preview_scroll = 0;
+                c.preview_start = None;
                 c.current = cursor_line.to_string();
             }
             // `toggle`: flip each pending row's original in the mark set. Every
@@ -1803,6 +1808,15 @@ pub fn run(
                 break Ok(());
             }
             let marks = c.marks.clone();
+            if let (Some((line, denom)), Some((_, rows))) = (c.preview_start, c.preview_view) {
+                c.preview_start = None;
+                let sc = crate::fzf::PreviewScroll {
+                    base: crate::fzf::ScrollBase::Line(line),
+                    offset: 0,
+                    denom,
+                };
+                c.preview_scroll = sc.top(line, rows);
+            }
             let preview_scroll = c.preview_scroll;
             let fzf_theme = c.theme; // live theme (Ctrl-T chooser previews it)
             let fzf_help = c.help_open;

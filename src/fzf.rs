@@ -615,13 +615,96 @@ pub enum PreviewSize {
     Cells(u16),
 }
 
-/// `--preview-window=[POSITION][,SIZE[%]][,[no]wrap][,[no]hidden][,…]`.
+/// What `+SCROLL` of `--preview-window` takes as its base line: a number, or a
+/// field index expression (`{2}`) read from the cursor line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScrollBase {
+    Line(i64),
+    Field(Vec<Nth>),
+}
+
+/// `--preview-window=+SCROLL[OFFSETS][/DENOM]`: the line the preview starts at
+/// for each new cursor line. `+{2}+3/2` is field 2, plus 3, placed half a
+/// window down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewScroll {
+    pub base: ScrollBase,
+    /// Sum of the signed `+N`/`-N` adjustments.
+    pub offset: i64,
+    /// `/DENOM`: the line sits `rows / denom` below the top; 0 = at the top.
+    pub denom: usize,
+}
+
+impl PreviewScroll {
+    /// Parse the part after the leading `+` (`{2}-5`, `10/2`, `{1}+3/2`).
+    fn parse(spec: &str) -> Option<PreviewScroll> {
+        let (spec, denom) = match spec.split_once('/') {
+            Some((s, d)) => (s, d.parse::<usize>().ok()?),
+            None => (spec, 0),
+        };
+        let (base, mut rest) = match spec.strip_prefix('{') {
+            Some(r) => {
+                let (inner, tail) = r.split_once('}')?;
+                (ScrollBase::Field(Nth::parse_list(inner)), tail)
+            }
+            None => {
+                let end = spec
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(spec.len());
+                (ScrollBase::Line(spec[..end].parse().ok()?), &spec[end..])
+            }
+        };
+        if matches!(&base, ScrollBase::Field(n) if n.is_empty()) {
+            return None;
+        }
+        let mut offset = 0i64;
+        while !rest.is_empty() {
+            let sign = match rest.as_bytes()[0] {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let end = rest[1..]
+                .find(|c: char| !c.is_ascii_digit())
+                .map_or(rest.len(), |i| i + 1);
+            offset += sign * rest[1..end].parse::<i64>().ok()?;
+            rest = &rest[end..];
+        }
+        Some(PreviewScroll {
+            base,
+            offset,
+            denom,
+        })
+    }
+
+    /// The one-based line this spec points at for `line`, or `None` when the
+    /// field is not a number.
+    pub fn target(&self, line: &str, delimiter: Option<&str>) -> Option<i64> {
+        let base = match &self.base {
+            ScrollBase::Line(n) => *n,
+            ScrollBase::Field(nth) => {
+                let tokens = tokenize(line, delimiter);
+                let field = strip_last_delimiter(&transform_join(&tokens, nth), delimiter);
+                field.trim().parse::<i64>().ok()?
+            }
+        };
+        Some(base + self.offset)
+    }
+
+    /// First preview line (zero-based) to show for a pane of `rows` rows.
+    pub fn top(&self, target: i64, rows: usize) -> usize {
+        let above = rows.checked_div(self.denom).unwrap_or(0) as i64;
+        (target - 1 - above).max(0) as usize
+    }
+}
+
+/// `--preview-window=[POSITION][,SIZE[%]][,[no]wrap][,[no]hidden][,+SCROLL][,…]`.
 ///
 /// The flags arb can act on are modeled; the rest of fzf's grammar
-/// (`border-STYLE`, `follow`, `cycle`, `info`, `+SCROLL`, `~HEADER_LINES`,
-/// `default`, `<THRESHOLD(ALT)`) parses without error and is ignored, so a
-/// spec written for fzf never fails here — it just may not be honored in full.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// (`border-STYLE`, `follow`, `cycle`, `info`, `~HEADER_LINES`, `default`,
+/// `<THRESHOLD(ALT)`) parses without error and is ignored, so a spec written
+/// for fzf never fails here — it just may not be honored in full.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewWindow {
     pub pos: PreviewPos,
     pub size: PreviewSize,
@@ -629,6 +712,8 @@ pub struct PreviewWindow {
     pub hidden: bool,
     /// `wrap`: long preview lines wrap instead of being truncated.
     pub wrap: bool,
+    /// `+SCROLL…`: where each cursor line's preview starts.
+    pub scroll: Option<PreviewScroll>,
 }
 
 impl Default for PreviewWindow {
@@ -640,6 +725,7 @@ impl Default for PreviewWindow {
             size: PreviewSize::Percent(50),
             hidden: false,
             wrap: false,
+            scroll: None,
         }
     }
 }
@@ -664,6 +750,7 @@ impl PreviewWindow {
                 "nohidden" => w.hidden = false,
                 "wrap" | "wrap-word" => w.wrap = true,
                 "nowrap" => w.wrap = false,
+                _ if part.starts_with('+') => w.scroll = PreviewScroll::parse(&part[1..]),
                 _ => {
                     if let Some(n) = part.strip_suffix('%') {
                         if let Ok(pct) = n.parse::<u16>() {
@@ -673,7 +760,7 @@ impl PreviewWindow {
                         w.size = PreviewSize::Cells(cells);
                     }
                     // Anything else is a part of fzf's grammar arb does not act
-                    // on (border-*, follow, cycle, info, +SCROLL, ~N, default,
+                    // on (border-*, follow, cycle, info, ~N, default,
                     // <THRESHOLD(ALT)). Ignored rather than rejected.
                 }
             }
@@ -869,6 +956,45 @@ impl Default for Look {
             extended: true,
         }
     }
+}
+
+/// Expand a `--preview` command template for `line`: `{}` is the whole line,
+/// `{2}` / `{1,3}` / `{-1}` are fields (the `--nth` grammar). Each value goes
+/// through `quote`, so the shell sees it as one word. Any other brace text is
+/// left as written.
+pub fn expand_preview(
+    template: &str,
+    line: &str,
+    delimiter: Option<&str>,
+    quote: impl Fn(&str) -> String,
+) -> String {
+    let tokens = tokenize(line, delimiter);
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let Some(close) = tail.find('}') else { break };
+        let inner = &tail[1..close];
+        let is_fields = !inner.is_empty()
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '.'));
+        if inner.is_empty() {
+            out.push_str(&quote(line));
+        } else if is_fields {
+            let nth = Nth::parse_list(inner);
+            out.push_str(&quote(&strip_last_delimiter(
+                &transform_join(&tokens, &nth),
+                delimiter,
+            )));
+        } else {
+            out.push_str(&tail[..=close]);
+        }
+        rest = &tail[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `--accept-nth=EXPR` — what an accepted line prints instead of itself
@@ -1602,6 +1728,46 @@ mod tests {
         assert_eq!(plain.bound_or_default(Key::Char('x')), None);
         let own = Look::parse(&["--bind=shift-up:up".to_string()]);
         assert_eq!(own.bound_or_default(Key::ShiftUp), Some(vec![Action::Up]));
+    }
+
+    #[test]
+    fn preview_scroll_spec_parses_base_offsets_and_denominator() {
+        let w = PreviewWindow::parse("right,60%,+{2}+3/2");
+        assert_eq!(w.size, PreviewSize::Percent(60));
+        let sc = w.scroll.expect("scroll");
+        assert_eq!(sc.base, ScrollBase::Field(Nth::parse_list("2")));
+        assert_eq!((sc.offset, sc.denom), (3, 2));
+        let n = PreviewWindow::parse("+10-4").scroll.expect("scroll");
+        assert_eq!((n.base, n.offset, n.denom), (ScrollBase::Line(10), -4, 0));
+        assert_eq!(PreviewWindow::parse("+{x}").scroll, None);
+        assert_eq!(PreviewWindow::parse("+{2}*").scroll, None);
+    }
+
+    #[test]
+    fn preview_scroll_targets_the_field_line_and_centres_it() {
+        let sc = PreviewWindow::parse("+{2}-5").scroll.unwrap();
+        assert_eq!(sc.target("main.rs:120:fn x", Some(":")), Some(115));
+        assert_eq!(sc.target("main.rs:abc:fn x", Some(":")), None);
+        // One-based line 115 is index 114 at the top …
+        assert_eq!(sc.top(115, 20), 114);
+        // … or half a window lower with `/2`, clamped at the first line.
+        let mid = PreviewWindow::parse("+{2}/2").scroll.unwrap();
+        assert_eq!(mid.top(120, 20), 109);
+        assert_eq!(mid.top(3, 20), 0);
+    }
+
+    #[test]
+    fn preview_template_expands_whole_line_and_fields() {
+        let q = |s: &str| format!("<{s}>");
+        assert_eq!(
+            expand_preview("bat {1} --highlight-line {2}", "a.rs:7:x", Some(":"), q),
+            "bat <a.rs> --highlight-line <7>"
+        );
+        assert_eq!(expand_preview("echo {}", "a b", None, q), "echo <a b>");
+        assert_eq!(
+            expand_preview("awk '{print $1}' {}", "z", None, q),
+            "awk '{print $1}' <z>"
+        );
     }
 
     #[test]

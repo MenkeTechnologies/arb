@@ -235,7 +235,23 @@ and with the
 .B preview\-top
 and
 .B preview\-bottom
-actions; moving the cursor restarts it at the top.
+actions; moving the cursor restarts it at the top, or at the line
+.B \-\-preview\-window
+.BI + SCROLL
+names (a number or a field expression, with optional
+.B +N
+/
+.B \-N
+offsets and a
+.B /DENOM
+window fraction, e.g.
+.BR +{2}+3/2 ).
+.B {1}\c
+,
+.B {2}\c
+and
+.B {1,3}
+in CMD expand to those fields of the line, shell\-escaped.
 .TP
 .BI \-\-prompt \ STR
 fzf prompt string (default

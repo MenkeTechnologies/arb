@@ -338,7 +338,9 @@ written against your shell works). The preview pane scrolls like fzf's: the mous
 wheel over it, `shift-up`/`shift-down`, and the `preview-up`, `preview-down`,
 `preview-page-up`, `preview-page-down`, `preview-half-page-up`,
 `preview-half-page-down`, `preview-top` and `preview-bottom` actions; moving the
-cursor restarts the preview at the top. A binding naming an action arb has no
+cursor restarts the preview at the top, or at the line `--preview-window +SCROLL`
+names (`+{2}-5`, `+{2}+3/2`; `{2}` is a field of the cursor line). `--preview` also
+expands field placeholders (`{1}`, `{2}`, `{1,3}`, `{-1}`) shell-escaped. A binding naming an action arb has no
 equivalent for (`execute(…)`, `toggle-preview`, …) is skipped so the key keeps its built-in
 behavior; the remaining fzf flags are accepted and ignored so the command still
 runs.
