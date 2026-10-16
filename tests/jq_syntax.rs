@@ -108,3 +108,27 @@ fn a_native_verb_followed_by_a_jq_operator_is_one_program() {
     answers("length", recs, "2\n");
     answers("sort -n", "3\n1\n2\n", "1\n2\n3\n");
 }
+
+/// A jq program may recurse far deeper than the default 8 MiB main-thread stack
+/// allows: jq keeps its stack on the heap, so a 20000-level `def` recursion and
+/// a 5000-level `recurse` both answer there, while arb aborted the process with
+/// a stack overflow. The binary now runs the command line on a large-stack
+/// thread.
+#[test]
+fn deep_jq_recursion_does_not_overflow_the_stack() {
+    answers(
+        "def f: if . < 20000 then .+1|f else . end; 0|f",
+        "null\n",
+        "20000\n",
+    );
+    answers(
+        "0 | [recurse(if . < 5000 then .+1 else empty end)] | length",
+        "null\n",
+        "5001\n",
+    );
+    answers(
+        "reduce range(5000) as $i (null; [.]) | [tostream] | length",
+        "null\n",
+        "5001\n",
+    );
+}
