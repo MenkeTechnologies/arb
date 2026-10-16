@@ -1386,3 +1386,33 @@ fn semicolon_in_a_jq_comment_is_comment_text() {
         ("[.[] # c ) ] e\n]", &["[1,2]"], Some(&["[1,2]"])),
     ]);
 }
+
+/// A `foreach` update that yields nothing leaves `null` as the state, exactly
+/// as `reduce` does in jq 1.8 — it does NOT keep the previous state. The
+/// arithmetic below is the observable: after the skipped item the next state
+/// is `null + $x`.
+#[test]
+fn foreach_empty_update_resets_state_to_null() {
+    run_pinned(&[
+        (
+            "[foreach (1,2,3,4,5) as $x (0; if $x == 2 then empty else . + $x end)]",
+            &["null"],
+            Some(&["[1,3,7,12]"]),
+        ),
+        (
+            "[foreach (1,2,3,4,5) as $x (0; if $x % 2 == 0 then empty else . + $x end)]",
+            &["null"],
+            Some(&["[1,3,5]"]),
+        ),
+        (
+            "[foreach (1,2,3,4) as $x (0; if $x == 2 then empty else . + $x end; [$x, .])]",
+            &["null"],
+            Some(&["[[1,1],[3,3],[4,7]]"]),
+        ),
+        (
+            "[foreach (1,2,3) as $x (10; if $x == 1 then empty else . + $x end)]",
+            &["null"],
+            Some(&["[2,5]"]),
+        ),
+    ]);
+}

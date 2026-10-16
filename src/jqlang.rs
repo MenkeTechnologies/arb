@@ -2538,6 +2538,12 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
                             states.push(v);
                             Ok(())
                         })?;
+                        // As in `reduce`, an update that yields nothing leaves `null`
+                        // behind as the state (jq 1.8: `[foreach (1,2,3) as $x (0;
+                        // if $x == 2 then empty else . + $x end)]` is `[1,3]`).
+                        if states.is_empty() {
+                            acc = JqVal::Null;
+                        }
                         for st in states {
                             acc = st.clone();
                             match extract {
@@ -3806,6 +3812,9 @@ fn eval_paths(
                             states.push((tu, v));
                             Ok(())
                         })?;
+                        if states.is_empty() {
+                            acc = JqVal::Null;
+                        }
                         for (tu, st) in states {
                             acc = st.clone();
                             match extract {
