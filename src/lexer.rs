@@ -109,6 +109,13 @@ pub fn lex_opts(
                         // A string, interpolations included, is skipped whole; an
                         // unterminated one runs to the end of the text.
                         '"' => i = skip_jq_string(&cs, i).unwrap_or(n - 1),
+                        // A `#` comment runs to the end of the line: a `;` or `)`
+                        // in it is comment text, not a terminator or a bracket.
+                        '#' => {
+                            while i + 1 < n && cs[i + 1] != '\n' {
+                                i += 1;
+                            }
+                        }
                         '(' | '[' | '{' => depth += 1,
                         ')' | ']' => depth -= 1,
                         '}' => {

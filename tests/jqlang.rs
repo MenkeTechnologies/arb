@@ -1374,3 +1374,15 @@ fn nested_string_interpolation_keeps_escaped_quotes() {
         (r#"@json "\("a\"b")""#, &["1"], Some(&[r#""a\"b""#])),
     ]);
 }
+
+/// A `#` comment runs to the end of the line. The command scanner ignored it, so
+/// a `;` inside the comment ended the program and the rest of the comment was
+/// parsed as a second command (``unknown verb `d` ``).
+#[test]
+fn semicolon_in_a_jq_comment_is_comment_text() {
+    run_pinned(&[
+        (".[0] # c ; d", &["[1,2]"], Some(&["1"])),
+        (".[0] # c ; d } e", &["[1,2]"], Some(&["1"])),
+        ("[.[] # c ) ] e\n]", &["[1,2]"], Some(&["[1,2]"])),
+    ]);
+}
