@@ -729,10 +729,13 @@ fn jq_literal_at(cs: &[char], i: usize) -> bool {
         // Only when the word ENDS here: `envelope` is not `env`.
         return !cs.get(j).is_some_and(|c| c.is_alphanumeric() || *c == '_');
     }
-    if NATIVE_SHARED.contains(&name.as_str()) {
-        return jq_continues_at(cs, j);
+    // The CALL spelling is jq's even for a name arb also has as a bare verb:
+    // `first(range(1;3))` carries a `;` that must not end the command, and the
+    // native `first` takes no parenthesised argument.
+    if cs.get(j) == Some(&'(') && JQ_CALLS.contains(&name.as_str()) {
+        return true;
     }
-    cs.get(j) == Some(&'(') && JQ_CALLS.contains(&name.as_str())
+    NATIVE_SHARED.contains(&name.as_str()) && jq_continues_at(cs, j)
 }
 
 /// Native verbs spelled exactly like a jq 0-arity builtin. As a bare word each

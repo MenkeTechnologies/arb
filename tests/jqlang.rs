@@ -1312,3 +1312,49 @@ fn bsearch_follows_jq_1_8s_c_loop_on_any_input() {
         r#"jq: string ("a") cannot be searched from"#
     );
 }
+
+/// `first(f)` / `last(f)` / `nth` with a `;` INSIDE a nested call: `first` and
+/// `last` are also arb's bare verbs, and the lexer let that win over the
+/// `name(` call spelling, so the `;` of `range(1;3)` ended the command and the
+/// program died as ``unknown verb `first(range(1` ``.
+#[test]
+fn first_and_last_call_form_keep_inner_semicolons() {
+    run_pinned(&[
+        ("first(range(1;3))", &["10"], Some(&["1"])),
+        ("last(range(1;3))", &["10"], Some(&["2"])),
+        ("first(range(10;0;-1)), 5", &["10"], Some(&["10", "5"])),
+        ("add(range(1;4))", &["0"], Some(&["6"])),
+    ]);
+}
+
+/// `{$__loc__}` is `{"__loc__": $__loc__}`. The lexer tags the variable with
+/// its line, and the object-key path used the tagged name as the key and left
+/// the variable unresolved.
+#[test]
+fn object_shorthand_for_loc() {
+    run_pinned(&[
+        (
+            "{$__loc__}",
+            &["1"],
+            Some(&[r#"{"__loc__":{"file":"<top-level>","line":1}}"#]),
+        ),
+        (
+            "1 as $x | {$x, $__loc__}",
+            &["1"],
+            Some(&[r#"{"x":1,"__loc__":{"file":"<top-level>","line":1}}"#]),
+        ),
+    ]);
+}
+
+/// A string LITERAL in a program refuses a high surrogate escape that does not
+/// pair with a low one; a lone LOW surrogate and a proper pair are accepted.
+#[test]
+fn program_literal_refuses_unpaired_high_surrogate() {
+    run_pinned(&[
+        (r#""\ud83d""#, &["1"], None),
+        (r#""\ud83dx""#, &["1"], None),
+        (r#""\ud83d\u0041""#, &["1"], None),
+        (r#""\ude00""#, &["1"], Some(&["\u{fffd}"])),
+        (r#""\ud83d\ude00""#, &["1"], Some(&["\u{1F600}"])),
+    ]);
+}

@@ -1102,6 +1102,16 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
 
 /// Lex a `"…"` literal starting at `cs[i]`, splitting out `\(…)` interpolations.
 /// How many newlines precede `cs[at]`.
+/// The value of a lexer-tagged `$__loc__:LINE` variable token, `None` for any
+/// other variable.
+fn loc_literal(var: &str) -> Option<JqVal> {
+    let line: f64 = var.strip_prefix("__loc__:")?.parse().unwrap_or(1.0);
+    Some(JqVal::obj(vec![
+        (Rc::from("file"), JqVal::str("<top-level>")),
+        (Rc::from("line"), JqVal::num(line)),
+    ]))
+}
+
 fn newlines_before(cs: &[char], at: usize) -> usize {
     cs[..at].iter().filter(|c| **c == '\n').count()
 }
@@ -1199,6 +1209,11 @@ fn lex_string(cs: &[char], i: usize) -> Result<(Vec<StrPieceTok>, usize), String
                                     continue;
                                 }
                             }
+                        }
+                        // A program literal REFUSES a high surrogate that does not pair
+                        // (jq's lexer); a lone LOW one is U+FFFD.
+                        if (0xD800..0xDC00).contains(&cp) {
+                            return Err("jq: Invalid \\uXXXX\\uXXXX surrogate pair escape".into());
                         }
                         char::from_u32(cp).unwrap_or('\u{fffd}')
                     }
@@ -1906,12 +1921,8 @@ impl Parser {
             }
             Some(Tok::Var(name)) => {
                 self.i += 1;
-                if let Some(line) = name.strip_prefix("__loc__:") {
-                    let line: f64 = line.parse().unwrap_or(1.0);
-                    return Ok(Filter::Lit(JqVal::obj(vec![
-                        (Rc::from("file"), JqVal::str("<top-level>")),
-                        (Rc::from("line"), JqVal::num(line)),
-                    ])));
+                if let Some(loc) = loc_literal(&name) {
+                    return Ok(Filter::Lit(loc));
                 }
                 Ok(Filter::Var(Rc::from(name.as_str())))
             }
@@ -2087,7 +2098,14 @@ impl Parser {
                 // VALUE (LOADV); a bare `BINDING` keys by its name.
                 Some(Tok::Var(v)) => {
                     self.i += 1;
-                    let var = Filter::Var(Rc::from(v.as_str()));
+                    // `{$__loc__}` is `{"__loc__": $__loc__}`. The lexer tagged
+                    // the token with its line (`__loc__:N`), so the key is the
+                    // bare name and the value is the located literal.
+                    let var = match loc_literal(&v) {
+                        Some(loc) => Filter::Lit(loc),
+                        None => Filter::Var(Rc::from(v.as_str())),
+                    };
+                    let v = if v.starts_with("__loc__:") { "__loc__".to_string() } else { v };
                     if self.is_op(":") {
                         (var, None)
                     } else {
