@@ -1491,8 +1491,12 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             // line). With a `| CONS` consumer, pipe the selection through it first
             // (`find / | _ | perl -pe …` transforms the picked lines). Abort
             // (Esc/Ctrl-C) exits 130 with no output.
-            let c = controls.lock().unwrap();
-            if c.submit {
+            // The guard must be gone before `exit`: hosted, `exit` unwinds, and a guard
+            // dropped by that unwind poisons `controls` for the preview thread that
+            // outlives this call.
+            let submit = controls.lock().unwrap().submit;
+            if submit {
+                let c = controls.lock().unwrap();
                 let out = match &consumer {
                     Some(cons) => run_capture(&["sh".into(), "-c".into(), cons.clone()], &c.result),
                     None => c.result.clone(),
