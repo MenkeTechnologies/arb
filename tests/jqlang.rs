@@ -1358,3 +1358,19 @@ fn program_literal_refuses_unpaired_high_surrogate() {
         (r#""\ud83d\ude00""#, &["1"], Some(&["\u{1F600}"])),
     ]);
 }
+
+/// A string literal's `\(…)` interpolation holds jq code with its own strings.
+/// Three scanners (the block scanner, the jq-atom scanner, the string lexer)
+/// toggled "in string" on every `"`, so an ESCAPED quote inside a nested string
+/// (`"\("a\"b")"`) ended the string early: `unterminated block`, or a `;` / `}`
+/// in a nested string ending the command.
+#[test]
+fn nested_string_interpolation_keeps_escaped_quotes() {
+    run_pinned(&[
+        (r#""\("a\"b")""#, &["1"], Some(&[r#"a"b"#])),
+        (r#""\("a\"b") \("c;d")""#, &["1"], Some(&[r#"a"b c;d"#])),
+        (r#""a\("b\("c\"d")e")f""#, &["1"], Some(&[r#"abc"def"#])),
+        (r#""\({"a":"}"} | .a)""#, &["1"], Some(&["}"])),
+        (r#"@json "\("a\"b")""#, &["1"], Some(&[r#""a\"b""#])),
+    ]);
+}

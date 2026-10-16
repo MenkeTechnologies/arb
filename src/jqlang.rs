@@ -1138,27 +1138,9 @@ fn lex_string(cs: &[char], i: usize) -> Result<(Vec<StrPieceTok>, usize), String
                         pieces.push(StrPieceTok::Lit(std::mem::take(&mut cur)));
                     }
                     let start = i + 2;
-                    let mut j = start;
-                    let mut depth = 1i32;
-                    let mut in_str = false;
-                    while j < cs.len() {
-                        match cs[j] {
-                            '\\' if in_str => j += 1,
-                            '"' => in_str = !in_str,
-                            '(' if !in_str => depth += 1,
-                            ')' if !in_str => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        j += 1;
-                    }
-                    if j >= cs.len() {
-                        return Err("jq: unterminated string interpolation".into());
-                    }
+                    let j = crate::lexer::skip_jq_interpolation(cs, start)
+                        .ok_or("jq: unterminated string interpolation")?
+                        - 1;
                     let mut src: String = cs[start..j].iter().collect();
                     if src.contains("__loc__") {
                         // The piece is parsed on its own, so it carries the

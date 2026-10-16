@@ -92,7 +92,6 @@ pub fn lex_opts(
             _ if jq_ok && at_cmd_start && jq_literal_at(&cs, i) => {
                 let start = i;
                 let mut depth = 0i32;
-                let mut in_str = false;
                 // `def NAME: BODY;` ends its definition with a `;` at depth 0 —
                 // the same character arb uses to end a command. A jq program that
                 // holds a top-level `def` therefore runs to end of line (or to
@@ -103,22 +102,23 @@ pub fn lex_opts(
                 // it starts a term, not only at the front.
                 let mut def_led = false;
                 while i < n {
-                    if !in_str && depth == 0 && !def_led {
+                    if depth == 0 && !def_led {
                         def_led = def_keyword_at(&cs, i);
                     }
                     match cs[i] {
-                        '\\' if in_str => i += 1,
-                        '"' => in_str = !in_str,
-                        '(' | '[' | '{' if !in_str => depth += 1,
-                        ')' | ']' if !in_str => depth -= 1,
-                        '}' if !in_str => {
+                        // A string, interpolations included, is skipped whole; an
+                        // unterminated one runs to the end of the text.
+                        '"' => i = skip_jq_string(&cs, i).unwrap_or(n - 1),
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' => depth -= 1,
+                        '}' => {
                             if depth == 0 {
                                 break;
                             }
                             depth -= 1;
                         }
-                        ';' if !in_str && depth == 0 && !def_led => break,
-                        '\n' if !in_str && depth == 0 => break,
+                        ';' if depth == 0 && !def_led => break,
+                        '\n' if depth == 0 => break,
                         _ => {}
                     }
                     i += 1;
@@ -171,15 +171,18 @@ pub fn lex_opts(
                         // Skip a "..." string so a `{`/`}` inside it does not
                         // miscount block depth (honoring the `\"` escape). An
                         // unterminated string runs to EOF -> unterminated block.
-                        '"' => {
-                            i += 1;
-                            while i < n && cs[i] != '"' {
-                                if cs[i] == '\\' && i + 1 < n {
+                        '"' => match skip_jq_string(&cs, i) {
+                            Some(close) => i = close,
+                            None => {
+                                i += 1;
+                                while i < n && cs[i] != '"' {
+                                    if cs[i] == '\\' && i + 1 < n {
+                                        i += 1;
+                                    }
                                     i += 1;
                                 }
-                                i += 1;
                             }
-                        }
+                        },
                         // Skip a /regex/ literal so a `{`/`}` in the pattern does
                         // not miscount depth — but only when it actually closes
                         // before end-of-line. A non-closing `/` (division, a path)
@@ -304,6 +307,44 @@ pub fn lex_opts(
         }
     }
     Ok(toks)
+}
+
+/// Index of the `"` closing the jq string literal that opens at `cs[open]`, or
+/// `None` when it never closes. A `\(…)` interpolation holds jq code again — its
+/// own strings (`"\("a\"b")"`), parens and `;` — so it is skipped as a nested
+/// expression rather than scanned as string text.
+fn skip_jq_string(cs: &[char], open: usize) -> Option<usize> {
+    let mut i = open + 1;
+    while i < cs.len() {
+        match cs[i] {
+            '\\' if cs.get(i + 1) == Some(&'(') => i = skip_jq_interpolation(cs, i + 2)?,
+            '\\' => i += 2,
+            '"' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past the `)` closing a `\(` interpolation whose body starts at
+/// `cs[i]`.
+pub(crate) fn skip_jq_interpolation(cs: &[char], mut i: usize) -> Option<usize> {
+    let mut depth = 1;
+    while i < cs.len() {
+        match cs[i] {
+            '"' => i = skip_jq_string(cs, i)?,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// jq's KEYWORDS. None of them is an arb verb, and each one starts a jq
