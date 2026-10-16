@@ -2625,12 +2625,15 @@ fn eval_index(it: &Interp, f: &Filter, opt: bool, input: &JqVal, env: &Env, out:
         Filter::Field(base, name) => eval(it, base, input, env, &mut |v| {
             step(index_value(&v, &JqVal::Str(name.clone())), out)
         }),
-        Filter::Index(base, idx) => eval(it, base, input, env, &mut |v| {
-            eval(it, idx, input, env, &mut |i| step(index_value(&v, &i), out))
+        // jq compiles `T[E]` as the index/bounds first and the term LAST (gen_index,
+        // gen_slice_index), so a generator in the index is the OUTER loop and the
+        // term varies fastest: `[[1,2],[3,4]] | [.[][0,1]]` is `[1,3,2,4]`.
+        Filter::Index(base, idx) => eval(it, idx, input, env, &mut |i| {
+            eval(it, base, input, env, &mut |v| step(index_value(&v, &i), out))
         }),
-        Filter::Slice(base, lo, hi) => eval(it, base, input, env, &mut |v| {
-            eval_opt(it, lo.as_deref(), input, env, &mut |lo_v| {
-                eval_opt(it, hi.as_deref(), input, env, &mut |hi_v| {
+        Filter::Slice(base, lo, hi) => eval_opt(it, lo.as_deref(), input, env, &mut |lo_v| {
+            eval_opt(it, hi.as_deref(), input, env, &mut |hi_v| {
+                eval(it, base, input, env, &mut |v| {
                     step(slice_value(&v, &lo_v, &hi_v), out)
                 })
             })
@@ -3919,18 +3922,21 @@ fn eval_index_paths(
             let r = index_value(&v, &key);
             step(&p, &v, key, r, out)
         }),
-        Filter::Index(base, idx) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
-            eval(it, idx, input, env, &mut |i| {
+        // Index/bounds outermost, term innermost: see `eval_index`.
+        Filter::Index(base, idx) => eval(it, idx, input, env, &mut |i| {
+            eval_paths(it, base, input, pre, val, env, &mut |p, v| {
                 let r = index_value(&v, &i);
-                step(&p, &v, i, r, out)
+                step(&p, &v, i.clone(), r, out)
             })
         }),
-        Filter::Slice(base, lo, hi) => eval_paths(it, base, input, pre, val, env, &mut |p, v| {
-            eval_opt(it, lo.as_deref(), input, env, &mut |l| {
-                eval_opt(it, hi.as_deref(), input, env, &mut |h| {
+        Filter::Slice(base, lo, hi) => eval_opt(it, lo.as_deref(), input, env, &mut |l| {
+            eval_opt(it, hi.as_deref(), input, env, &mut |h| {
+                eval_paths(it, base, input, pre, val, env, &mut |p, v| {
                     let r = slice_value(&v, &l, &h);
-                    let key =
-                        JqVal::obj(vec![(Rc::from("start"), l.clone()), (Rc::from("end"), h)]);
+                    let key = JqVal::obj(vec![
+                        (Rc::from("start"), l.clone()),
+                        (Rc::from("end"), h.clone()),
+                    ]);
                     step(&p, &v, key, r, out)
                 })
             })

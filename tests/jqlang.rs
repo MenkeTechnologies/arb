@@ -1416,3 +1416,37 @@ fn foreach_empty_update_resets_state_to_null() {
         ),
     ]);
 }
+
+/// jq compiles `T[E]` with the index (or slice bounds) first and the term LAST,
+/// so a generator in the index is the OUTER loop and the term varies fastest.
+/// arb looped the other way round: `[[1,2],[3,4]] | [.[][0,1]]` gave
+/// `[1,2,3,4]` where jq gives `[1,3,2,4]`. The path form (`path(…)`, `|=`)
+/// shares the order.
+#[test]
+fn generator_in_index_is_the_outer_loop() {
+    run_pinned(&[
+        ("[.[][0,1]]", &["[[1,2],[3,4]]"], Some(&["[1,3,2,4]"])),
+        ("[(.[],.[])[0,1]]", &["[[1,2],[3,4]]"], Some(&["[1,3,1,3,2,4,2,4]"])),
+        (
+            r#"[.[]["a","b"]]"#,
+            &[r#"[{"a":1,"b":2},{"a":3,"b":4}]"#],
+            Some(&["[1,3,2,4]"]),
+        ),
+        (
+            r#"[.[]?[("a","b")]?]"#,
+            &[r#"[{"a":1,"b":2},{"a":3,"b":4}]"#],
+            Some(&["[1,3,2,4]"]),
+        ),
+        (
+            r#"[path(.[][("a","b")])]"#,
+            &[r#"[{"a":1,"b":2},{"a":3,"b":4}]"#],
+            Some(&[r#"[[0,"a"],[1,"a"],[0,"b"],[1,"b"]]"#]),
+        ),
+        (
+            "[.[][(0,1):(1,2)]]",
+            &["[[1,2],[3,4]]"],
+            Some(&["[[1],[3],[1,2],[3,4],[],[],[2],[4]]"]),
+        ),
+        ("[.[][0:(1,2)]]", &["[[1,2],[3,4]]"], Some(&["[[1],[3],[1,2],[3,4]]"])),
+    ]);
+}
