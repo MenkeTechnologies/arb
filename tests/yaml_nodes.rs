@@ -479,7 +479,9 @@ fn plain_timestamps_resolve_to_the_timestamp_tag() {
     let docs = arb::yaml::documents(
         "a: 2024-01-02\nb: \"2024-01-02\"\nc: 2024-01-02T10:00:00Z\nd: 2024-1-2 3:04:05.5 +5:30\ne: 2024-01-02x\nf: 2024-01-02 10:00\n",
     );
-    let JqVal::Obj(m) = docs[0].bare() else { panic!("not a map") };
+    let JqVal::Obj(m) = docs[0].bare() else {
+        panic!("not a map")
+    };
     let tag = |k: &str| ynode::resolved_tag(&m.iter().find(|(key, _)| &**key == k).unwrap().1);
     assert_eq!(tag("a"), "!!timestamp");
     assert_eq!(tag("b"), "!!str");
