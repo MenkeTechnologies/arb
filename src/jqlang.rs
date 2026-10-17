@@ -7270,7 +7270,7 @@ fn yq_builtin(
         ("anchor", 0) => out(JqVal::Str(meta.anchor)),
         ("alias", 0) => out(JqVal::Str(meta.alias)),
         ("tag", 0) => out(JqVal::str(if meta.tag.is_empty() {
-            crate::ynode::implicit_tag(input)
+            crate::ynode::resolved_tag(input)
         } else {
             return out(JqVal::Str(meta.tag));
         })),

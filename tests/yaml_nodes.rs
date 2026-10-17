@@ -471,3 +471,21 @@ fn key_order_is_file_order() {
     let docs = arb::yaml::documents("z: 1\nm: 2\na: 3\n");
     assert_eq!(jqlang::render(&docs[0]), r#"{"z":1,"m":2,"a":3}"#);
 }
+
+/// A plain scalar spelled like a YAML 1.1 timestamp reads back as
+/// `!!timestamp`; a quoted one, a near-miss and a computed string stay `!!str`.
+#[test]
+fn plain_timestamps_resolve_to_the_timestamp_tag() {
+    let docs = arb::yaml::documents(
+        "a: 2024-01-02\nb: \"2024-01-02\"\nc: 2024-01-02T10:00:00Z\nd: 2024-1-2 3:04:05.5 +5:30\ne: 2024-01-02x\nf: 2024-01-02 10:00\n",
+    );
+    let JqVal::Obj(m) = docs[0].bare() else { panic!("not a map") };
+    let tag = |k: &str| ynode::resolved_tag(&m.iter().find(|(key, _)| &**key == k).unwrap().1);
+    assert_eq!(tag("a"), "!!timestamp");
+    assert_eq!(tag("b"), "!!str");
+    assert_eq!(tag("c"), "!!timestamp");
+    assert_eq!(tag("d"), "!!timestamp");
+    assert_eq!(tag("e"), "!!str");
+    assert_eq!(tag("f"), "!!str");
+    assert_eq!(ynode::resolved_tag(&JqVal::str("2024-01-02")), "!!str");
+}

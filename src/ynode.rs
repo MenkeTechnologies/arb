@@ -296,6 +296,56 @@ pub fn implicit_tag(v: &JqVal) -> &'static str {
     }
 }
 
+/// The tag `yq` reports for an untagged node as READ from a document: a PLAIN
+/// scalar spelled like a YAML 1.1 timestamp resolves to `!!timestamp` (go-yaml
+/// resolves it so), where [`implicit_tag`] alone sees only a string. Quoted
+/// scalars and computed strings stay `!!str`.
+pub fn resolved_tag(v: &JqVal) -> &'static str {
+    if let JqVal::Node(n) = v {
+        if n.meta.style == Style::Plain {
+            if let JqVal::Str(s) = &n.val {
+                if is_timestamp(s) {
+                    return "!!timestamp";
+                }
+            }
+        }
+    }
+    implicit_tag(v)
+}
+
+/// YAML 1.1 timestamp: `YYYY-M-D`, optionally followed by `T`/`t`/blanks, a
+/// `H:M:S[.frac]` time, and an optional blank-separated `Z` or `±H[:MM]` zone.
+fn is_timestamp(s: &str) -> bool {
+    fn digits(s: &str, min: usize, max: usize) -> Option<&str> {
+        let n = s.bytes().take_while(u8::is_ascii_digit).count();
+        (min..=max).contains(&n).then(|| &s[n..])
+    }
+    let Some(r) = digits(s, 4, 4) else { return false };
+    let Some(r) = r.strip_prefix('-').and_then(|r| digits(r, 1, 2)) else { return false };
+    let Some(r) = r.strip_prefix('-').and_then(|r| digits(r, 1, 2)) else { return false };
+    if r.is_empty() {
+        return true;
+    }
+    let r = match r.strip_prefix(['T', 't']) {
+        Some(r) => r,
+        None if r.starts_with([' ', '\t']) => r.trim_start_matches([' ', '\t']),
+        None => return false,
+    };
+    let Some(r) = digits(r, 1, 2) else { return false };
+    let Some(r) = r.strip_prefix(':').and_then(|r| digits(r, 2, 2)) else { return false };
+    let Some(mut r) = r.strip_prefix(':').and_then(|r| digits(r, 2, 2)) else { return false };
+    if let Some(f) = r.strip_prefix('.') {
+        r = f.trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    let r = r.trim_start_matches([' ', '\t']);
+    match r.strip_prefix(['Z', '+', '-']) {
+        _ if r.is_empty() => true,
+        Some(z) if r.starts_with('Z') => z.is_empty(),
+        Some(z) => digits(z, 1, 2).is_some_and(|t| t.is_empty() || t.strip_prefix(':').and_then(|m| digits(m, 2, 2)).is_some_and(str::is_empty)),
+        None => false,
+    }
+}
+
 /// `yq`'s `kind`: the four shapes a YAML node can have.
 pub fn kind_of(v: &JqVal) -> &'static str {
     if let JqVal::Node(n) = v {
