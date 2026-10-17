@@ -1781,10 +1781,18 @@ mod tests {
     #[test]
     fn repeated_preview_window_options_fold_together() {
         let look = Look::parse(
-            &["--preview-window=down:40%:wrap", "--preview-window", "+{2}+3/3"].map(String::from),
+            &[
+                "--preview-window=down:40%:wrap",
+                "--preview-window",
+                "+{2}+3/3",
+            ]
+            .map(String::from),
         );
         let w = look.preview_window;
-        assert_eq!((w.pos, w.size, w.wrap), (PreviewPos::Down, PreviewSize::Percent(40), true));
+        assert_eq!(
+            (w.pos, w.size, w.wrap),
+            (PreviewPos::Down, PreviewSize::Percent(40), true)
+        );
         assert!(w.scroll.is_some());
     }
 

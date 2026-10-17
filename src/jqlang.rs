@@ -2087,7 +2087,11 @@ impl Parser {
                         Some(loc) => Filter::Lit(loc),
                         None => Filter::Var(Rc::from(v.as_str())),
                     };
-                    let v = if v.starts_with("__loc__:") { "__loc__".to_string() } else { v };
+                    let v = if v.starts_with("__loc__:") {
+                        "__loc__".to_string()
+                    } else {
+                        v
+                    };
                     if self.is_op(":") {
                         (var, None)
                     } else {
@@ -2629,7 +2633,9 @@ fn eval_index(it: &Interp, f: &Filter, opt: bool, input: &JqVal, env: &Env, out:
         // gen_slice_index), so a generator in the index is the OUTER loop and the
         // term varies fastest: `[[1,2],[3,4]] | [.[][0,1]]` is `[1,3,2,4]`.
         Filter::Index(base, idx) => eval(it, idx, input, env, &mut |i| {
-            eval(it, base, input, env, &mut |v| step(index_value(&v, &i), out))
+            eval(it, base, input, env, &mut |v| {
+                step(index_value(&v, &i), out)
+            })
         }),
         Filter::Slice(base, lo, hi) => eval_opt(it, lo.as_deref(), input, env, &mut |lo_v| {
             eval_opt(it, hi.as_deref(), input, env, &mut |hi_v| {

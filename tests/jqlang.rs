@@ -1301,10 +1301,19 @@ fn modulemeta_refuses_non_string_input() {
 #[test]
 fn bsearch_follows_jq_1_8s_c_loop_on_any_input() {
     let probe = "[bsearch(-1,0,1,2,3,4,5,6)]";
-    assert_eq!(arb_run(probe, &["[1,3,2,5,0]"]).unwrap(), ["[-1,-1,0,2,-6,-6,-6,-6]"]);
-    assert_eq!(arb_run("[bsearch(1,3,0,9)]", &["[3,1]"]).unwrap(), ["[1,-3,-1,-3]"]);
+    assert_eq!(
+        arb_run(probe, &["[1,3,2,5,0]"]).unwrap(),
+        ["[-1,-1,0,2,-6,-6,-6,-6]"]
+    );
+    assert_eq!(
+        arb_run("[bsearch(1,3,0,9)]", &["[3,1]"]).unwrap(),
+        ["[1,-3,-1,-3]"]
+    );
     // Sorted input and the edges answer as they always did.
-    assert_eq!(arb_run("[bsearch(0,2,4)]", &["[1,2,3]"]).unwrap(), ["[-1,1,-4]"]);
+    assert_eq!(
+        arb_run("[bsearch(0,2,4)]", &["[1,2,3]"]).unwrap(),
+        ["[-1,1,-4]"]
+    );
     assert_eq!(arb_run("bsearch(1)", &["[]"]).unwrap(), ["-1"]);
     assert_eq!(arb_run("bsearch(nan)", &["[nan,1]"]).unwrap(), ["-1"]);
     assert_eq!(
@@ -1426,7 +1435,11 @@ fn foreach_empty_update_resets_state_to_null() {
 fn generator_in_index_is_the_outer_loop() {
     run_pinned(&[
         ("[.[][0,1]]", &["[[1,2],[3,4]]"], Some(&["[1,3,2,4]"])),
-        ("[(.[],.[])[0,1]]", &["[[1,2],[3,4]]"], Some(&["[1,3,1,3,2,4,2,4]"])),
+        (
+            "[(.[],.[])[0,1]]",
+            &["[[1,2],[3,4]]"],
+            Some(&["[1,3,1,3,2,4,2,4]"]),
+        ),
         (
             r#"[.[]["a","b"]]"#,
             &[r#"[{"a":1,"b":2},{"a":3,"b":4}]"#],
@@ -1447,6 +1460,10 @@ fn generator_in_index_is_the_outer_loop() {
             &["[[1,2],[3,4]]"],
             Some(&["[[1],[3],[1,2],[3,4],[],[],[2],[4]]"]),
         ),
-        ("[.[][0:(1,2)]]", &["[[1,2],[3,4]]"], Some(&["[[1],[3],[1,2],[3,4]]"])),
+        (
+            "[.[][0:(1,2)]]",
+            &["[[1,2],[3,4]]"],
+            Some(&["[[1],[3],[1,2],[3,4]]"]),
+        ),
     ]);
 }

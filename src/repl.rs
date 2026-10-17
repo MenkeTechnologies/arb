@@ -482,11 +482,7 @@ fn dispatch_line(
 
 /// The REPL on bare stdin lines — no editing, history or completion. Used
 /// when the line editor cannot run on this terminal.
-fn plain_line_loop(
-    buffer: &Arc<Mutex<Vec<String>>>,
-    cmd_count: &Arc<Mutex<u64>>,
-    start: Instant,
-) {
+fn plain_line_loop(buffer: &Arc<Mutex<Vec<String>>>, cmd_count: &Arc<Mutex<u64>>, start: Instant) {
     use std::io::{BufRead, Write};
     let stdin = std::io::stdin();
     loop {
