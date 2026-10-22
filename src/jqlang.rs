@@ -39,6 +39,7 @@
 //! `reduce`/`foreach`/path updates affordable — the same choice jq's own
 //! refcounted `jv` makes.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt::Write as _;
@@ -48,13 +49,57 @@ use std::rc::Rc;
 // Value model
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A jq value. `Num` carries the source literal when the number came from input
-/// text and has not been computed on, so `1.50` prints back as `1.50`.
+/// Where a number came from, which is what jq 1.8's decNumber build keys its
+/// number semantics on. A number PARSED from text (the document, the program,
+/// `tonumber`, `fromjson`) is a decimal literal: it prints as written, negates
+/// exactly, and two of them compare as decimals (`3.000000000000000000000001 ==
+/// 3` is false). A number COMPUTED by arithmetic or a builtin is a plain double
+/// and compares as one, so `(3 | . + 0) == 3.000000000000000000000001` is true.
+///
+/// Nearly every parsed number prints as its own double's shortest form, so the
+/// text is stored only when it differs; `Canonical` records that the number is
+/// a literal without paying for a string per number on the JSON reader's
+/// innermost path.
+#[derive(Debug, Clone)]
+pub enum NumLit {
+    /// Built by arithmetic or a builtin: a double and nothing more.
+    Computed,
+    /// Parsed from text that IS the double's shortest round-trip form, so
+    /// [`fmt_num`] reproduces it exactly and nothing need be kept.
+    Canonical,
+    /// Parsed from text that prints differently from the double (`1.50`,
+    /// `1E+17`, a 20-digit integer), kept in decNumber's canonical spelling.
+    Text(Rc<str>),
+}
+
+impl NumLit {
+    /// The stored spelling, when one had to be kept.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            NumLit::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The exact decimal this literal denotes, for a decNumber-style
+    /// comparison; `None` for a computed number, which jq compares as a double.
+    fn decimal(&self, n: f64) -> Option<Cow<'_, str>> {
+        match self {
+            NumLit::Computed => None,
+            NumLit::Canonical => Some(Cow::Owned(fmt_num(n))),
+            NumLit::Text(t) => Some(Cow::Borrowed(t)),
+        }
+    }
+}
+
+/// A jq value. `Num` carries its provenance ([`NumLit`]) so a literal keeps
+/// jq's decimal semantics until arithmetic touches it: `1.50` prints back as
+/// `1.50` and compares as the decimal it spells.
 #[derive(Debug, Clone)]
 pub enum JqVal {
     Null,
     Bool(bool),
-    Num(f64, Option<Rc<str>>),
+    Num(f64, NumLit),
     Str(Rc<str>),
     Arr(Rc<Vec<JqVal>>),
     /// Insertion-ordered key/value pairs. jq objects are small in practice, so a
@@ -76,7 +121,7 @@ pub enum JqVal {
 
 impl JqVal {
     pub fn num(v: f64) -> Self {
-        JqVal::Num(v, None)
+        JqVal::Num(v, NumLit::Computed)
     }
     pub fn str(s: impl Into<Rc<str>>) -> Self {
         JqVal::Str(s.into())
@@ -251,6 +296,19 @@ fn cmp_decimal(a: &str, b: &str) -> Option<Ordering> {
     })
 }
 
+/// Two number LITERALS compare as decimals, as jq 1.8's `jvp_number_cmp` does
+/// with decNumber: `100000000000000000001` is greater than
+/// `100000000000000000000` though both are one double, and
+/// `3.000000000000000000000001` is greater than `3`. A COMPUTED number on either
+/// side (`None`) compares as the double it is. Two canonical literals order as
+/// their doubles do, so the formatter is not run for the common case.
+fn cmp_literals(x: f64, la: &NumLit, y: f64, lb: &NumLit) -> Option<Ordering> {
+    if matches!((la, lb), (NumLit::Canonical, NumLit::Canonical)) {
+        return None;
+    }
+    cmp_decimal(&la.decimal(x)?, &lb.decimal(y)?)
+}
+
 fn cmp_with(a: &JqVal, b: &JqVal, total: bool) -> Ordering {
     let (ra, rb) = (a.order_rank(), b.order_rank());
     if ra != rb {
@@ -260,18 +318,12 @@ fn cmp_with(a: &JqVal, b: &JqVal, total: bool) -> Ordering {
     // reorder a sort, so both sides are unboxed before the comparison.
     let (a, b) = (a.bare(), b.bare());
     match (a, b) {
-        (JqVal::Num(x, _), JqVal::Num(y, _)) => match (x.is_nan(), y.is_nan()) {
+        (JqVal::Num(x, la), JqVal::Num(y, lb)) => match (x.is_nan(), y.is_nan()) {
             (true, true) if total => Ordering::Equal,
             (true, _) => Ordering::Less,
             (false, true) => Ordering::Greater,
-            // Two number LITERALS compare as decimals, as jq 1.8's
-            // `jvp_number_cmp` does with decNumber: `100000000000000000001` is
-            // greater than `100000000000000000000` though both are one double.
-            _ => match (a, b) {
-                (JqVal::Num(_, Some(la)), JqVal::Num(_, Some(lb))) => cmp_decimal(la, lb),
-                _ => None,
-            }
-            .unwrap_or_else(|| x.partial_cmp(y).unwrap_or(Ordering::Equal)),
+            _ => cmp_literals(*x, la, *y, lb)
+                .unwrap_or_else(|| x.partial_cmp(y).unwrap_or(Ordering::Equal)),
         },
         (JqVal::Str(x), JqVal::Str(y)) => x.cmp(y),
         (JqVal::Arr(x), JqVal::Arr(y)) => {
@@ -714,54 +766,57 @@ fn canonical_num_literal(text: &str) -> Option<String> {
 /// jq's unary minus. jq 1.8 negates a number that still carries its literal
 /// as a decNumber, so the literal survives: `-100000000000000000001` and
 /// `1.50 | -.` print exactly, and `-1E1000` is `-1E+1000` rather than the
-/// clamped double. A zero coefficient negates to itself (`-0.0` is `0.0`),
-/// which is decNumber's `0 - x`. Measured against jq 1.8.2.
-fn negate_num(n: f64, lit: Option<&str>) -> JqVal {
-    let Some(lit) = lit else {
-        return JqVal::num(-n);
+/// clamped double. A zero coefficient negates to itself (`-0.0` is `0.0`,
+/// `0 | -.` is `0` where the computed `(1-1) | -.` is `-0`), which is
+/// decNumber's `0 - x`. The double rides along with the decimal: a literal too
+/// small for a double (`1E-400`) is `+0.0` and negates to `-0.0`, so
+/// `-1e-400 * 0` is `-0` as it is in jq. Measured against jq 1.8.2.
+fn negate_num(n: f64, lit: &NumLit) -> JqVal {
+    let lit = match lit {
+        NumLit::Computed => return JqVal::num(-n),
+        // The shortest form of `-n` is the shortest form of `n` with the sign
+        // flipped, so the result is canonical too; a zero coefficient has
+        // nothing to flip.
+        NumLit::Canonical => return JqVal::Num(if n == 0.0 { 0.0 } else { -n }, NumLit::Canonical),
+        NumLit::Text(lit) => lit,
     };
-    let neg = if let Some(rest) = lit.strip_prefix('-') {
-        rest.to_string()
-    } else if lit
+    let zero_coefficient = lit
+        .trim_start_matches('-')
         .split(['E', 'e'])
         .next()
         .unwrap_or("")
         .bytes()
-        .all(|b| b == b'0' || b == b'.')
-    {
+        .all(|b| b == b'0' || b == b'.');
+    let neg = if let Some(rest) = lit.strip_prefix('-') {
+        rest.to_string()
+    } else if zero_coefficient {
         lit.to_string()
     } else {
         format!("-{lit}")
     };
-    let v = if n == 0.0 { 0.0 } else { -n };
-    // A zero stays a literal even when it prints like the double, so that
-    // negating it again is a decNumber negation too (`0 | -. | -.` is `0`).
-    if neg == fmt_num(v) && n != 0.0 {
-        JqVal::Num(v, None)
+    let v = if zero_coefficient { 0.0 } else { -n };
+    if neg == fmt_num(v) {
+        JqVal::Num(v, NumLit::Canonical)
     } else {
-        JqVal::Num(v, Some(Rc::from(neg.as_str())))
+        JqVal::Num(v, NumLit::Text(Rc::from(neg.as_str())))
     }
 }
 
-/// Build a number value from its source text, keeping the literal only when jq
-/// would print something other than the double's own shortest form.
+/// Build a number value from its source text. The number is a LITERAL either
+/// way; its text is stored only when jq would print something other than the
+/// double's own shortest form, and a `Canonical` literal is otherwise its
+/// equal — `9007199254740992` and `9007199254740993` share a double and still
+/// compare apart, because the first one's shortest form IS its digits.
 pub(crate) fn num_from_literal(n: f64, text: &str) -> JqVal {
-    // A ZERO literal is kept even when it prints like the double: a literal
-    // negates as a decNumber (`0 | -.` is `0`) while a computed zero negates as
-    // a double (`(1-1) | -.` is `-0`), so the two must stay distinguishable.
-    // So is one past 2^53, where distinct integer literals share a double and
-    // only the literal still tells them apart in a comparison.
-    if n == 0.0 || n.abs() >= 9_007_199_254_740_992.0 {
-        if let Some(c) = canonical_num_literal(text) {
-            return JqVal::Num(n, Some(Rc::from(c.as_str())));
-        }
-    }
     if is_plain_shortest(text) {
-        return JqVal::Num(n, None);
+        return JqVal::Num(n, NumLit::Canonical);
     }
     match canonical_num_literal(text) {
-        Some(c) if c != fmt_num(n) => JqVal::Num(n, Some(Rc::from(c.as_str()))),
-        _ => JqVal::Num(n, None),
+        Some(c) if c != fmt_num(n) => JqVal::Num(n, NumLit::Text(Rc::from(c.as_str()))),
+        Some(_) => JqVal::Num(n, NumLit::Canonical),
+        // Not a decimal at all (`Infinity`, `nan` from jq's own reader): jq
+        // holds those as plain doubles, never as decNumber literals.
+        None => JqVal::num(n),
     }
 }
 
@@ -858,8 +913,8 @@ fn write_val(out: &mut String, v: &JqVal) {
         JqVal::Bool(true) => out.push_str("true"),
         JqVal::Bool(false) => out.push_str("false"),
         JqVal::Num(n, lit) => match lit {
-            Some(t) => out.push_str(t),
-            None => out.push_str(&fmt_num(*n)),
+            NumLit::Text(t) => out.push_str(t),
+            _ => out.push_str(&fmt_num(*n)),
         },
         JqVal::Str(s) => write_json_str(out, s),
         JqVal::Arr(a) => {
@@ -2443,7 +2498,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             eval(it, b, input, env, out)
         }
         Filter::Neg(inner) => eval(it, inner, input, env, &mut |v| match v.bare() {
-            JqVal::Num(n, lit) => out(negate_num(*n, lit.as_deref())),
+            JqVal::Num(n, lit) => out(negate_num(*n, lit)),
             other => Err(JqErr::msg(format!(
                 "{}{} cannot be negated",
                 other.type_name(),
@@ -3609,8 +3664,10 @@ struct Tracked {
     /// The travelling value is a number a builtin or operator COMPUTED from the
     /// one at the path. A parsed number is a decNumber literal in jq and a
     /// computed one a double, so the two are never `jv_identical` even when
-    /// their values agree (`path(length)` over `5` refuses). arb stores both as
-    /// a bare `f64`, so the distinction rides on the state instead.
+    /// their values agree (`path(length)` over `5` refuses). A [`NumLit`] says
+    /// how a number was MADE, not whether this builtin made it — `length` hands
+    /// a positive literal straight back — so the distinction rides on the
+    /// state instead.
     computed: bool,
 }
 
@@ -3664,8 +3721,12 @@ fn identical(a: &JqVal, b: &JqVal) -> bool {
     match (a, b) {
         (JqVal::Null, JqVal::Null) => true,
         (JqVal::Bool(x), JqVal::Bool(y)) => x == y,
-        (JqVal::Num(x, None), JqVal::Num(y, None)) => x.to_bits() == y.to_bits(),
-        (JqVal::Num(_, Some(x)), JqVal::Num(_, Some(y))) => Rc::ptr_eq(x, y),
+        (JqVal::Num(_, NumLit::Text(x)), JqVal::Num(_, NumLit::Text(y))) => Rc::ptr_eq(x, y),
+        (JqVal::Num(_, NumLit::Text(_)), JqVal::Num(..))
+        | (JqVal::Num(..), JqVal::Num(_, NumLit::Text(_))) => false,
+        // A computed number and a canonical literal both are their bits; whether
+        // the travelling one was COMPUTED is `Tracked::computed`'s to say.
+        (JqVal::Num(x, _), JqVal::Num(y, _)) => x.to_bits() == y.to_bits(),
         (JqVal::Str(x), JqVal::Str(y)) => Rc::ptr_eq(x, y),
         (JqVal::Arr(x), JqVal::Arr(y)) => Rc::ptr_eq(x, y),
         (JqVal::Obj(x), JqVal::Obj(y)) => Rc::ptr_eq(x, y),
@@ -5078,7 +5139,7 @@ fn builtin(
             }
             // `jv_number_abs`: a literal drops its sign as a decNumber
             // (`decNumberAbs`), which is what negating it already does.
-            JqVal::Num(n, lit) if n.is_sign_negative() => negate_num(*n, lit.as_deref()),
+            JqVal::Num(n, lit) if n.is_sign_negative() => negate_num(*n, lit),
             JqVal::Num(..) => input.clone(),
             JqVal::Str(s) => JqVal::num(s.chars().count() as f64),
             JqVal::Arr(a) => JqVal::num(a.len() as f64),
@@ -5653,7 +5714,7 @@ fn builtin(
                 }
             };
             let mut res = Vec::new();
-            flatten_into(&top, d as i64, &mut res);
+            flatten_into(&top, d, &mut res);
             out(JqVal::arr(res))
         }
 
@@ -5909,12 +5970,12 @@ fn keyed_elements(
     Ok(keyed)
 }
 
-fn flatten_into(a: &[JqVal], depth: i64, out: &mut Vec<JqVal>) {
+fn flatten_into(a: &[JqVal], depth: f64, out: &mut Vec<JqVal>) {
     for e in a {
         // Whether an element RECURSES is about its value; what comes out is the
         // element itself, box and all.
         match e.bare() {
-            JqVal::Arr(inner) if depth > 0 => flatten_into(inner, depth - 1, out),
+            JqVal::Arr(inner) if depth != 0.0 => flatten_into(inner, depth - 1.0, out),
             _ => out.push(e.clone()),
         }
     }

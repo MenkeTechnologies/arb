@@ -34,7 +34,7 @@
 //! reports where it was read from. That is stated rather than hidden — the
 //! alternative is a reference cycle through `Rc` for the whole document.
 
-use crate::jqlang::JqVal;
+use crate::jqlang::{JqVal, NumLit};
 use std::rc::Rc;
 
 /// How a scalar (or collection) was written in the source.
@@ -265,8 +265,8 @@ pub fn quote_scalar_value(v: &JqVal) -> String {
         JqVal::Null => "null".to_string(),
         JqVal::Bool(b) => b.to_string(),
         JqVal::Num(n, lit) => match lit {
-            Some(t) => t.to_string(),
-            None => crate::jqlang::fmt_num(*n),
+            NumLit::Text(t) => t.to_string(),
+            _ => crate::jqlang::fmt_num(*n),
         },
         JqVal::Str(s) => quote_scalar(s, Style::Plain),
         other => crate::jqlang::render(other),
@@ -280,8 +280,8 @@ pub fn implicit_tag(v: &JqVal) -> &'static str {
         JqVal::Bool(_) => "!!bool",
         JqVal::Num(n, lit) => {
             let is_int = match lit {
-                Some(l) => !l.contains(['.', 'e', 'E']),
-                None => n.fract() == 0.0 && n.is_finite(),
+                NumLit::Text(l) => !l.contains(['.', 'e', 'E']),
+                _ => n.fract() == 0.0 && n.is_finite(),
             };
             if is_int {
                 "!!int"
@@ -794,8 +794,8 @@ fn inline(v: &JqVal, o: Emit) -> String {
         JqVal::Null => "null".to_string(),
         JqVal::Bool(b) => b.to_string(),
         JqVal::Num(n, lit) => match lit {
-            Some(t) => t.to_string(),
-            None => crate::jqlang::fmt_num(*n),
+            NumLit::Text(t) => t.to_string(),
+            _ => crate::jqlang::fmt_num(*n),
         },
         // `!!str 123` needs no quotes — the tag is what makes it a string, and
         // quoting it as well is not what the file said.

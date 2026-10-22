@@ -570,7 +570,11 @@ program on arb's jq engine, whose value model is jq's: object keys keep INSERTIO
 order (`keys_unsorted` and `to_entries` expose it), and a number keeps the source
 LITERAL it was read with until arithmetic touches it, printed in decNumber's
 canonical form — so `1.50` stays `1.50`, `1e2` prints as `1E+2`, and
-`12345678901234567890` round-trips.
+`12345678901234567890` round-trips. Two literals compare as the decimals they
+spell, whatever their spelling (`3.000000000000000000000001 == 3` is false, and
+`sort`/`unique`/`group_by` keep the two apart); a number arithmetic has touched
+compares as the double it is, on either side. A literal below the smallest
+double is `0.0` carrying the literal's sign, so `-1e-400 * 0` is `-0`.
 
 Names resolve at COMPILE time, as jq's do. A word that is neither an arb verb nor
 a jq builtin is still arb's `unknown verb`, not a jq runtime failure — a typo'd

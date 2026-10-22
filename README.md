@@ -570,8 +570,11 @@ keep INSERTION order, so `keys_unsorted` and `to_entries` report the document's
 own order while `keys` sorts. And a number keeps the source LITERAL it was read
 with until arithmetic touches it, printed in decNumber's canonical form: `1.50`
 stays `1.50`, `1e2` prints as `1E+2`, `12345678901234567890` round-trips, and
-`. + 0` on any of them collapses to the double. A top-level JSON string renders
-RAW, as `jq -r` prints one — a line reading `"hello"` is `hello`.
+`. + 0` on any of them collapses to the double. Two literals also COMPARE as the
+decimals they spell, whatever their spelling: `3.000000000000000000000001 == 3`
+is false and `sort`/`unique`/`group_by` keep the two apart, while a computed
+number on either side compares as the double it is. A top-level JSON string
+renders RAW, as `jq -r` prints one — a line reading `"hello"` is `hello`.
 
 All of that is checked by `scripts/jq_parity.sh`, which runs arb and the
 reference tool over one corpus and byte-diffs stdout. Six probe kinds:

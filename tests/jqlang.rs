@@ -1019,6 +1019,78 @@ fn literals_compare_as_decimals_and_zero_keeps_jq_sign() {
     ]);
 }
 
+/// jq 1.8 compares two number LITERALS as decimals whatever their spelling:
+/// `3.000000000000000000000001 == 3` is false although both are the double
+/// `3.0`, and `sort`/`unique`/`group_by` keep them apart. arb only compared
+/// as decimals when BOTH literals had kept a text, and `3` — its own shortest
+/// form — kept none, so it fell back to the double and answered `true`. A
+/// COMPUTED number (`. + 0`, `. * 1`) is a double on either side, so it
+/// compares as one; a negated literal is still a literal.
+#[test]
+fn a_canonical_literal_still_compares_as_a_decimal() {
+    run_pinned(&[
+        (
+            "[3.000000000000000000000001 == 3, (3.000000000000000000000001 > 3), (3.0 == 3), (3.000000000000000000000001 | . + 0 == 3), (3.000000000000000000000001 | . == (3 | . * 1))]",
+            &["null"],
+            Some(&["[false,true,true,true,true]"]),
+        ),
+        (
+            "sort, unique, (group_by(.) | map(length)), map(. == 3), index(3), (map(. + 0) | unique)",
+            &["[3.000000000000000000000001, 3, 3.0]"],
+            Some(&[
+                "[3,3.0,3.000000000000000000000001]",
+                "[3,3.000000000000000000000001]",
+                "[2,1]",
+                "[false,true,true]",
+                "1",
+                "[3]",
+            ]),
+        ),
+        (
+            "map(. == 0.1), unique, (map(. + 0) | unique)",
+            &["[0.1, 0.10000000000000001, 0.1000000000000000055511151231257827]"],
+            Some(&[
+                "[true,false,false]",
+                "[0.1,0.1000000000000000055511151231257827,0.10000000000000001]",
+                "[0.1]",
+            ]),
+        ),
+        // `9007199254740992` prints as its own digits and shares a double with
+        // `9007199254740993`; negating it keeps it a literal.
+        (
+            "[9007199254740993 == 9007199254740992, (9007199254740993 > 9007199254740992), ((9007199254740992 | -.) == -9007199254740993), ((9007199254740992 | . + 0) == 9007199254740993)]",
+            &["null"],
+            Some(&["[false,true,false,true]"]),
+        ),
+    ]);
+}
+
+/// A literal too small for a double is `0.0` with the literal's sign carried
+/// into the double, as decNumber's conversion gives: `-1e-400 * 0` is `-0`.
+/// arb negated `1e-400`'s double to `+0.0`, so the product printed `0`. A zero
+/// COEFFICIENT (`0`, `-0`) still negates to the unsigned `0`.
+#[test]
+fn an_underflowing_literal_negates_to_negative_zero() {
+    run_pinned(&[(
+        "[-1e-400 * 0, (1e-400 | -. | . * 0), (-1e-400 | floor), (0 | -.), (-0 | -.), ((1 - 1) | -.), (-1e-400 | -. | . * 0)]",
+        &["null"],
+        Some(&["[-0,-0,-0,0,0,-0,0]"]),
+    )]);
+}
+
+/// builtin.jq: `_flatten($x)` recurses while `$x != 0`, decrementing by one, so
+/// a FRACTIONAL depth never reaches zero and flattens every level, exactly as
+/// the no-argument `flatten` (`_flatten(-1)`) does. arb truncated the depth to
+/// an integer, so `flatten(0.5)` flattened nothing.
+#[test]
+fn flatten_depth_follows_jq_down_to_fractions() {
+    run_pinned(&[(
+        "flatten(0.5), flatten(1.5), flatten(1), flatten(0), flatten",
+        &["[1,[2,[3]]]"],
+        Some(&["[1,2,3]", "[1,2,3]", "[1,2,[3]]", "[1,[2,[3]]]", "[1,2,3]"]),
+    )]);
+}
+
 /// parser.y: `"try" Expr "catch" Expr` binds tighter than every binary
 /// operator, so each side is one Term — and `'-' Term` is a Term.
 #[test]

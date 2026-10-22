@@ -54,7 +54,7 @@
 //! than taken from yq's documentation, and `scripts/jq_parity.sh`'s
 //! `yq_roundtrip_probe` is what checks the whole set byte-for-byte.
 
-use crate::jqlang::JqVal;
+use crate::jqlang::{JqVal, NumLit};
 use crate::ynode::{NodeMeta, Style};
 use saphyr_parser::{Event, Parser, ScalarStyle, Span};
 use std::collections::HashMap;
@@ -836,7 +836,7 @@ fn raw_if_needed(text: &str, style: ScalarStyle, v: &JqVal) -> Rc<str> {
     // the compose time on a 20k-record document.
     match v {
         // A number that kept its literal renders as that literal.
-        JqVal::Num(_, Some(lit)) => {
+        JqVal::Num(_, NumLit::Text(lit)) => {
             return if &**lit == text {
                 crate::ynode::empty_str()
             } else {
