@@ -295,7 +295,7 @@ impl Parser {
     }
 }
 
-fn unhex4(h: &[u8]) -> Option<u32> {
+pub(crate) fn unhex4(h: &[u8]) -> Option<u32> {
     let s = std::str::from_utf8(h).ok()?;
     if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;

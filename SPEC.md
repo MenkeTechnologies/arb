@@ -393,7 +393,10 @@ re-entered over a `null` input, and `break $l` as the error jq compiles it to
 (`$l | error`, the label value being `{"__jq": n}`): a `try`/`?` between a
 `break` and its label catches it with that object, a handler that re-raises it
 still ends the label, and `n` counts every label the run entered, builtin.jq's
-own included. fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
+own included, and input string bodies decoded as `jv_parse.c` decodes them: a
+high surrogate with no low one after it, a non-hex `\u` body and a raw control
+byte make the line non-JSON (so it keeps the text reading) instead of a repaired
+value jq never produces. fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
 
 | leg | reference | containment | status |
 |---|---|---|---|

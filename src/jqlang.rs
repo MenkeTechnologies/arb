@@ -449,6 +449,12 @@ pub fn parse_json_stream(src: &str) -> Result<Vec<JqVal>, String> {
     }
 }
 
+/// jq's refusals for the two string bodies this reader used to repair instead:
+/// a raw control byte, and a high surrogate with no low one after it.
+const UNESCAPED_CONTROL: &str =
+    "Invalid string: control characters from U+0000 through U+001F must be escaped";
+const BAD_SURROGATE_PAIR: &str = "Invalid \\uXXXX\\uXXXX surrogate pair escape";
+
 struct JsonParser<'a> {
     b: &'a [u8],
     i: usize,
@@ -531,6 +537,7 @@ impl JsonParser<'_> {
                     return Ok(Rc::from(raw));
                 }
                 b'\\' => break,
+                0..=0x1f => return Err(UNESCAPED_CONTROL.into()),
                 _ => j += 1,
             }
         }
@@ -566,33 +573,36 @@ impl JsonParser<'_> {
                         b't' => s.push('\t'),
                         b'u' => {
                             let hi = self.hex4()?;
-                            // A high surrogate must pair with the `\uDC00`-range
-                            // low one that follows, or the code point is lost.
-                            let ch = if (0xD800..0xDC00).contains(&hi)
-                                && self.b.get(self.i) == Some(&b'\\')
-                                && self.b.get(self.i + 1) == Some(&b'u')
-                            {
-                                let save = self.i;
+                            // jv_parse.c's `found_string`: a high surrogate must be
+                            // followed by a `\u` low one, or the whole text is
+                            // refused. A lone LOW surrogate is kept, and becomes
+                            // U+FFFD the way `jv_string_sized` repairs it.
+                            let cp = if (0xD800..0xDC00).contains(&hi) {
+                                if self.b.get(self.i..self.i + 2) != Some(&b"\\u"[..]) {
+                                    return Err(BAD_SURROGATE_PAIR.into());
+                                }
                                 self.i += 2;
                                 let lo = self.hex4()?;
-                                if (0xDC00..0xE000).contains(&lo) {
-                                    char::from_u32(0x1_0000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
-                                } else {
-                                    self.i = save;
-                                    None
+                                if !(0xDC00..0xE000).contains(&lo) {
+                                    return Err(BAD_SURROGATE_PAIR.into());
                                 }
+                                0x1_0000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
                             } else {
-                                char::from_u32(hi)
+                                hi
                             };
-                            s.push(ch.unwrap_or('\u{fffd}'));
+                            s.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
                         }
                         other => return Err(format!("bad escape `\\{}`", other as char)),
                     }
                 }
                 Some(_) => {
                     let start = self.i;
-                    while !matches!(self.b.get(self.i), None | Some(b'"') | Some(b'\\')) {
-                        self.i += 1;
+                    while let Some(&c) = self.b.get(self.i) {
+                        match c {
+                            b'"' | b'\\' => break,
+                            0..=0x1f => return Err(UNESCAPED_CONTROL.into()),
+                            _ => self.i += 1,
+                        }
                     }
                     s.push_str(
                         std::str::from_utf8(&self.b[start..self.i]).map_err(|e| e.to_string())?,
@@ -607,8 +617,8 @@ impl JsonParser<'_> {
             .get(self.i..self.i + 4)
             .ok_or("truncated \\u escape")?;
         self.i += 4;
-        u32::from_str_radix(std::str::from_utf8(s).map_err(|e| e.to_string())?, 16)
-            .map_err(|e| e.to_string())
+        // Exactly four hex digits: `from_str_radix` alone would also take `+04`.
+        crate::jvparse::unhex4(s).ok_or_else(|| "Invalid characters in \\uXXXX escape".into())
     }
     fn array(&mut self) -> Result<JqVal, String> {
         self.i += 1;

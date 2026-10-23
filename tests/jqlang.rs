@@ -1637,3 +1637,50 @@ fn label_numbers_count_every_label_jq_enters() {
         ),
     ]);
 }
+
+/// The input reader takes a string body exactly as `jv_parse.c` does. A lone
+/// LOW surrogate is kept and repaired to U+FFFD, a pair joins, and an escaped
+/// control character decodes; jq 1.8.2 answers all of these.
+#[test]
+fn input_strings_decode_as_jv_parse_does() {
+    run_pinned(&[
+        (r#"explode"#, &[r#""\udc00""#], Some(&["[65533]"])),
+        (r#"explode"#, &[r#""😀""#], Some(&["[128512]"])),
+        (r#"explode"#, &[r#""􏿿""#], Some(&["[1114111]"])),
+        (r#"length"#, &[r#""a\tb""#], Some(&["3"])),
+        (r#".k"#, &[r#"{"k":"Aé"}"#], Some(&["Aé"])),
+    ]);
+}
+
+/// What `jv_parse.c` REFUSES in a string body is not JSON, so the line keeps
+/// SPEC §8's text reading — it is the line itself, never a repaired decode.
+/// Before, the strict reader took a high surrogate with no low one after it
+/// (`"\ud800"`), a non-hex `\u` body (`\u+041`) and a raw control byte, and
+/// invented a value from each that jq never produces.
+#[test]
+fn input_strings_jq_refuses_are_not_decoded() {
+    let refused: &[&str] = &[
+        r#""\ud800""#,
+        r#""\ud800A""#,
+        r#""\ud800\ud800""#,
+        r#"["\ud800","x"]"#,
+        r#"{"k":"\udbff"}"#,
+        r#""\u+041""#,
+        r#""\u00zz""#,
+        "\"a\tb\"",
+        "[\"a\u{1}\"]",
+    ];
+    for line in refused {
+        assert_eq!(arb_run(".", &[line]).unwrap(), vec![*line], "{line:?}");
+        assert_eq!(
+            arb_run("type", &[line]).unwrap(),
+            vec!["string"],
+            "{line:?}"
+        );
+    }
+    if reference_ok() {
+        for line in refused {
+            assert_eq!(jq_run(".", &[line]), None, "jq 1.8 refuses {line:?}");
+        }
+    }
+}
