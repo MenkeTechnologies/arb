@@ -1645,10 +1645,10 @@ fn label_numbers_count_every_label_jq_enters() {
 fn input_strings_decode_as_jv_parse_does() {
     run_pinned(&[
         (r#"explode"#, &[r#""\udc00""#], Some(&["[65533]"])),
-        (r#"explode"#, &[r#""😀""#], Some(&["[128512]"])),
-        (r#"explode"#, &[r#""􏿿""#], Some(&["[1114111]"])),
+        (r#"explode"#, &[r#""\ud83d\ude00""#], Some(&["[128512]"])),
+        (r#"explode"#, &[r#""\uDBFF\uDFFF""#], Some(&["[1114111]"])),
         (r#"length"#, &[r#""a\tb""#], Some(&["3"])),
-        (r#".k"#, &[r#"{"k":"Aé"}"#], Some(&["Aé"])),
+        (r#".k"#, &[r#"{"k":"\u0041\u00e9"}"#], Some(&["Aé"])),
     ]);
 }
 
@@ -1661,7 +1661,7 @@ fn input_strings_decode_as_jv_parse_does() {
 fn input_strings_jq_refuses_are_not_decoded() {
     let refused: &[&str] = &[
         r#""\ud800""#,
-        r#""\ud800A""#,
+        r#""\ud800\u0041""#,
         r#""\ud800\ud800""#,
         r#"["\ud800","x"]"#,
         r#"{"k":"\udbff"}"#,
