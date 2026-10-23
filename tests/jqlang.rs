@@ -1539,3 +1539,101 @@ fn generator_in_index_is_the_outer_loop() {
         ),
     ]);
 }
+
+/// `break $l` is `$l | error` in jq 1.8 (parser.y's `BREAK BINDING`), the label's
+/// value being the `{"__jq": n}` object GENLABEL pushes, and `label $l | body` is
+/// `try body catch if . == $l then empty else error end` (`gen_label`). So a
+/// `try`/`?` between a `break` and its label CATCHES it with that object as the
+/// payload, and a handler that re-raises it still ends the label. arb used to
+/// unwind a break straight past every `try`, so `(break $x)?, 9` lost the `9`
+/// and `try … catch` never ran its handler.
+#[test]
+fn break_is_an_error_a_try_between_it_and_its_label_catches() {
+    run_pinned(&[
+        (
+            "[label $x | try break $x catch .]",
+            &["null"],
+            Some(&[r#"[{"__jq":0}]"#]),
+        ),
+        (
+            "[label $x | try (1, break $x, 2) catch \"c\"]",
+            &["null"],
+            Some(&[r#"[1,"c"]"#]),
+        ),
+        ("[label $x | (break $x)?, 9]", &["null"], Some(&["[9]"])),
+        // The break raised in a HANDLER is not caught by that handler's try.
+        (
+            "[label $x | 1, (try error(\"e\") catch break $x), 2]",
+            &["null"],
+            Some(&["[1]"]),
+        ),
+        (
+            "[label $x | try (label $y | break $x) catch \"c\"]",
+            &["null"],
+            Some(&[r#"["c"]"#]),
+        ),
+        (
+            "[label $a | label $b | try break $a catch .]",
+            &["null"],
+            Some(&[r#"[{"__jq":0}]"#]),
+        ),
+        // Re-raised by the handler: the label still stops on it, by value.
+        (
+            "[label $x | try break $x catch error]",
+            &["null"],
+            Some(&["[]"]),
+        ),
+        (
+            "[label $x | try (try break $x catch error) catch .]",
+            &["null"],
+            Some(&[r#"[{"__jq":0}]"#]),
+        ),
+        // `//` does not catch errors, so it does not catch a break either.
+        (
+            "[label $x | ((break $x), 1) // 5]",
+            &["null"],
+            Some(&["[]"]),
+        ),
+        (
+            r#"[.[] | label $x | try (if . == 2 then break $x else . end) catch "b\(.__jq)"]"#,
+            &["[1,2,3]"],
+            Some(&[r#"[1,"b1",3]"#]),
+        ),
+    ]);
+}
+
+/// The `n` in a label's `{"__jq": n}` is `jq->next_label++`: it counts every
+/// label entered in the run — across input documents (only `jq_init` resets it),
+/// and including the ones jq's own builtin.jq enters: one per `first`/`isempty`/
+/// `any`/`all`, one per path of `_modify` (`|=` and every arithmetic update), and
+/// one per replacement in `sub`'s `.result[$ix] += …`.
+#[test]
+fn label_numbers_count_every_label_jq_enters() {
+    run_pinned(&[
+        (
+            "[label $x | try break $x catch .]",
+            &["1", "2"],
+            Some(&[r#"[{"__jq":0}]"#, r#"[{"__jq":1}]"#]),
+        ),
+        (
+            "[1,2] | .[] += 1 | [label $x | try break $x catch .]",
+            &["null"],
+            Some(&[r#"[{"__jq":2}]"#]),
+        ),
+        (
+            r#""aaa" | [gsub("a"; "b","c")] | [label $x | try break $x catch .]"#,
+            &["null"],
+            Some(&[r#"[{"__jq":6}]"#]),
+        ),
+        (
+            "[1,2] | all(. > 0), any(. > 1), [label $x | try break $x catch .]",
+            &["null"],
+            Some(&["true", "true", r#"[{"__jq":2}]"#]),
+        ),
+        (
+            "[1,2] | [path(first(.[]))], [label $x | try break $x catch .]",
+            &["null"],
+            Some(&["[[0]]", r#"[{"__jq":1}]"#]),
+        ),
+    ]);
+}

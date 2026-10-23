@@ -559,7 +559,9 @@ construction, `if`/`elif`, `try`/`catch` and `?`, `//`, `..`, `as` bindings with
 destructuring and `?//`, `reduce`/`foreach`, `label`/`break`, `def` (with filter
 and value parameters, and recursion), string interpolation and every `@format`,
 the whole assignment family, the path builtins, the regex family and the stream
-builtins all answer exactly as jq does. The xpath front-end is still a documented
+builtins all answer exactly as jq does. That includes jq's reading of
+`break $l` as an ERROR (`$l | error`, the label value `{"__jq": n}`): a `try` or
+`?` between a `break` and its label catches it, as in jq. The xpath front-end is still a documented
 subset: anything outside it is a **hard error** (`xpath: …`), never silently
 guessed. So is a TYPE mismatch on either side — `null | .[]`, `true | length`,
 `{"a":1} | . + 3` and `.n / 0` all refuse and exit non-zero, because jq refuses

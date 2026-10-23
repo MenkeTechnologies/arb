@@ -369,8 +369,11 @@ pub fn eq_vals(a: &JqVal, b: &JqVal) -> bool {
 // Errors
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A jq runtime signal. `Break` is not a failure — it is how `label $l | … |
-/// break $l` unwinds, and how `first`/`limit`/`any`/`all` stop early.
+/// A jq runtime signal. `Break` is how `label $l | … | break $l` unwinds, and
+/// how `first`/`limit`/`any`/`all` stop early. In jq a `break` IS an error —
+/// `break $l` compiles to `$l | error`, the label's value being the object
+/// GENLABEL pushed — so a `try`/`?` between the `break` and its label catches
+/// it with that object as the payload (see [`caught_payload`]).
 #[derive(Debug)]
 pub enum JqErr {
     /// `error(v)`. The payload is a jq VALUE, because `try f catch .` receives it.
@@ -2341,6 +2344,13 @@ impl Default for Interp {
 }
 
 impl Interp {
+    /// Enter a label: GENLABEL's `jq->next_label++`, first label `0`.
+    fn next_label(&self) -> u64 {
+        let id = self.labels.get();
+        self.labels.set(id + 1);
+        id
+    }
+
     /// Seed the document queue from the raw input lines.
     pub fn set_input_lines(&self, lines: Vec<String>) {
         *self.inputs.borrow_mut() = lines.into();
@@ -2390,7 +2400,42 @@ impl Interp {
 fn wrap_downstream(e: JqErr) -> JqErr {
     match e {
         JqErr::Err(v) => JqErr::Err(JqVal::arr(vec![JqVal::str(DOWNSTREAM_TAG), v])),
+        // A `break` raised downstream is an error raised downstream (TRY_END
+        // wraps it like any other), so it is wrapped as the error it is.
+        JqErr::Break(id) => JqErr::Err(JqVal::arr(vec![
+            JqVal::str(DOWNSTREAM_TAG),
+            label_value(id),
+        ])),
         other => other,
+    }
+}
+
+/// The value jq's GENLABEL pushes for a label: `{"__jq": n}`, `n` counting the
+/// labels entered so far in this run (`jq->next_label++`, reset only by
+/// `jq_init`, so it keeps counting across input documents).
+fn label_value(id: u64) -> JqVal {
+    JqVal::obj(vec![(Rc::from("__jq"), JqVal::num(id as f64))])
+}
+
+/// Whether `e` ends the label numbered `id`. jq's `label $l | body` is
+/// `try body catch if . == $l then empty else error end` (`gen_label`), so it
+/// stops on the `break` itself and equally on any error whose payload equals
+/// the label value — a `try … catch error` that caught the break and re-raised.
+fn breaks_to(e: &JqErr, id: u64) -> bool {
+    match e {
+        JqErr::Break(b) => *b == id,
+        JqErr::Err(v) => eq_vals(v, &label_value(id)),
+        JqErr::Halt(..) => false,
+    }
+}
+
+/// What a `try`/`?` catches from its body: an error's payload, or a `break`'s
+/// label value (the error `break` raises in jq). `halt` is not catchable.
+fn caught_payload(e: JqErr) -> Result<JqVal, JqErr> {
+    match e {
+        JqErr::Err(v) => Ok(v),
+        JqErr::Break(id) => Ok(label_value(id)),
+        halt @ JqErr::Halt(..) => Err(halt),
     }
 }
 
@@ -2487,8 +2532,7 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
                 Ok(()) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
-                    Err(JqErr::Err(_)) => Ok(()),
-                    Err(other) => Err(other),
+                    Err(caught) => caught_payload(caught).map(drop),
                 },
             }
         }
@@ -2551,11 +2595,13 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
                 Ok(()) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
-                    Err(JqErr::Err(payload)) => match handler {
-                        Some(h) => eval(it, h, &payload, env, out),
-                        None => Ok(()),
-                    },
-                    Err(other) => Err(other),
+                    Err(caught) => {
+                        let payload = caught_payload(caught)?;
+                        match handler {
+                            Some(h) => eval(it, h, &payload, env, out),
+                            None => Ok(()),
+                        }
+                    }
                 },
             }
         }
@@ -2621,13 +2667,12 @@ fn eval(it: &Interp, f: &Filter, input: &JqVal, env: &Env, out: Sink) -> R<()> {
             })
         }),
         Filter::Label(name, body) => {
-            let id = it.labels.get() + 1;
-            it.labels.set(id);
+            let id = it.next_label();
             let benv = env.bind(label_key(name), JqVal::num(id as f64));
             match eval(it, body, input, &benv, &mut |v| {
                 out(v).map_err(wrap_downstream)
             }) {
-                Err(JqErr::Break(b)) if b == id => Ok(()),
+                Err(e) if breaks_to(&e, id) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
                     Err(other) => Err(other),
@@ -3825,13 +3870,12 @@ fn eval_paths(
             })
         }),
         Filter::Label(name, body) => {
-            let id = it.labels.get() + 1;
-            it.labels.set(id);
+            let id = it.next_label();
             let benv = env.bind(label_key(name), JqVal::num(id as f64));
             match eval_paths(it, body, input, pre, val, &benv, &mut |p, v| {
                 out(p, v).map_err(wrap_downstream)
             }) {
-                Err(JqErr::Break(b)) if b == id => Ok(()),
+                Err(e) if breaks_to(&e, id) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
                     Err(other) => Err(other),
@@ -3945,11 +3989,13 @@ fn eval_try_paths(
         Ok(()) => Ok(()),
         Err(e) => match unwrap_downstream(e) {
             Ok(real) => Err(real),
-            Err(JqErr::Err(payload)) => match handler {
-                Some(h) => eval_paths(it, h, &payload, pre, &payload, env, out),
-                None => Ok(()),
-            },
-            Err(other) => Err(other),
+            Err(caught) => {
+                let payload = caught_payload(caught)?;
+                match handler {
+                    Some(h) => eval_paths(it, h, &payload, pre, &payload, env, out),
+                    None => Ok(()),
+                }
+            }
         },
     }
 }
@@ -4223,14 +4269,14 @@ fn eval_call_paths(
         ("recurse", 0) => recurse_paths(pre, val, out),
         ("recurse", 1) => recurse_paths_f(it, &args[0], input, pre, val, env, out),
         ("first", 1) => {
-            let mut done = false;
+            // `def first(f): label $out | f | ., break $out` — one label entered.
+            let id = it.next_label();
             let r = eval_paths(it, &args[0], input, pre, val, env, &mut |p, v| {
-                done = true;
                 out(p, v).map_err(wrap_downstream)?;
-                Err(JqErr::Break(u64::MAX))
+                Err(JqErr::Break(id))
             });
             match r {
-                Err(JqErr::Break(b)) if b == u64::MAX && done => Ok(()),
+                Err(e) if breaks_to(&e, id) => Ok(()),
                 Err(e) => match unwrap_downstream(e) {
                     Ok(real) => Err(real),
                     Err(other) => Err(other),
@@ -4780,8 +4826,8 @@ fn eval_assign(
                 None => get_path(&cur, &p)?,
                 Some(st) => get_path(&index_value(st, &JqVal::num(0.0))?, &p)?,
             };
-            let id = it.labels.get() + 1;
-            it.labels.set(id);
+            // `_modify`'s `label $out`, entered once per path.
+            let id = it.next_label();
             let mut outputs = 0usize;
             let mut stored = None;
             let mut state = None;
@@ -4795,7 +4841,7 @@ fn eval_assign(
                 Err(JqErr::Break(id))
             }) {
                 Ok(()) => {}
-                Err(JqErr::Break(b)) if b == id => {}
+                Err(e) if breaks_to(&e, id) => {}
                 Err(e) => return Err(e),
             }
             match (state, stored, &literal) {
@@ -4844,6 +4890,11 @@ fn eval_assign(
             },
         )?;
         for p in paths {
+            // Every form but `=` is `_modify(lhs; . op $tmp)` in jq
+            // (`gen_update`), whose `label $out` is entered once per path.
+            if op != AssignOp::Set {
+                it.next_label();
+            }
             let newv = match op {
                 AssignOp::Set => rv.clone(),
                 AssignOp::Alt => {
@@ -6423,6 +6474,8 @@ fn regex_sub(
         // fails as that ADDITION does (`string ("") and number (1) cannot be
         // added`); a successful `string + x` is always a string.
         for (ix, r) in inserts.iter().enumerate() {
+            // `.result[$ix] += …` is a `_modify`, entering one label.
+            it.next_label();
             let piece = render_raw(&binop(BinOp::Add, &JqVal::str(gap), r)?);
             match results.get_mut(ix) {
                 Some(acc) => acc.push_str(&piece),
@@ -6723,13 +6776,13 @@ def flatten($x): _flatten($x);
 def ltrimstr($left): if startswith($left) then .[($left|length):] else . end;
 def rtrimstr($right): if endswith($right) then .[:length - ($right|length)] else . end;
 def range($x): range(0; $x);
-def isempty(g): label $go | (g|false, break $go), true;
 def first(f): label $out | (f | ., break $out);
+def isempty(g): first((g|false), true);
 def first: .[0];
 def last(f): reduce f as $x (null; [$x]) | values | .[0];
 def last: .[-1];
-def any(g; y): isempty(first(g | y or empty)) | not;
-def all(g; y): isempty(first(g | y and empty));
+def any(g; y): isempty(g | y or empty) | not;
+def all(g; y): isempty(g | y and empty);
 def any(y): any(.[]; y);
 def all(y): all(.[]; y);
 def any: any(.);

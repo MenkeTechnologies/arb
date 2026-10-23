@@ -388,8 +388,12 @@ tracking in destructuring patterns, `and`/`or` and the right-hand side of an
 arithmetic assignment, `walk`/`map_values`/`from_entries`/`sub`/`gsub`/`splits`
 as jq's own definitions, a parsed number never being `jv_identical` to one a
 builtin computed from it, an update stopping at its first output, `?//`
-catching what is raised downstream of it (a `break` included), and `reduce`
-re-entered over a `null` input. fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
+catching what is raised downstream of it (a `break` included), `reduce`
+re-entered over a `null` input, and `break $l` as the error jq compiles it to
+(`$l | error`, the label value being `{"__jq": n}`): a `try`/`?` between a
+`break` and its label catches it with that object, a handler that re-raises it
+still ends the label, and `n` counts every label the run entered, builtin.jq's
+own included. fixes). The 825 above is the last run WITH `yq`; it was not re-measured since.
 
 | leg | reference | containment | status |
 |---|---|---|---|
