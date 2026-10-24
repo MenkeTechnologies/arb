@@ -1921,6 +1921,10 @@ fn pipeline_from_body(
 ) -> Result<Vec<QueryOp>, crate::err::SpecError> {
     let mut ops = Vec::new();
     let mut saw_in = false;
+    // The stream holds JSON VALUES rather than markup: a JSON-family reader
+    // opened it and no HTML/XML step (`sel`, `find`, an xpath step) has run
+    // since. Over such a stream a leading `@` cannot be an attribute step.
+    let mut json_values = false;
     for c in cmds {
         // Process one op; on error, anchor the diagnostic to THIS (nested) verb's
         // source position, not the outer `source`/`out` command (the IIFE lets the
@@ -1945,6 +1949,12 @@ fn pipeline_from_body(
                 // attribute step, so only the nine format NAMES are claimed —
                 // `@href` still selects an attribute.
                 || opens_jq_format(&c.name)
+                // Over JSON values a leading `@` is jq's whatever the name: an
+                // xpath `@attr` step there would parse each JSON line as HTML and
+                // select nothing, so `@base32` (not a format in jq 1.8) or
+                // `@foo` printed nothing and exited 0 where jq raises
+                // `foo is not a valid format`.
+                || (json_values && c.name.starts_with('@'))
             {
                 let mut parts = vec![c.name.clone()];
                 parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
@@ -1968,6 +1978,7 @@ fn pipeline_from_body(
             // from the jq test above (`.`/`select(`/`map(`) and from native verbs
             // (alnum), so the three coexist in one body unambiguously.
             if c.name.starts_with('/') || c.name.starts_with('@') {
+                json_values = false;
                 let mut parts = vec![c.name.clone()];
                 parts.extend(c.args.iter().filter_map(Arg::as_str).map(str::to_string));
                 let xp_ops = crate::xpath::translate(&parts.join(" "))?;
@@ -1975,21 +1986,28 @@ fn pipeline_from_body(
                 return Ok(());
             }
             match c.name.as_str() {
-                "in" | "in.html" | "in.xml" | "in.logfmt" => saw_in = true,
+                "in" | "in.html" | "in.xml" | "in.logfmt" => {
+                    saw_in = true;
+                    json_values = false;
+                }
                 "in.json" => {
                     saw_in = true;
+                    json_values = true;
                     ops.push(QueryOp::JsonDocs);
                 }
                 "in.csv" => {
                     saw_in = true;
+                    json_values = true;
                     ops.push(QueryOp::Csv);
                 }
                 "in.tsv" => {
                     saw_in = true;
+                    json_values = true;
                     ops.push(QueryOp::Tsv);
                 }
                 "in.yaml" | "in.yml" => {
                     saw_in = true;
+                    json_values = true;
                     ops.push(QueryOp::Yaml);
                 }
                 // `out.FORMAT [INDENT]` — yq's `-o=` / `-I` in arb's spelling.
@@ -2020,6 +2038,7 @@ fn pipeline_from_body(
                 }
                 "in.toml" => {
                     saw_in = true;
+                    json_values = true;
                     ops.push(QueryOp::Toml);
                 }
                 "sel" => {
@@ -2062,6 +2081,7 @@ fn pipeline_from_body(
                     // reinterpretation SPEC §8 rules out, and it is the same
                     // failure the xpath leg had.
                     check_css(&css, "sel")?;
+                    json_values = false;
                     ops.push(QueryOp::Sel { css, attr });
                 }
                 "find" => {
@@ -2075,6 +2095,7 @@ fn pipeline_from_body(
                         return Err("find: expected a tag/selector".into());
                     }
                     check_css(&css, "find")?;
+                    json_values = false;
                     ops.push(QueryOp::Find(css));
                 }
                 "attr" => {
@@ -2555,6 +2576,14 @@ fn pipeline_from_body(
                     let src = parts.join(" ");
                     match crate::query::jq_program(&src) {
                         Ok(_) => ops.push(QueryOp::JqProgram(src)),
+                        // A program that opens with a double-quoted string is
+                        // jq's even when jq refuses it. XPath spells a string
+                        // literal the same way but has no escapes, so the
+                        // fallback below read `"\(1;2)"` — a jq syntax error —
+                        // as the literal text `\(1;2)` and printed it.
+                        Err(e) if src.starts_with('"') => {
+                            return Err(format!("jq: {}", e.trim_start_matches("jq: ")).into())
+                        }
                         // Not a native verb and not a jq program: try XPath, but
                         // only HERE, as the LAST resort.
                         //

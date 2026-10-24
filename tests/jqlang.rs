@@ -1684,3 +1684,50 @@ fn input_strings_jq_refuses_are_not_decoded() {
         }
     }
 }
+
+/// A program that opens with a double-quoted string is jq's even when jq
+/// refuses it. The XPath last resort spells a string literal the same way but
+/// has no escapes, so `"\(1;2)"` — a jq syntax error — printed `\(1;2)`.
+#[test]
+fn quoted_program_jq_refuses_is_not_an_xpath_literal() {
+    run_pinned(&[
+        (r#""\(1;2)""#, &["null"], None),
+        (r#""x\(1;2)y""#, &["null"], None),
+        (r#""\(1|2""#, &["null"], None),
+        (r#""\(1,2)""#, &["null"], Some(&["1", "2"])),
+        (r#""a\(.)b""#, &["7"], Some(&["a7b"])),
+        (r#""abc""#, &["null"], Some(&["abc"])),
+    ]);
+}
+
+/// Over JSON values a leading `@` is jq's whatever the name. It used to reach
+/// the xpath front-end as an attribute step, which selected nothing from a JSON
+/// line, so a format jq 1.8 does not have printed nothing and exited 0.
+#[test]
+fn unknown_format_over_json_is_jqs_error() {
+    run_pinned(&[
+        ("@base32", &[r#""a""#], None),
+        ("@base32d", &[r#""ME======""#], None),
+        ("@foo", &[r#""a""#], None),
+        ("@foo|length", &[r#""a""#], None),
+        ("@base64", &[r#""a""#], Some(&["YQ=="])),
+        ("@sh", &[r#""a""#], Some(&["'a'"])),
+    ]);
+}
+
+/// The JSON-values rule leaves markup streams alone: after `in.html`, or after
+/// an HTML step, a bare `@NAME` is still the attribute continuation.
+#[test]
+fn attribute_step_still_selects_over_markup() {
+    for src in [
+        "tail .x\nsource .x { in.html; //a; @href }",
+        "tail .x\nsource .x { in; @href }",
+    ] {
+        let spec = build_or(src).unwrap();
+        let lines = vec![r#"<a href="/x">y</a>"#.to_string()];
+        match eval(&spec, &lines, 1.0) {
+            QueryResult::Lines(l) => assert_eq!(l, vec!["/x"], "{src}"),
+            other => panic!("{src}: {other:?}"),
+        }
+    }
+}

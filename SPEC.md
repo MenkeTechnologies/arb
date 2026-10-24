@@ -599,7 +599,15 @@ with the step before it, and every other expression is one question about the
 document, answered once. A leading `@` belongs to jq instead when it names
 one of jq's formats (`@base64`, `@csv`, …) or is followed by a string, which
 makes it a format string whatever the name: `@foo "lit"` answers `lit` as jq
-does, and `@foo "\(.)"` fails as jq's `foo is not a valid format`. **Anything
+does, and `@foo "\(.)"` fails as jq's `foo is not a valid format`. Over
+JSON VALUES — after `in.json`/`in.yaml`/`in.toml`/`in.csv`/`in.tsv`, with no
+`sel`/`find`/xpath step since — every leading `@` is jq's, so a bare `@foo` (or
+`@base32`, which jq 1.8 does not have) raises jq's error instead of selecting no
+attribute from a JSON line; after `in.html`, `in`, or an HTML step `@href` is
+still the attribute continuation. A body command that opens with a
+double-quoted string is jq's too even when jq refuses it: XPath spells a string
+literal the same way, so `"\(1;2)"` is jq's syntax error, not the XPath literal
+text `\(1;2)`. **Anything
 that is not well-formed XPath is a hard error** (`xpath: …`) anchored to the offending verb, raised at BUILD time before
 any input is read — never silently reinterpreted.
 
