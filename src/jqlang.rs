@@ -373,7 +373,7 @@ pub fn eq_vals(a: &JqVal, b: &JqVal) -> bool {
 /// how `first`/`limit`/`any`/`all` stop early. In jq a `break` IS an error —
 /// `break $l` compiles to `$l | error`, the label's value being the object
 /// GENLABEL pushed — so a `try`/`?` between the `break` and its label catches
-/// it with that object as the payload (see [`caught_payload`]).
+/// it with that object as the payload (see `caught_payload`).
 #[derive(Debug)]
 pub enum JqErr {
     /// `error(v)`. The payload is a jq VALUE, because `try f catch .` receives it.
