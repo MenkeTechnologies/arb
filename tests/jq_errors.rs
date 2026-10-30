@@ -111,3 +111,17 @@ fn halt_ends_the_run_with_its_status() {
     check("halt_error(1)", "null\n", "", "", 1);
     check("if . == 2 then halt else . end", "1\n2\n3\n", "1\n", "", 0);
 }
+
+/// `stderr` goes through main.c's `stderr_cb`: a string is written raw, any
+/// other value as compact JSON, with no newline after either — and the input
+/// still flows on to stdout.
+#[test]
+fn stderr_writes_a_string_raw() {
+    check(
+        "stderr",
+        "\"x\\ny\"\n[1,{\"a\":\"é\"}]\n2\n",
+        "x\ny\n[1,{\"a\":\"é\"}]\n2\n",
+        "x\ny[1,{\"a\":\"é\"}]2",
+        0,
+    );
+}

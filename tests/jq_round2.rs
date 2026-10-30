@@ -1003,6 +1003,40 @@ const PINS: &[(&str, &str, &str)] = &[
         r##"["a",1]"##,
         r##"["'a'","1"]"##,
     ),
+    // --- flatten($x): the `$x < 0` guard is jq's order, `$x - 1` its arithmetic
+    (
+        r##"try flatten(nan) catch ."##,
+        r##"[1,[2]]"##,
+        r##"flatten depth must not be negative"##,
+    ),
+    (
+        r##"try flatten(null) catch ."##,
+        r##"[1,[2]]"##,
+        r##"flatten depth must not be negative"##,
+    ),
+    (
+        r##"try flatten(true) catch ."##,
+        r##"[1,[2]]"##,
+        r##"flatten depth must not be negative"##,
+    ),
+    (
+        r##"try flatten("a") catch ."##,
+        r##"[1,[2]]"##,
+        r##"string ("a") and number (1) cannot be subtracted"##,
+    ),
+    (r##"flatten("a")"##, r##"[1,2]"##, r##"[1,2]"##),
+    (
+        r##"try flatten({}) catch ."##,
+        r##"{"a":[1]}"##,
+        r##"object ({}) and number (1) cannot be subtracted"##,
+    ),
+    (
+        r##"try flatten([]) catch ."##,
+        r##"[1,[2]]"##,
+        r##"array ([]) and number (1) cannot be subtracted"##,
+    ),
+    // --- lgamma_r: the sign is libm's, not tgamma's (which underflows here)
+    (r##"lgamma_r"##, r##"-180.5"##, r##"[-759.7019411043015,-1]"##),
 ];
 
 fn docs(joined: &str) -> Vec<String> {

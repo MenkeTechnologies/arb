@@ -5070,6 +5070,7 @@ mod libm {
     extern "C" {
         pub fn lgamma(x: f64) -> f64;
         pub fn tgamma(x: f64) -> f64;
+        pub fn lgamma_r(x: f64, sign: *mut i32) -> f64;
         pub fn erf(x: f64) -> f64;
         pub fn erfc(x: f64) -> f64;
         pub fn j0(x: f64) -> f64;
@@ -5650,13 +5651,18 @@ fn builtin(
                     (f, i)
                 }
                 // `lgamma_r` is the reentrant `lgamma` — the log-magnitude plus
-                // the SIGN of the gamma function. It is not exported on every
-                // platform, so the sign is taken from `tgamma` directly, which is
-                // what `signgam` records.
+                // the sign libm reports (builtin.c `LIBM_DA(lgamma_r, int)`).
+                // The sign comes from libm itself: deriving it from `tgamma`
+                // is wrong wherever `tgamma` underflows to zero (`-180.5`) or
+                // at `-0`, where libm's own answer is platform-defined. Apple's
+                // libm leaves the sign UNWRITTEN for ±0 and NaN, so it starts at
+                // 1 — what jq 1.8.2 prints there on macOS (its `int value` is
+                // uninitialized); glibc writes its own sign for every input.
                 _ => {
-                    // SAFETY: pure libm calls on a plain double.
-                    let (v, g) = unsafe { (libm::lgamma(n), libm::tgamma(n)) };
-                    (v, if g < 0.0 { -1.0 } else { 1.0 })
+                    let mut sign: i32 = 1;
+                    // SAFETY: `sign` is a live, correctly typed out-parameter.
+                    let v = unsafe { libm::lgamma_r(n, &mut sign) };
+                    (v, f64::from(sign))
                 }
             };
             out(JqVal::arr(vec![JqVal::num(a), JqVal::num(b)]))
@@ -5753,10 +5759,13 @@ fn builtin(
             out(delpaths_value(input, &p)?)
         }
         ("_flatten", 1) => {
-            let d = one(it, &args[0], input, env)?
-                .as_f64()
-                .ok_or_else(|| JqErr::msg("flatten depth must be a number"))?;
-            if d < 0.0 {
+            // builtin.jq: `def flatten($x): if $x < 0 then error(…) else
+            // _flatten($x) end`. The guard is jq's ORDER, not a number check:
+            // null, booleans and NaN sort below 0 and count as negative; a
+            // string, array or object sorts above it and reaches `_flatten`,
+            // where `$x - 1` refuses on the first nested array.
+            let d = one(it, &args[0], input, env)?;
+            if cmp_vals(&d, &JqVal::num(0.0)) == Ordering::Less {
                 return Err(JqErr::msg("flatten depth must not be negative"));
             }
             // jq's `flatten` is `reduce .[] as $i (…)`, so its TOP level iterates
@@ -5775,7 +5784,7 @@ fn builtin(
                 }
             };
             let mut res = Vec::new();
-            flatten_into(&top, d, &mut res);
+            flatten_into(&top, &d, &mut res)?;
             out(JqVal::arr(res))
         }
 
@@ -5832,8 +5841,13 @@ fn builtin(
             })?;
             out(input.clone())
         }
+        // main.c stderr_cb: a string is written raw, anything else as compact
+        // JSON, with no trailing newline either way.
         ("stderr", 0) => {
-            eprint!("{}", render(input));
+            match input {
+                JqVal::Str(s) => eprint!("{s}"),
+                _ => eprint!("{}", render(input)),
+            }
             out(input.clone())
         }
         ("halt", 0) => Err(JqErr::Halt(0, None)),
@@ -6031,15 +6045,21 @@ fn keyed_elements(
     Ok(keyed)
 }
 
-fn flatten_into(a: &[JqVal], depth: f64, out: &mut Vec<JqVal>) {
+/// builtin.jq `_flatten($x)`: `reduce .[] as $i ([]; if $i | type == "array"
+/// and $x != 0 then . + ($i | _flatten($x-1)) else . + [$i] end)`.
+fn flatten_into(a: &[JqVal], depth: &JqVal, out: &mut Vec<JqVal>) -> R<()> {
     for e in a {
         // Whether an element RECURSES is about its value; what comes out is the
         // element itself, box and all.
         match e.bare() {
-            JqVal::Arr(inner) if depth != 0.0 => flatten_into(inner, depth - 1.0, out),
+            JqVal::Arr(inner) if !eq_vals(depth, &JqVal::num(0.0)) => {
+                let next = binop(BinOp::Sub, depth, &JqVal::num(1.0))?;
+                flatten_into(inner, &next, out)?
+            }
             _ => out.push(e.clone()),
         }
     }
+    Ok(())
 }
 
 /// jq's `contains` builtin (`f_contains`, src/builtin.c): the two TOP-LEVEL
