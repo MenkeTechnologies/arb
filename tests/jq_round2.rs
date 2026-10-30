@@ -1036,7 +1036,11 @@ const PINS: &[(&str, &str, &str)] = &[
         r##"array ([]) and number (1) cannot be subtracted"##,
     ),
     // --- lgamma_r: the sign is libm's, not tgamma's (which underflows here)
-    (r##"lgamma_r"##, r##"-180.5"##, r##"[-759.7019411043015,-1]"##),
+    (
+        r##"lgamma_r"##,
+        r##"-180.5"##,
+        r##"[-759.7019411043015,-1]"##,
+    ),
 ];
 
 fn docs(joined: &str) -> Vec<String> {
