@@ -427,6 +427,7 @@ const JQ_CALLS: &[&str] = &[
     "todate",
     "strftime",
     "strptime",
+    "strflocaltime",
     "ascii",
     "implode",
     "debug",
@@ -448,6 +449,8 @@ const JQ_CALLS: &[&str] = &[
     // builtins. None is an arb verb.
     "drem",
     "fdim",
+    "fmin",
+    "fmax",
     "fmod",
     "hypot",
     "ldexp",

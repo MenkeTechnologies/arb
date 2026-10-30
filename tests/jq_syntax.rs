@@ -132,3 +132,14 @@ fn deep_jq_recursion_does_not_overflow_the_stack() {
         "5001\n",
     );
 }
+
+/// `fmin`, `fmax` and `strflocaltime` lead a program in their call form like
+/// every other multi-argument jq builtin; the lexer did not know them and cut
+/// `fmin(.;2)` at its `;` into `unknown verb \`fmin(.\``.
+#[test]
+fn two_argument_libm_calls_lead_a_program() {
+    answers("fmin(.;2)", "5\n", "2\n");
+    answers("fmax(.;2)", "5\n", "5\n");
+    answers("fmin(.[0];.[1])", "[5,3]\n", "3\n");
+    answers(r#"strflocaltime("%Y;%m")|length"#, "5\n", "7\n");
+}
