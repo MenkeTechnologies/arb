@@ -136,7 +136,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "arblang"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "ansi-to-tui",
  "base64",
@@ -961,9 +961,9 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "fusevm"
-version = "0.26.9"
+version = "0.26.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52e9c630b03b4cd39bdec854806a9f6b93f24e29c9e0c7008a9d80b67c291d32"
+checksum = "69e8f11425d704c63ac07dd6085f61d2b6b6280026064e5e79a0a198a357dc5a"
 dependencies = [
  "base64",
  "bincode",
