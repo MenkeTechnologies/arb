@@ -50,7 +50,11 @@ fn errors_are_err() {
 #[test]
 fn halt_is_ok() {
     assert_eq!(
-        run_program("out { in.json; if . == 2 then halt else . end }", "1\n2\n3\n").unwrap(),
+        run_program(
+            "out { in.json; if . == 2 then halt else . end }",
+            "1\n2\n3\n"
+        )
+        .unwrap(),
         "1\n"
     );
 }
@@ -63,7 +67,9 @@ fn concurrent_runs_do_not_mix() {
             std::thread::spawn(move || {
                 let input: String = (0..2000).map(|n| format!("{}\n", n * 8 + i)).collect();
                 let got = run_program("out { in.json; . * 10 }", &input).unwrap();
-                let want: String = (0..2000).map(|n| format!("{}\n", (n * 8 + i) * 10)).collect();
+                let want: String = (0..2000)
+                    .map(|n| format!("{}\n", (n * 8 + i) * 10))
+                    .collect();
                 assert_eq!(got, want, "run {i}");
             })
         })
