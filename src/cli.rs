@@ -10,7 +10,7 @@
 //! binds). The expression layer, fusevm lowering, web target, actors, and package
 //! manager are later milestones (see SPEC.md) and are not faked here.
 
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::os::unix::io::RawFd;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1129,11 +1129,7 @@ fn run(full_argv: &[String]) -> io::Result<()> {
     // `select` spec, and a hand-written `select .name` widget turns it on too — so
     // fzf mode is literally a one-widget DSL spec. The select widget's `-prompt`/
     // `-header` opts feed the prompt line and header when the flags weren't passed.
-    let fzf_mode = cli.fzf
-        || spec
-            .widgets
-            .iter()
-            .any(|w| w.kind == spec::WidgetKind::Select);
+    let fzf_mode = cli.fzf || has_select(&spec);
     // An unthemed picker renders in fzf's palette (`fzf::Colors`), which is the
     // whole point of the drop-in: `arb --fzf` should be indistinguishable from
     // `fzf`. `--theme NAME` or a spec `theme` directive still wins, and Ctrl-T
@@ -1185,11 +1181,7 @@ fn run(full_argv: &[String]) -> io::Result<()> {
     // A spec-level `spawn CMD` or `< FILE` (§7) is an input source like `--run`'s
     // producer; CLI `--run` wins, then `spawn`, then `< FILE` (as `cat -- FILE`).
     // Either way the producer's stdout feeds the stream in place of stdin.
-    let producer = run_producer.or_else(|| spec.spawn.clone()).or_else(|| {
-        spec.source_file
-            .as_deref()
-            .map(|f| format!("cat -- {}", shell_quote(f)))
-    });
+    let producer = run_producer.or_else(|| spec_producer(&spec));
     // `filename` (yq's) answers the path when the spec named one, and `-` for a
     // pipe — which is what yq answers for a piped document.
     if let Some(f) = spec.source_file.as_deref() {
@@ -1206,8 +1198,7 @@ fn run(full_argv: &[String]) -> io::Result<()> {
         spec.poll.clone()
     };
 
-    let needs_stdin =
-        fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some());
+    let needs_stdin = needs_stdin(&spec, fzf_mode);
     // A producer (`--run`/`spawn`/`< file`) or a `poll` source supplies the
     // stream itself, so stdin is not required even on an interactive tty.
     if needs_stdin && producer.is_none() && poll.is_none() && io::stdin().is_terminal() {
@@ -1224,24 +1215,7 @@ fn run(full_argv: &[String]) -> io::Result<()> {
         crate::hosted::exit(2);
     }
 
-    // fzf select mode keeps every line (no ring drop), so marks persist as the
-    // stream grows. An `out { … }` reshape also needs every line — its reducers
-    // (`count`/`sum`/`sort`) run over the whole accumulated stream, so a bounded
-    // ring would silently drop the oldest lines and yield a wrong total. The live
-    // TUI/served dashboard uses the bounded ring (only the visible tail matters).
-    //
-    // The retention is a large FINITE cap, not `usize::MAX`: a live producer
-    // (`spawn tail -f`, a `! poll` source) is an unbounded stream, and an
-    // uncapped buffer would grow until the process OOMs. This ceiling keeps every
-    // line for any realistic finite input (a piped file/command that ends) — so
-    // reducers stay exact — while windowing a genuinely infinite stream to its
-    // most recent lines instead of exhausting memory.
-    const MAX_RETAIN: usize = 2_000_000;
-    let state = Arc::new(Mutex::new(if fzf_mode || spec.out.is_some() {
-        StreamState::with_cap(MAX_RETAIN)
-    } else {
-        StreamState::new()
-    }));
+    let state = Arc::new(Mutex::new(stream_state(&spec, fzf_mode)));
 
     // `--serve`: the same spec as a live browser dashboard. Feed the stream in the
     // background (spawned producer or stdin) and run the HTTP server (blocks).
@@ -1518,44 +1492,167 @@ fn run(full_argv: &[String]) -> io::Result<()> {
             }
         }
         outcome
-    } else if let Some(out_ops) = &spec.out {
+    } else {
+        let feed = Feed {
+            producer: producer.as_deref(),
+            poll: poll.as_ref().map(|(cmd, _)| cmd.as_str()),
+            needs_stdin,
+            prelude: &prelude,
+        };
+        headless(
+            &spec,
+            &state,
+            &feed,
+            cli.json,
+            io::stdin().lock(),
+            io::stdout().lock(),
+            &mut io::stderr(),
+        )
+    }
+}
+
+/// Whether the spec has a `select` widget, which turns on fzf mode.
+fn has_select(spec: &Spec) -> bool {
+    spec.widgets
+        .iter()
+        .any(|w| w.kind == spec::WidgetKind::Select)
+}
+
+/// The spec's own input source: `spawn CMD`, or `< FILE` run as `cat -- FILE`.
+/// A CLI `--run` producer takes precedence over both.
+fn spec_producer(spec: &Spec) -> Option<String> {
+    spec.spawn.clone().or_else(|| {
+        spec.source_file
+            .as_deref()
+            .map(|f| format!("cat -- {}", shell_quote(f)))
+    })
+}
+
+/// Whether the spec consumes the stream at all.
+fn needs_stdin(spec: &Spec, fzf_mode: bool) -> bool {
+    fzf_mode || spec.out.is_some() || spec.widgets.iter().any(|w| w.source.is_some())
+}
+
+/// The line buffer a run accumulates the stream into.
+///
+/// fzf select mode keeps every line (no ring drop), so marks persist as the
+/// stream grows. An `out { … }` reshape also needs every line — its reducers
+/// (`count`/`sum`/`sort`) run over the whole accumulated stream, so a bounded
+/// ring would silently drop the oldest lines and yield a wrong total. The live
+/// TUI/served dashboard uses the bounded ring (only the visible tail matters).
+///
+/// The retention is a large FINITE cap, not `usize::MAX`: a live producer
+/// (`spawn tail -f`, a `! poll` source) is an unbounded stream, and an
+/// uncapped buffer would grow until the process OOMs. This ceiling keeps every
+/// line for any realistic finite input (a piped file/command that ends) — so
+/// reducers stay exact — while windowing a genuinely infinite stream to its
+/// most recent lines instead of exhausting memory.
+fn stream_state(spec: &Spec, fzf_mode: bool) -> StreamState {
+    const MAX_RETAIN: usize = 2_000_000;
+    if fzf_mode || spec.out.is_some() {
+        StreamState::with_cap(MAX_RETAIN)
+    } else {
+        StreamState::new()
+    }
+}
+
+/// What feeds a headless run besides its input reader.
+struct Feed<'a> {
+    /// `--run`'s producer, or the spec's `spawn CMD` / `< FILE`.
+    producer: Option<&'a str>,
+    /// A `! CMD every Ns` source, when no producer took over.
+    poll: Option<&'a str>,
+    needs_stdin: bool,
+    /// Lines already read off the input by zero-config sniffing.
+    prelude: &'a [String],
+}
+
+/// A run with no TUI: write the `out { … }` reshape, the producer or input
+/// passed through, or the spec summary to `out`, and diagnostics to `err`.
+///
+/// The `arb` binary hands it the process's stdin/stdout/stderr;
+/// [`crate::embed::run_program`] hands it in-memory buffers.
+fn headless<R: Read, W: Write>(
+    spec: &Spec,
+    state: &Arc<Mutex<StreamState>>,
+    feed: &Feed,
+    json: bool,
+    input: R,
+    out: W,
+    err: &mut dyn Write,
+) -> io::Result<()> {
+    if let Some(out_ops) = &spec.out {
         // Piped downstream: arb modifies the stream. A per-line pipeline streams
         // (so `tail -f | arb 'out {…}' | …` works live); reducers/sorts batch.
-        if let Some(prod) = &producer {
+        if let Some(prod) = feed.producer {
             // A spec `spawn CMD`/`< file` feeds the stream here (no tty); drain
             // it, then apply `out { … }` — without this the headless path would
             // read an empty stdin and emit nothing.
-            read_producer_sync(prod, &state)?;
-            emit_out(out_ops, &state, cli.json)
-        } else if let Some((cmd, _)) = &poll {
+            read_producer_sync(prod, state)?;
+            emit_out(out_ops, state, json, out, err)
+        } else if let Some(cmd) = feed.poll {
             // Headless `! CMD every Ns`: run CMD once and reshape it (an endless
             // poll into a reducer/emit could never terminate).
-            read_producer_sync(cmd, &state)?;
-            emit_out(out_ops, &state, cli.json)
-        } else if needs_stdin && !cli.json && query::is_line_streamable(out_ops) {
-            stream_out(out_ops)
+            read_producer_sync(cmd, state)?;
+            emit_out(out_ops, state, json, out, err)
+        } else if feed.needs_stdin && !json && query::is_line_streamable(out_ops) {
+            stream_out(out_ops, input, out, err)
         } else {
-            if needs_stdin {
-                read_stdin_sync(&state, &prelude);
+            if feed.needs_stdin {
+                read_stdin_sync(state, feed.prelude, input);
             }
-            emit_out(out_ops, &state, cli.json)
+            emit_out(out_ops, state, json, out, err)
         }
-    } else if let Some(prod) = &producer {
+    } else if let Some(prod) = feed.producer {
         // `spawn CMD`/`< file` with no `out { … }`, piped onward: forward the
         // producer's output through untouched (the passthrough twin).
-        stream_producer(prod)
-    } else if let Some((cmd, _)) = &poll {
+        stream_producer(prod, out)
+    } else if let Some(cmd) = feed.poll {
         // Headless `! CMD every Ns` with no `out { … }`: forward one run.
-        stream_producer(cmd)
-    } else if needs_stdin {
+        stream_producer(cmd, out)
+    } else if feed.needs_stdin {
         // A dashboard spec piped onward with no `out { … }` reshape — arb is a
         // passive tap: forward the stream through untouched so the downstream
         // consumer still receives it (`find / | arb dash.arb | stryke`). Only an
         // explicit `out { … }` changes what flows downstream.
-        passthrough(&prelude)
+        passthrough(feed.prelude, input, out)
     } else {
-        dump(&spec, &state)
+        dump(spec, state, out)
     }
+}
+
+/// Build `src` and run it the way `arb -e SRC` runs with its stdin and stdout
+/// both pipes: `input` is the stream, `out` receives what the binary would
+/// write to stdout, `err` what it would write to stderr. Never opens a TUI.
+pub(crate) fn run_headless<R: Read, W: Write>(
+    src: &str,
+    input: R,
+    out: W,
+    err: &mut dyn Write,
+) -> io::Result<()> {
+    let spec = match build_spec(src) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = writeln!(err, "arb: {e}");
+            crate::hosted::exit(1);
+        }
+    };
+    if let Some(f) = spec.source_file.as_deref() {
+        crate::yaml::set_input_name(f);
+    }
+    let fzf_mode = has_select(&spec);
+    let producer = spec_producer(&spec);
+    let feed = Feed {
+        producer: producer.as_deref(),
+        poll: match &producer {
+            Some(_) => None,
+            None => spec.poll.as_ref().map(|(cmd, _)| cmd.as_str()),
+        },
+        needs_stdin: needs_stdin(&spec, fzf_mode),
+        prelude: &[],
+    };
+    let state = Arc::new(Mutex::new(stream_state(&spec, fzf_mode)));
+    headless(&spec, &state, &feed, false, input, out, err)
 }
 
 /// POSIX single-quote a string so it survives `sh -c` as one literal argument
@@ -1602,14 +1699,11 @@ fn read_producer_sync(producer: &str, state: &Arc<Mutex<StreamState>>) -> io::Re
 /// is empty the next read will block (a live stream, or EOF), so flush now.
 /// Bulk piping costs one syscall per 256KB; a live tail still gets one per line,
 /// because each line arrives as its own read.
-struct LineOut(io::BufWriter<io::StdoutLock<'static>>);
+struct LineOut<W: Write>(io::BufWriter<W>);
 
-impl LineOut {
-    fn new() -> Self {
-        LineOut(io::BufWriter::with_capacity(
-            256 * 1024,
-            io::stdout().lock(),
-        ))
+impl<W: Write> LineOut<W> {
+    fn new(w: W) -> Self {
+        LineOut(io::BufWriter::with_capacity(256 * 1024, w))
     }
 
     fn line(&mut self, l: &str) -> io::Result<()> {
@@ -1658,18 +1752,18 @@ fn read_line_into<R: BufRead>(r: &mut R, buf: &mut Vec<u8>, line: &mut String) -
     true
 }
 
-/// Run `producer` (`sh -c`) and copy its stdout to arb's stdout line by line,
+/// Run `producer` (`sh -c`) and copy its stdout to `out` line by line,
 /// flushing per line. Used for a headless `spawn CMD` with no `out { … }` — arb
 /// forwards the spawned stream to the downstream consumer.
-fn stream_producer(producer: &str) -> io::Result<()> {
+fn stream_producer<W: Write>(producer: &str, out: W) -> io::Result<()> {
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(producer)
         .stdout(Stdio::piped())
         .spawn()?;
-    if let Some(out) = child.stdout.take() {
-        let mut w = LineOut::new();
-        let mut r = BufReader::with_capacity(256 * 1024, out);
+    if let Some(pipe) = child.stdout.take() {
+        let mut w = LineOut::new(out);
+        let mut r = BufReader::with_capacity(256 * 1024, pipe);
         let (mut buf, mut line) = (Vec::new(), String::new());
         while read_line_into(&mut r, &mut buf, &mut line) {
             let more = !r.buffer().is_empty();
@@ -1686,9 +1780,9 @@ fn stream_producer(producer: &str) -> io::Result<()> {
 /// arb as a transparent tap: copy every stdin line to stdout unchanged, flushing
 /// per line so a live upstream (`tail -f`) reaches the downstream consumer
 /// promptly. Used when a dashboard spec is piped onward with no `out { … }`.
-fn passthrough(prelude: &[String]) -> io::Result<()> {
-    let mut out = LineOut::new();
-    let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
+fn passthrough<R: Read, W: Write>(prelude: &[String], input: R, out: W) -> io::Result<()> {
+    let mut out = LineOut::new(out);
+    let mut r = BufReader::with_capacity(256 * 1024, input);
     // Replay any sniff-peeked lines first, then the rest of stdin. A peeked line
     // is already in hand, so it never forces a flush of its own.
     for (i, l) in prelude.iter().enumerate() {
@@ -1720,9 +1814,14 @@ fn ok_on_broken_pipe(r: io::Result<()>) -> io::Result<()> {
 /// Write the `out { … }` pipeline's result to stdout (arb as a pipe filter).
 /// Stream a per-line `out` pipeline: apply it to each line as it arrives and
 /// emit results immediately with a flush, so live pipes work without buffering.
-fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
-    let mut out = LineOut::new();
-    let mut r = BufReader::with_capacity(256 * 1024, io::stdin().lock());
+fn stream_out<R: Read, W: Write>(
+    ops: &[QueryOp],
+    input: R,
+    out: W,
+    err: &mut dyn Write,
+) -> io::Result<()> {
+    let mut out = LineOut::new(out);
+    let mut r = BufReader::with_capacity(256 * 1024, input);
     let (mut buf, mut line) = (Vec::new(), String::new());
     // `in.json` reads DOCUMENTS, which may span lines or share one, so its
     // regrouping runs here, ahead of the per-item pipeline.
@@ -1748,6 +1847,7 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
                 lineno,
                 &mut out,
                 &mut failed,
+                err,
             ),
             (Some(d), true) => {
                 d.push(&line, &mut items);
@@ -1763,6 +1863,7 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
                 lineno,
                 &mut out,
                 &mut failed,
+                err,
             ),
             (None, false) => Ok(()),
         };
@@ -1774,6 +1875,7 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
                     lineno,
                     &mut out,
                     &mut failed,
+                    err,
                 )
             })
         });
@@ -1797,12 +1899,13 @@ fn stream_out(ops: &[QueryOp]) -> io::Result<()> {
 /// Run one stream item (a one-element slice) through `ops`, writing its lines
 /// and diagnostics. `failed` becomes this item's jq status; `halt` ends the
 /// process here.
-fn stream_item(
+fn stream_item<W: Write>(
     ops: &[QueryOp],
     item: &[String],
     lineno: usize,
-    out: &mut LineOut,
+    out: &mut LineOut<W>,
     failed: &mut bool,
+    err: &mut dyn Write,
 ) -> io::Result<()> {
     let mut rep = query::JqReport::default();
     match query::eval_reporting(ops, item, 0.0, lineno, &mut rep) {
@@ -1825,7 +1928,7 @@ fn stream_item(
         // Flush first so the lines already produced reach the consumer before
         // the diagnostic.
         let _ = out.finish();
-        report_jq(&rep);
+        report_jq(&rep, err);
     }
     if let Some((code, _)) = rep.halt {
         crate::hosted::exit(code);
@@ -1836,20 +1939,25 @@ fn stream_item(
 /// Write a jq program's stderr: each uncaught error under arb's `arb: ` prefix,
 /// then `halt_error`'s message exactly as jq writes it (no prefix, and a
 /// trailing newline only where jq adds one).
-fn report_jq(rep: &query::JqReport) {
+fn report_jq(rep: &query::JqReport, err: &mut dyn Write) {
     for e in &rep.errors {
-        eprintln!("arb: {e}");
+        let _ = writeln!(err, "arb: {e}");
     }
     if let Some((_, msg)) = &rep.halt {
-        eprint!("{msg}");
+        let _ = write!(err, "{msg}");
     }
 }
 
-fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io::Result<()> {
+fn emit_out<W: Write>(
+    ops: &[QueryOp],
+    state: &Arc<Mutex<StreamState>>,
+    json: bool,
+    mut out: W,
+    err: &mut dyn Write,
+) -> io::Result<()> {
     let st = state.lock().unwrap();
     let raw: Vec<String> = st.lines.iter().map(|l| l.to_string()).collect();
     let elapsed = st.start.elapsed().as_secs_f64();
-    let mut out = io::stdout().lock();
     if json {
         let v = match query::eval(ops, &raw, elapsed) {
             QueryResult::Lines(ls) => {
@@ -1866,7 +1974,7 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
                 serde_json::Value::Object(m)
             }
             QueryResult::Error(msg) => {
-                eprintln!("arb: {msg}");
+                let _ = writeln!(err, "arb: {msg}");
                 crate::hosted::exit(5);
             }
         };
@@ -1894,13 +2002,13 @@ fn emit_out(ops: &[QueryOp], state: &Arc<Mutex<StreamState>>, json: bool) -> io:
         }
         QueryResult::Error(msg) => {
             let _ = out.flush();
-            eprintln!("arb: {msg}");
+            let _ = writeln!(err, "arb: {msg}");
             crate::hosted::exit(5);
         }
     }
     if !rep.errors.is_empty() || rep.halt.is_some() {
         out.flush()?;
-        report_jq(&rep);
+        report_jq(&rep, err);
     }
     match rep.halt {
         Some((code, _)) => crate::hosted::exit(code),
@@ -2105,8 +2213,13 @@ fn load_spec(cli: &Cli) -> Result<Spec, String> {
         // Zero-config default: a select list under `--fzf`, else a stream tail.
         default_spec_src(cli.fzf).to_string()
     };
-    // The rkyv script cache skips lex+parse for a previously-seen spec source.
-    spec::build(&cache::parse_cached(&src).map_err(String::from)?).map_err(String::from)
+    build_spec(&src)
+}
+
+/// Parse and build a spec from its source text. The rkyv script cache skips
+/// lex+parse for a previously-seen source.
+fn build_spec(src: &str) -> Result<Spec, String> {
+    spec::build(&cache::parse_cached(src).map_err(String::from)?).map_err(String::from)
 }
 
 /// The synthesized spec source when the user gave no spec/`-e`/`-p`. `--fzf`
@@ -2633,11 +2746,11 @@ fn run_capture(cmd: &[String], input: &[String]) -> Vec<String> {
     }
 }
 
-fn read_stdin_sync(state: &Arc<Mutex<StreamState>>, prelude: &[String]) {
+fn read_stdin_sync<R: Read>(state: &Arc<Mutex<StreamState>>, prelude: &[String], input: R) {
     for l in prelude {
         state.lock().unwrap().push(l.clone());
     }
-    for line in io::stdin().lock().lines() {
+    for line in BufReader::new(input).lines() {
         match line {
             Ok(l) => state.lock().unwrap().push(l),
             Err(_) => break,
@@ -2645,11 +2758,10 @@ fn read_stdin_sync(state: &Arc<Mutex<StreamState>>, prelude: &[String]) {
     }
 }
 
-fn dump(spec: &Spec, state: &Arc<Mutex<StreamState>>) -> io::Result<()> {
+fn dump<W: Write>(spec: &Spec, state: &Arc<Mutex<StreamState>>, mut out: W) -> io::Result<()> {
     let st = state.lock().unwrap();
     let raw: Vec<String> = st.lines.iter().map(|l| l.to_string()).collect();
     let elapsed = st.start.elapsed().as_secs_f64();
-    let mut out = io::stdout().lock();
     writeln!(
         out,
         "arb: spec — {} widget(s) (no terminal; render skipped)",

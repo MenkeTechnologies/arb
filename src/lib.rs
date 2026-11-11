@@ -17,6 +17,7 @@ pub mod cache;
 /// `cli` submodule: the command line, callable as a library.
 pub mod cli;
 pub mod dap;
+pub mod embed;
 pub mod err;
 pub mod expr;
 pub mod fzf;
@@ -51,3 +52,5 @@ pub mod xpath_syntax;
 pub mod yaml;
 pub mod ynode;
 pub mod yqfmt;
+
+pub use embed::run_program;

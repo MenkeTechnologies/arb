@@ -970,6 +970,28 @@ script cache, the LSP/DAP stdio shape, the package-manager ABI. The language des
 already lowers to a `fusevm::Chunk` and runs on the VM; declarative widget and
 layout construction is plain Rust construction and needs no VM.
 
+### Embedding
+
+The library crate (`arb`) runs a spec headlessly, without a process or a
+terminal:
+
+```rust
+pub fn run_program(src: &str, input: &str) -> Result<String, String>
+```
+
+It behaves like `printf %s INPUT | arb -e SRC | cat`: `input` is the stream, and
+the return value is what arb wrote to stdout — the `out { … }` reshape, the
+input passed through for a spec with no `out`, or the widget summary for a spec
+that reads no stream. Every call runs on its own thread with a fresh spec, so
+concurrent calls never share output. A nonzero exit (spec error, jq error,
+`halt_error`, panic) is `Err` with arb's stderr text; status 0, including jq's
+`halt`, is `Ok` with the output produced so far.
+
+```rust
+let out = arb::run_program("out { in.json; .a }", "{\"a\":1}\n{\"a\":2}\n")?;
+assert_eq!(out, "1\n2\n");
+```
+
 ---
 
 ## [0x07] STATUS & ROADMAP
