@@ -145,6 +145,7 @@ dependencies = [
  "ego-tree",
  "fusevm",
  "libc",
+ "libm",
  "memchr",
  "nu-ansi-term",
  "onig",

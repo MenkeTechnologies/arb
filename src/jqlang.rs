@@ -5070,7 +5070,6 @@ mod libm {
     extern "C" {
         pub fn lgamma(x: f64) -> f64;
         pub fn tgamma(x: f64) -> f64;
-        pub fn lgamma_r(x: f64, sign: *mut i32) -> f64;
         pub fn erf(x: f64) -> f64;
         pub fn erfc(x: f64) -> f64;
         pub fn j0(x: f64) -> f64;
@@ -5652,16 +5651,16 @@ fn builtin(
                 }
                 // `lgamma_r` is the reentrant `lgamma` — the log-magnitude plus
                 // the sign libm reports (builtin.c `LIBM_DA(lgamma_r, int)`).
-                // The sign comes from libm itself: deriving it from `tgamma`
-                // is wrong wherever `tgamma` underflows to zero (`-180.5`) or
-                // at `-0`, where libm's own answer is platform-defined. Apple's
-                // libm leaves the sign UNWRITTEN for ±0 and NaN, so it starts at
-                // 1 — what jq 1.8.2 prints there on macOS (its `int value` is
-                // uninitialized); glibc writes its own sign for every input.
+                // It comes from the `libm` crate (musl's lgamma_r), not the
+                // host libm: glibc's answer differs in the last ulp (`-180.5`
+                // gives ...013 where Apple's libm, this crate and the jq 1.8.2
+                // release binaries give ...015). Deriving the sign from
+                // `tgamma` is wrong wherever `tgamma` underflows to zero. For
+                // ±0 and NaN jq's sign depends on whether the libm writes it;
+                // the jq 1.8.2 Linux release prints 1 there, and so does arb.
                 _ => {
-                    let mut sign: i32 = 1;
-                    // SAFETY: `sign` is a live, correctly typed out-parameter.
-                    let v = unsafe { libm::lgamma_r(n, &mut sign) };
+                    let (v, sign) = ::libm::lgamma_r(n);
+                    let sign = if n == 0.0 || n.is_nan() { 1 } else { sign };
                     (v, f64::from(sign))
                 }
             };

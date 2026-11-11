@@ -69,6 +69,9 @@ scraper = { version = "0.20", features = ["deterministic"] }
 # model (`scraper` does not re-export it).
 ego-tree = "0.6"
 base64 = "0.22"
+# `lgamma_r` (jq builtin): the musl port, so the result is the same on every
+# platform and matches the jq release binaries; glibc differs in the last ulp.
+libm = "0.2.16"
 percent-encoding = "2.3"
 
 # Interactive REPL (`arb --repl`): utop-style reedline line editor, nu-ansi-term
