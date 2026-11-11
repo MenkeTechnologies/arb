@@ -55,6 +55,24 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The differential probes (tests/common/mod.rs `reference_ok`) were measured
+      # against jq 1.8.2; ubuntu-26.04's apt jq is 1.8.1, whose error text differs
+      # (no index value after "Cannot index"). Put the pinned release first on PATH.
+      - name: Install jq 1.8.2 (differential-test reference)
+        shell: bash
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)   asset=jq-linux-amd64 sum=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f ;;
+            macOS-ARM64) asset=jq-macos-arm64 sum=2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e ;;
+            *) echo "::error::no jq 1.8.2 asset for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+          dir="$RUNNER_TEMP/jq"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/jq" "https://github.com/jqlang/jq/releases/download/jq-1.8.2/$asset"
+          echo "$sum  $dir/jq" | shasum -a 256 -c
+          chmod +x "$dir/jq"
+          echo "$dir" >> "$GITHUB_PATH"
+          "$dir/jq" --version
       - name: Build
         run: cargo build --workspace --all-targets --locked
       - name: Test
